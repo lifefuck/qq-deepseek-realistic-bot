@@ -217,6 +217,18 @@ user_last_at_time: Dict[tuple, float] = {}
 # 戳一戳冷却表: (group_id, user_id) -> timestamp (防恶意狂戳刷屏)
 user_last_poke_time: Dict[tuple, float] = {}
 
+# 群禁言与全员禁言状态监测（防禁言期间盲跑大模型烧 Token）
+group_bot_ban_expire: Dict[int, float] = {}   # group_id -> 机器人解禁时间戳
+group_all_banned: Dict[int, bool] = collections.defaultdict(bool)      # group_id -> 是否全员禁言
+
+def is_bot_banned_in_group(group_id: int) -> bool:
+    """检查机器人当前在某群是否被禁言（单人禁言或全员禁言）"""
+    now = time.time()
+    if group_all_banned.get(group_id, False):
+        return True
+    expire = group_bot_ban_expire.get(group_id, 0.0)
+    return now < expire
+
 # 管理员私聊历史记录
 admin_private_timeline: Deque[str] = collections.deque(maxlen=PRIVATE_TIMELINE_MAX_LEN)
 
@@ -688,6 +700,11 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
             logger.info("[群 %d] ✅ 消息成功送达 QQ 群: %s", group_id, msg_payload[:40])
         else:
             logger.warning("[群 %d] ⚠️ 发送消息可能被拦截或异常: %s | 响应: %s", group_id, msg_payload[:40], res)
+            # 被动容错熔断：如果响应中明确包含“禁言”或特定错误码，立刻给该群施加 60 秒禁言保护
+            res_str = str(res or "").lower()
+            if any(k in res_str for k in ["禁言", "banned", "1200"]):
+                group_bot_ban_expire[group_id] = time.time() + 60.0
+                logger.warning("[群 %d] 检测到发信被禁言拦截，自动开启 60 秒免调用大模型熔断保护！", group_id)
 
 def split_reply_segments(text: str) -> list[str]:
     """智能正则切分回复，生成像真人在 QQ 连续打字发出的 1~2 条短消息"""
@@ -987,6 +1004,11 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     if group_id not in ALLOWED_GROUPS or sender_id == BOT_QQ:
         return
         
+    # 前置短路检查：如果机器人在该群处于禁言期（单人禁言或全员禁言），直接静默拦截，绝对不浪费 1 个 Token
+    if is_bot_banned_in_group(group_id):
+        logger.debug("[群 %d] 机器人处于禁言保护期，忽略用户 %s 的消息，省下大模型 Token", group_id, sender_id)
+        return
+        
     is_admin = (sender_id == ADMIN_QQ)
     now = time.time()
     
@@ -1282,15 +1304,51 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool) -> Optional[str]:
         logger.error("戳一戳调用大模型异常: %s", e)
         return None
 
-# ==================== 戳一戳通知事件处理 ====================
+# ==================== 群通知与状态事件处理 ====================
 async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
-    """处理戳一戳等群通知事件"""
+    """处理戳一戳、群禁言、退群解散等系统通知事件"""
+    notice_type = event.get("notice_type") or event.get("post_type")
     sub_type = event.get("sub_type")
-    # OneBot11 中戳一戳通常为 sub_type="poke" 或 notice_type="notify" 且 sub_type="poke"
+    group_id = event.get("group_id")
+    
+    # 1. 监测群禁言事件 (group_ban) -> 杜绝禁言期间调用模型浪费 Token
+    if notice_type == "group_ban":
+        user_id = event.get("user_id", 0)
+        duration = event.get("duration", 0)  # 禁言秒数，0 表示解禁
+        operator_id = event.get("operator_id")
+        
+        # 1.1 全员禁言事件 (user_id 为 0)
+        if user_id == 0:
+            if sub_type == "ban" or duration > 0:
+                group_all_banned[group_id] = True
+                logger.warning("[群 %d] 管理员 %s 开启了全员禁言，机器人进入静默节流状态！", group_id, operator_id)
+            else:
+                group_all_banned[group_id] = False
+                logger.info("[群 %d] 管理员 %s 解除了全员禁言，恢复响应。", group_id, operator_id)
+            return
+
+        # 1.2 针对机器人自身的禁言
+        if user_id == BOT_QQ:
+            if sub_type == "ban" or duration > 0:
+                expire_time = time.time() + duration
+                group_bot_ban_expire[group_id] = expire_time
+                logger.warning("[群 %d] 机器人被管理员 %s 禁言 %d 秒！禁言期内将静默拦截所有大模型调用。", group_id, operator_id, duration)
+            elif sub_type == "lift_ban" or duration == 0:
+                group_bot_ban_expire.pop(group_id, None)
+                logger.info("[群 %d] 机器人被管理员 %s 提前解禁！恢复正常响应。", group_id, operator_id)
+            return
+
+    # 2. 监测机器人被踢或退群事件 (group_decrease)
+    if notice_type == "group_decrease" and event.get("user_id") == BOT_QQ:
+        logger.warning("[群 %d] 机器人已退出或被移出群聊！清理该群状态...", group_id)
+        group_bot_ban_expire.pop(group_id, None)
+        group_all_banned.pop(group_id, None)
+        return
+
+    # 3. 监测戳一戳事件 (poke)
     if sub_type != "poke":
         return
         
-    group_id = event.get("group_id")
     target_id = event.get("target_id")
     user_id = event.get("user_id")
     
@@ -1298,6 +1356,11 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
     if not group_id or group_id not in ALLOWED_GROUPS:
         return
     if target_id != BOT_QQ:
+        return
+        
+    # 如果机器人此时处于禁言状态，戳一戳也不回复，绝不浪费 Token
+    if is_bot_banned_in_group(group_id):
+        logger.debug("[群 %d] 机器人处于禁言中，忽略戳一戳", group_id)
         return
         
     now = time.time()
