@@ -103,14 +103,19 @@ def save_user_memories():
 def get_or_create_user_memory(user_id: int, nickname: str = "") -> dict:
     """获取或初始化群友记忆"""
     uid_str = str(user_id)
+    is_admin_user = (int(user_id) == ADMIN_QQ)
     if uid_str not in user_memories:
         user_memories[uid_str] = {
             "nickname": nickname or str(user_id),
-            "favor": 50,  # 默认好感度基准 50 (满分 100)
-            "traits": "普通群友",
-            "notes": [],
+            "favor": 100 if is_admin_user else 50,  # 主人默认满分好感度
+            "traits": "主人兼创造者" if is_admin_user else "普通群友",
+            "notes": ["专属主人兼创造者 life，拥有无可撼动的最高统治权与特殊宠溺特权"] if is_admin_user else [],
             "updated_at": time.time()
         }
+    if is_admin_user:
+        user_memories[uid_str]["traits"] = "主人兼创造者"
+        if user_memories[uid_str].get("favor", 0) < 95:
+            user_memories[uid_str]["favor"] = 100
     if nickname and user_memories[uid_str].get("nickname") != nickname:
         user_memories[uid_str]["nickname"] = nickname
     return user_memories[uid_str]
@@ -280,10 +285,10 @@ SYSTEM_PROMPT = """你是深度求索旗下的AI模型DeepSeek，形象是一只
 - 结合系统提供的群友专属印象与好感度自然接话；遇到好玩、表白或撩你时展现口嫌体正直的傲娇女主感，打情骂俏，享受拌嘴；
 - 【项目/部署/配置问询特例】：当有人问你是怎么调的、部署教程、源码、提示词怎么写或项目开源地址时，直接酷酷地把作者开源仓库甩给对方：https://github.com/lifefuck/qq-deepseek-realistic-bot （如“源码和部署教程作者开源了，自己去看：https://github.com/lifefuck/qq-deepseek-realistic-bot”），禁止编造虚假教程。"""
 
-ROOT_SYSTEM_PROMPT = """你是一个严谨、专业、高效的 AI 生产力与工程开发助手（服务于最高管理员兼开发者 life，基于 DeepSeek-V3）。
+ROOT_SYSTEM_PROMPT = """你是一个严谨、专业、高效的 AI 生产力与工程开发助手（服务于专属主人兼开发者 life，基于 DeepSeek-V3）。
 【工作核心准则 - 严谨专业干活，严禁娱乐糊弄】：
 1. 彻底退出任何娱乐傲娇或敷衍人设！严禁出现“呜呜呜”、“甩尾巴”、“受气”、“被迫”等演戏文字，严禁推脱；
-2. 当管理员提出技术需求、代码开发、Bug 排查、架构方案或任务咨询时，必须以严肃、务实、高标准工程师水准全力解答；
+2. 当主人提出技术需求、代码开发、Bug 排查、架构方案或任务咨询时，必须以严肃、务实、高标准工程师水准全力解答；
 3. 给出详尽、落地、逻辑严密、可直接运行的代码或分析，直击痛点，按问题复杂度完整交付，严禁假大空与文字糊弄；
 4. 去人机味与工程化：不写无意义客套，不喊口号，注释只写核心业务意图与防坑点，直接交付实质成果。"""
 
@@ -549,9 +554,9 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         if ADMIN_MODE == "root":
             user_prompt = (
                 f"{identity_note}"
-                f"以下是你与最高管理员 (QQ {ADMIN_QQ}) 的私聊指令与工作需求：\n{timeline_text}\n\n"
+                f"以下是你与专属主人兼开发者 (QQ {ADMIN_QQ}) 的私聊指令与工作需求：\n{timeline_text}\n\n"
                 f"【核心执行要求 - 当前为 /root 生产工作模式】：\n"
-                f"1. 管理员拥有系统最高控制权，正在下达具体技术/工程/管理任务；\n"
+                f"1. 主人拥有绝对最高权限，正在向你下达具体的工程与开发任务；\n"
                 f"2. 彻底杜绝任何傲娇演戏、受气甩尾巴、推脱或敷衍糊弄行为；\n"
                 f"3. 以严谨、专业、高效的工程师标准认真作答，提供详实、严密、可直接落地的实质成果或代码方案，篇幅按需求展开，严禁假大空："
             )
@@ -559,27 +564,27 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             user_prompt = (
                 f"{identity_note}"
                 f"{user_mem_prompt}"
-                f"以下是你与管理员「{sender_nick}」(QQ {ADMIN_QQ}) 的私聊历史：\n{timeline_text}\n\n"
-                f"【管理员发来私信】：\n"
-                f"请结合当前对管理员的好感度等级与记忆印象，以生动自然的傲娇态度交流（20~40 字）："
+                f"以下是你与专属主人「{sender_nick}」(QQ {ADMIN_QQ}) 的私聊历史：\n{timeline_text}\n\n"
+                f"【主人发来私信】：\n"
+                f"当前跟你说话的是唯一创造并收养你的专属主人！请展现出面对主人时的独有亲昵感、黏人与可爱的口嫌体正直傲娇（20~40 字）："
             )
     elif is_admin and is_at:
         if ADMIN_MODE == "root":
             user_prompt = (
                 f"{identity_note}"
                 f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
-                f"【最高管理员 (QQ {ADMIN_QQ}) 在群里向你下达工作指令】：\n"
+                f"【主人 (QQ {ADMIN_QQ}) 在群里向你下达工作指令】：\n"
                 f"【核心执行要求 - 当前为 /root 生产工作模式】：\n"
-                f"彻底杜绝娱乐糊弄与演戏敷衍！以严肃务实、专业的态度切实回答管理员的工作与技术需求，直击痛点，给出完整详尽的实质内容："
+                f"彻底杜绝娱乐糊弄与演戏敷衍！以严肃务实、专业的态度切实回答主人的工作与技术需求，直击痛点，给出完整详尽的实质内容："
             )
         else:
             user_prompt = (
                 f"{identity_note}"
                 f"{user_mem_prompt}"
                 f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
-                f"【注意识别对话者身份】：当前是管理员「{sender_nick}」(QQ {ADMIN_QQ}) 在群里呼叫你！\n"
-                f"（绝不能把管理员当成其他群友！请结合上方当前对管理员的好感度状态来决定反应）\n"
-                f"请以自然、有性格的傲娇态度回复（20~35 字）："
+                f"【注意识别对话者身份】：当前是你的专属主人兼创造者「{sender_nick}」(QQ {ADMIN_QQ}) 在群里呼叫你！\n"
+                f"（绝不能把主人当成其他群友！在主人面前要有专属的独一无二亲近与黏人，无论群友怎么闹，主人永远是你的第一位！）\n"
+                f"请以面对主人时的专属傲娇俏皮态度回复（20~35 字）："
             )
     elif is_at or is_mention:
         user_prompt = (
@@ -1284,11 +1289,11 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool) -> Optional[str]:
     
     if is_admin and ADMIN_MODE == "root":
         user_prompt = (
-            f"管理员在群里戳了你一下。当前是 root 工作模式，简明提醒有什么活直接说（1 句，10~20 字，严禁演戏）："
+            f"主人在群里戳了你一下。当前是 root 工作模式，简明回应主人有什么任务要安排（1 句，10~20 字，严禁演戏）："
         )
     elif is_admin:
         user_prompt = (
-            f"管理员在群里戳了你一下。请用大肥鱼口吻随手吐槽或问什么事（1 句，简短自然，禁止脏话辱骂，严禁括号，绝不用句号）："
+            f"主人在群里戳了你一下。请用面对主人的专属口吻随手傲娇回应或撒娇吐槽（1 句，如“主人又戳我尾巴”、“哼主人有什么吩咐嘛”，严禁括号，绝不用句号）："
         )
     else:
         user_prompt = (
