@@ -120,15 +120,13 @@ def get_or_create_user_memory(user_id: int, nickname: str = "", group_id: Option
     if uid_str not in group_scope:
         group_scope[uid_str] = {
             "nickname": nickname or str(user_id),
-            "favor": 100 if is_admin_user else 50,  # 主人默认满分好感度
+            "favor": 50,  # 好感度初始为 50 基准，随日常自然互动增减
             "traits": "主人兼创造者" if is_admin_user else "普通群友",
-            "notes": ["专属主人兼创造者 life，拥有无可撼动的最高统治权与特殊宠溺特权"] if is_admin_user else [],
+            "notes": ["专属主人兼创造者 life"] if is_admin_user else [],
             "updated_at": time.time()
         }
     if is_admin_user:
         group_scope[uid_str]["traits"] = "主人兼创造者"
-        if group_scope[uid_str].get("favor", 0) < 95:
-            group_scope[uid_str]["favor"] = 100
     if nickname and group_scope[uid_str].get("nickname") != nickname:
         group_scope[uid_str]["nickname"] = nickname
     return group_scope[uid_str]
@@ -598,7 +596,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 f"{user_mem_prompt}"
                 f"以下是你与专属主人「{sender_nick}」(QQ {ADMIN_QQ}) 的私聊历史：\n{timeline_text}\n\n"
                 f"【主人发来私信】：\n"
-                f"当前跟你说话的是唯一创造并收养你的专属主人！请展现出面对主人时的独有亲昵感、黏人与可爱的口嫌体正直傲娇（20~40 字）："
+                f"当前跟你说话的是你的专属主人兼创造者。请清楚认同主人身份，态度自然真实、听主人的话，结合好感度自然交流（20~40 字）："
             )
     elif is_admin and is_at:
         if ADMIN_MODE == "root":
@@ -615,8 +613,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 f"{user_mem_prompt}"
                 f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
                 f"【注意识别对话者身份】：当前是你的专属主人兼创造者「{sender_nick}」(QQ {ADMIN_QQ}) 在群里呼叫你！\n"
-                f"（绝不能把主人当成其他群友！在主人面前要有专属的独一无二亲近与黏人，无论群友怎么闹，主人永远是你的第一位！）\n"
-                f"请以面对主人时的专属傲娇俏皮态度回复（20~35 字）："
+                f"（清楚知道对方是你的主人，不把主人当普通群友，态度自然真实，听主人的话，不搞做作工业撒娇）\n"
+                f"请结合当前对主人的好感度自然回复（20~35 字）："
             )
     elif is_at or is_mention:
         user_prompt = (
@@ -1338,7 +1336,7 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool) -> Optional[str]:
         )
     elif is_admin:
         user_prompt = (
-            f"主人在群里戳了你一下。请用面对主人的专属口吻随手傲娇回应或撒娇吐槽（1 句，如“主人又戳我尾巴”、“哼主人有什么吩咐嘛”，严禁括号，绝不用句号）："
+            f"主人在群里戳了你一下。请清楚知道是主人在戳你，随手自然回应或吐槽（1 句，如“主人怎么啦”、“戳我干嘛呀”，绝不用句号，严禁括号）："
         )
     else:
         user_prompt = (
