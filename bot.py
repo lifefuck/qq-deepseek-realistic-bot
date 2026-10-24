@@ -539,6 +539,29 @@ async def call_action(ws: aiohttp.ClientWebSocketResponse, action: str, params: 
     finally:
         pending_requests.pop(echo_id, None)
 
+def is_game_or_yunzai_command(text: str) -> bool:
+    """精准判断是否为云崽/游戏专用指令，彻底避免 AI 机器人与游戏机器人抢答撞车"""
+    t = text.strip()
+    if not t:
+        return False
+    # 1. 显式前缀: # / 井号 / *
+    if t.startswith(("#", "井", "*")):
+        return True
+    # 2. 常见原神/星铁/崩铁/绝区零等二次元游戏免前缀功能词
+    patterns = [
+        r"^(?:原神|星铁|星穹铁道|崩铁|绝区零|崩坏3)?(?:抽卡|祈愿|跃迁)(?:模拟|记录|分析)?$",
+        r"^(?:绑定|更新|刷新|删除)?(?:uid|UID)\s*\d*$",
+        r"^.+(?:面板|圣遗物|遗器|练度|伤害计算|参考面板)$",
+        r"^(?:今日|每日|今天)?(?:有什么)?(?:素材|天赋|武器|日历)$",
+        r"^(?:深渊|深境螺旋|末日幻影|虚构叙事)(?:战绩|查询|配队)?$",
+        r"^(?:原石|星琼|树脂|体力|便签)(?:查询)?$",
+        r"^(?:开启|关闭)?(?:原神|星铁)?(?:签到|推送)$"
+    ]
+    for p in patterns:
+        if re.search(p, t, re.IGNORECASE):
+            return True
+    return False
+
 async def extract_reply_context(ws: aiohttp.ClientWebSocketResponse, event: dict, raw_msg: str) -> Optional[str]:
     """提取被回复引用的原消息内容"""
     # 1. 直接从 event 中的 reply 字段获取（NapCat 标准支持）
@@ -1128,8 +1151,9 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     elif not clean_body:
         return
 
-    # 游戏指令或前缀为 # / / 的非 AI 指令，交给云崽等扩展插件处理，AI 机器人主动忽略避免抢答
-    if clean_body.startswith(("#", "井")):
+    # 游戏指令或云崽生态专用指令，交给云崽等扩展插件处理，AI 机器人主动跳过，彻底避免抢答与刷屏
+    if is_game_or_yunzai_command(clean_body):
+        logger.debug("[群 %d] 识别为游戏指令: %r，主动转交云崽处理，跳过 AI 回复", group_id, clean_body)
         return
 
     # 公开指令检测: /memory 或 /memary（所有人均可查看好感度与记忆总结）
@@ -1498,6 +1522,11 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
     if not clean_body:
         return
         
+    # 游戏指令或云崽专属指令私聊拦截
+    if is_game_or_yunzai_command(clean_body):
+        logger.debug("[私聊] 识别为游戏/Cookie指令: %r，交由云崽处理，跳过 AI 回复", clean_body)
+        return
+
     # 公开指令检测: /memory 或 /memary（私聊支持查看）
     if clean_body.startswith(("/memary", "/memory")):
         await handle_memory_summary_command(ws, user_id=ADMIN_QQ)
