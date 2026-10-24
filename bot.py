@@ -21,31 +21,29 @@ import base64
 import re
 import time
 import uuid
-from typing import Deque, Dict, Optional, Set
+from typing import Deque, Dict, Optional, Set, Tuple
 import aiohttp
-from dotenv import load_dotenv
 
-# 加载 .env 环境变量
-load_dotenv()
+# ==================== 基础配置 ====================
+NAPCAT_WS_URL = "ws://127.0.0.1:3001"
+BOT_QQ = 1000000000
+ADMIN_QQ = 1000000001            # 最高超级管理员 (life)
 
-# ==================== 基础配置 (环境变量驱动) ====================
-NAPCAT_WS_URL = os.getenv("NAPCAT_WS_URL", "ws://127.0.0.1:3001")
-BOT_QQ = int(os.getenv("BOT_QQ", "1000000000"))
-ADMIN_QQ = int(os.getenv("ADMIN_QQ", "1000000001"))
+ALLOWED_GROUPS: Set[int] = {
+    123456789,
+    123456788,
+    123456787,
+    123456786,
+}
 
-# 白名单群号集合解析 (逗号分隔)
-raw_groups = os.getenv("WHITELIST_GROUPS", "")
-ALLOWED_GROUPS: Set[int] = {int(g.strip()) for g in raw_groups.split(",") if g.strip().isdigit()}
+SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
+SILICONFLOW_API_KEY = "sk-placeholder-redacted"
+MODEL_NAME = "deepseek-ai/DeepSeek-V3"
 
-# 文本大模型配置 (DeepSeek-V3 / SiliconFlow / OpenAI 兼容端点)
-SILICONFLOW_API_URL = os.getenv("DEEPSEEK_API_URL", "https://api.siliconflow.cn/v1/chat/completions")
-SILICONFLOW_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
-MODEL_NAME = os.getenv("DEEPSEEK_MODEL", "deepseek-ai/DeepSeek-V3")
-
-# 视觉提炼模型配置 (用于将群聊图片快速转录为 20 字以内文字要点)
-NEW_API_URL = os.getenv("VISION_API_URL", "http://127.0.0.1:3000/v1/chat/completions")
-NEW_API_KEY = os.getenv("VISION_API_KEY", "")
-VISION_MODEL_NAME = os.getenv("VISION_MODEL", "gemini-3.8-flash-high")
+# 本地局域网视觉模型配置 (Gemini 3.8 Flash High)
+NEW_API_URL = "http://127.0.0.1:3000/v1/chat/completions"
+NEW_API_KEY = "sk-placeholder-redacted"
+VISION_MODEL_NAME = "gemini-3.8-flash-high"
 
 # 行为与节奏参数
 TIMELINE_MAX_LEN = 8            # 群时间线保留最近消息条数
@@ -168,50 +166,89 @@ def clear_all_user_memories() -> int:
     save_user_memories()
     return count
 
-async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snippet: str, group_id: Optional[int] = None):
-    """根据群友输入内容异步微调群友记忆与好感度（按群隔离）"""
+async def evaluate_favor_with_ai(user_id: int, sender_nick: str, dialogue_snippet: str, bot_reply: str = "") -> Tuple[int, str]:
+    """请求 SiliconFlow 大模型动态分析群友真实态度并给出好感变化 delta 与印象"""
+    if not dialogue_snippet.strip():
+        return 0, ""
+        
+    headers = {
+        "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    sys_prompt = (
+        "你是一个群聊好感度与群友印象判定器。请根据群友发言和小鲸鱼的回复，深度理解中文互联网语境与真实意图，"
+        "分析该群友对小鲸鱼的真实态度，并给出好感度变化 delta (整数，范围 -5 到 +5) 以及一个极短印象标签 impression (10字以内，无特殊印象填null)。\n\n"
+        "【判定标准】：\n"
+        "- 恶意攻击/找茬/嘲讽对线/吵架骂人/叫大肥鱼/阴阳怪气/想吃鱼/人身攻击：-1 到 -5 (吵架对线越恶劣扣越多，吵架对线坚决扣分)\n"
+        "- 普通水群/正常闲聊/就事论事/路人日常：0 (不增不减，绝不无脑加分)\n"
+        "- 友好互动/善意调侃/开玩笑/接梗：+1\n"
+        "- 夸奖/投喂/表达喜爱/请客零食/送礼物：+2 到 +3\n"
+        "- 深度表白/爱慕/超强正面情感：+4 到 +5\n\n"
+        "请严格返回 JSON 对象，格式如：{\"delta\": -3, \"impression\": \"爱跟小鲸鱼对线吵架\"}"
+    )
+    user_prompt = f"群友「{sender_nick}」发言：{dialogue_snippet}\n小鲸鱼回复：{bot_reply or '（无）'}"
+    
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": sys_prompt},
+            {"role": "user", "content": user_prompt}
+        ],
+        "response_format": {"type": "json_object"},
+        "max_tokens": 80,
+        "temperature": 0.1
+    }
+    
+    try:
+        global http_session
+        if http_session is None or http_session.closed:
+            http_session = aiohttp.ClientSession()
+        async with http_session.post(SILICONFLOW_API_URL, headers=headers, json=payload, timeout=8) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                raw_text = data["choices"][0]["message"]["content"].strip()
+                m = re.search(r"\{.*?\}", raw_text, re.DOTALL)
+                if m:
+                    res_json = json.loads(m.group(0))
+                    delta = int(res_json.get("delta", 0))
+                    delta = max(-5, min(5, delta))
+                    impression = str(res_json.get("impression") or "").strip()
+                    if impression.lower() in ["null", "none", "无"]:
+                        impression = ""
+                    return delta, impression
+    except Exception as e:
+        logger.warning("AI 动态好感度判定异常: %s", e)
+    return 0, ""
+
+async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snippet: str, group_id: Optional[int] = None, bot_reply: str = ""):
+    """由 AI 大模型异步动态判定群友的好感度变化与印象画像（按群隔离）"""
     if user_id == BOT_QQ:
         return
     mem = get_or_create_user_memory(user_id, sender_nick, group_id=group_id)
     
-    # 规则快速判定与好感度微调（分析群友发送的话）
-    lower = dialogue_snippet.lower()
-    favor_delta = 0
-    new_note = ""
-    
-    # 1. 恶意攻击 / 挑衅 / 对线吵架 / 辱骂 (-2~-4，优先判定)
-    if any(w in lower for w in [
-        "急了", "破防", "大肥鱼", "肥鱼", "死鱼", "臭鱼", "清蒸", "红烧", "炖鱼", "同类相食",
-        "傻逼", "煞笔", "sb", "脑瘫", "脑残", "弱智", "唐氏", "蠢货", "真蠢", "废物", "垃圾", "人工智障",
-        "滚", "爬", "闭嘴", "打一顿", "打死", "找抽", "就骂你", "装什么", "恶心", "菜逼", "有病"
-    ]):
-        favor_delta -= 3
-        new_note = "曾恶意调侃、挑衅或对线吵架"
-    # 2. 强烈爱慕 / 亲昵 / 表白 (+3~+5)
-    elif any(w in lower for w in ["爱死你", "做我老婆", "做我女朋", "亲一个", "最喜欢你", "小鲸鱼最棒", "抱紧", "贴贴"]):
-        favor_delta += 4
-        new_note = "对小鲸鱼说过甜言蜜语/深度表白"
-    elif any(w in lower for w in ["喜欢", "表白", "可爱", "老婆", "亲亲", "对象", "宝", "乖", "摸摸", "揉揉"]):
-        favor_delta += 2
-        new_note = "日常向小鲸鱼示好夸奖"
-    # 3. 友好互动 / 投喂 / 夸奖 / 感谢 (+1~+2)
-    elif any(w in lower for w in ["谢谢", "辛苦", "厉害", "真棒", "给糖吃", "请客", "好聪明", "夸夸", "投喂", "算力饼干", "内存条", "零食"]):
-        favor_delta += 2
-        new_note = "请客投喂零食并礼貌互动"
-    # 4. 互动戳一戳 (+1)
-    elif "戳了戳" in dialogue_snippet:
-        favor_delta += 1
+    # 0. 特殊固定动作快速通道：戳一戳
+    if dialogue_snippet == "戳了戳小鲸鱼":
+        favor_delta = 1
         new_note = "喜欢戳小鲸鱼尾巴互动"
-    # 5. 普通日常水群：好感度保持不变，坚决不无脑加分
-        
-    mem["favor"] = max(0, min(100, mem["favor"] + favor_delta))
+    else:
+        # 1. 委托大模型深度理解真实语境并给出动态判定
+        favor_delta, new_note = await evaluate_favor_with_ai(user_id, sender_nick, dialogue_snippet, bot_reply=bot_reply)
+
+    # 主人特殊保护：如果用户是专属主人兼开发者，调侃对线不扣分（底线保底 50）
+    if user_id == ADMIN_QQ and favor_delta < 0:
+        favor_delta = 0
+
+    old_favor = mem.get("favor", 50)
+    mem["favor"] = max(0, min(100, old_favor + favor_delta))
     if new_note and new_note not in mem["notes"]:
-        # 如果有新的印象，追加并只保留最近 5 条高价值印象，避免陈年旧账无限复读
         mem["notes"].append(new_note)
         if len(mem["notes"]) > 5:
             mem["notes"] = mem["notes"][-5:]
             
     mem["updated_at"] = time.time()
+    logger.info("[好感判定] 群 %s 用户 %s(%s): delta=%+d, impression=%r, 好感度: %d -> %d/100", 
+                group_id or "私聊", sender_nick, user_id, favor_delta, new_note, old_favor, mem["favor"])
     async with memory_write_lock:
         save_user_memories()
 
@@ -239,6 +276,8 @@ def check_and_record_group_rate_limit(group_id: int) -> bool:
 
 # ==================== 状态存储（按群隔离） ====================
 group_timelines: Dict[int, Deque[Dict[str, any]]] = collections.defaultdict(lambda: collections.deque(maxlen=TIMELINE_MAX_LEN))
+# 长窗口历史池（用于 /b 深度群聊总结，保留最近 200 条）
+group_history_pool: Dict[int, Deque[Dict[str, any]]] = collections.defaultdict(lambda: collections.deque(maxlen=200))
 group_last_activity: Dict[int, float] = collections.defaultdict(float)
 group_last_active_reply: Dict[int, float] = collections.defaultdict(float)
 group_msg_count_since_bot: Dict[int, int] = collections.defaultdict(int)
@@ -289,6 +328,8 @@ async def check_bot_banned_realtime(ws: aiohttp.ClientWebSocketResponse, group_i
 
 # 管理员私聊历史记录
 admin_private_timeline: Deque[str] = collections.deque(maxlen=PRIVATE_TIMELINE_MAX_LEN)
+# 管理员私聊长记录池（用于 /b 私聊总结，保留最近 100 条）
+admin_private_history: Deque[str] = collections.deque(maxlen=100)
 
 # WebSocket 请求回调映射与运行中模型任务集合
 pending_requests: Dict[str, asyncio.Future] = {}
@@ -326,7 +367,7 @@ ROOT_SYSTEM_PROMPT = """你是一个严谨、专业、高效的 AI 生产力与�
 4. 去人机味与工程化：不写无意义客套，不喊口号，注释只写核心业务意图与防坑点，直接交付实质成果。"""
 
 # ==================== 大肥鱼专属表情包系统 ====================
-MEME_PACK_DIR = os.getenv("MEME_PACK_DIR", os.path.join(os.path.dirname(os.path.abspath(__file__)), "meme-pack", "memes"))
+MEME_PACK_DIR = "/home/lmxy/projects/qq-deepseek-bot/meme-pack/memes"
 
 def get_random_meme_b64(text_hint: str = "") -> Optional[str]:
     """根据语境情绪匹配或随机挑选一张大肥鱼表情包返回 base64 字符串"""
@@ -737,23 +778,37 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         logger.error("调用大模型异常 (耗时 %.2fs): %s", time.time() - t0, e)
         return None
 
-async def summarize_context(timeline_text: str, max_chars: int = 40) -> Optional[str]:
-    """生成紧凑的对话摘要"""
+async def summarize_context(timeline_text: str, max_chars: int = 40, is_report: bool = False, msg_count: int = 0) -> Optional[str]:
+    """生成对话摘要（支持 /compress 超紧凑前情摘要与 /b 深度生动群聊简报）"""
     headers = {
         "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
         "Content-Type": "application/json"
     }
-    prompt = f"请用精炼的大白话（{max_chars}字以内）概括以下聊天记录的核心讨论点与主要共识：\n{timeline_text}"
+    if is_report:
+        prompt = (
+            f"你是一个幽默犀利、深谙互联网梗的沙雕老群友观察员（小鲸鱼）。以下是 QQ 群最近的真实群聊记录（共 {msg_count} 条发言）：\n"
+            f"{timeline_text}\n\n"
+            f"请用精炼有趣、层次清晰、生动自然的大白话生成一份群聊要点简报（200~350字以内，杜绝官僚客套腔，拒绝无意义复读，像老群友汇报一样）：\n"
+            f"1. 【核心话题】：大家主要在围绕什么事情对线/讨论？\n"
+            f"2. 【热点梗/结论】：有什么搞笑事件、反转、爆典或阶段性结论？\n"
+            f"3. 【一句话吐槽】：以小鲸鱼口吻给出一句犀利辣评（绝不用句号）。"
+        )
+        max_tokens = 500
+    else:
+        prompt = f"请用精炼的大白话（{max_chars}字以内）概括以下聊天记录的核心讨论点与主要共识：\n{timeline_text}"
+        max_tokens = 150
+
     payload = {
         "model": MODEL_NAME,
         "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 120
+        "max_tokens": max_tokens,
+        "temperature": 0.3
     }
     try:
         global http_session
         if http_session is None or http_session.closed:
             http_session = aiohttp.ClientSession()
-        async with http_session.post(SILICONFLOW_API_URL, headers=headers, json=payload, timeout=15) as resp:
+        async with http_session.post(SILICONFLOW_API_URL, headers=headers, json=payload, timeout=25) as resp:
             if resp.status == 200:
                 data = await resp.json()
                 return data["choices"][0]["message"]["content"].strip()
@@ -924,7 +979,9 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
         if len(args) > 1 and args[1].lower() in ["all", "所有", "全部"]:
             group_timelines.clear()
             admin_private_timeline.clear()
-            msg = "已重置所有群及私聊的上下文时间线"
+            group_history_pool.clear()
+            admin_private_history.clear()
+            msg = "已重置所有群及私聊的上下文与历史长记录"
             if is_private:
                 await send_private_message(ws, ADMIN_QQ, msg)
             else:
@@ -991,26 +1048,35 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
         return True
 
     # 4. /b - 总结群聊上下文内容（只汇报总结，不修改/不清空历史上下文）
-    elif cmd == "/b":
+    elif cmd == "/b" or cmd.startswith("/b "):
+        # 解析条数参数，例如 /b 50 或 /b 100，默认 50 条，最大支持 200 条
+        limit_count = 50
+        parts = cmd.split()
+        if len(parts) > 1 and parts[1].isdigit():
+            limit_count = max(10, min(200, int(parts[1])))
+
         if is_private:
-            if not admin_private_timeline:
+            history = list(admin_private_history) if admin_private_history else list(admin_private_timeline)
+            if not history:
                 await send_private_message(ws, ADMIN_QQ, "暂无私聊记录可总结")
                 return True
-            raw_text = "\n".join(admin_private_timeline)
-            summary = await summarize_context(raw_text, max_chars=120)
+            records = history[-limit_count:]
+            raw_text = "\n".join(records)
+            summary = await summarize_context(raw_text, is_report=True, msg_count=len(records))
             if summary:
-                await send_private_message(ws, ADMIN_QQ, f"对话总结：\n{summary}")
+                await send_private_message(ws, ADMIN_QQ, f"【私聊记录总结·最近 {len(records)} 条】\n{summary}")
             else:
                 await send_private_message(ws, ADMIN_QQ, "生成总结失败，请稍后重试")
         else:
-            timeline = group_timelines[group_id]
-            if not timeline:
+            history = list(group_history_pool[group_id]) if group_history_pool[group_id] else list(group_timelines[group_id])
+            if not history:
                 await send_group_message(ws, group_id, "当前群暂无最近发言记录")
                 return True
-            raw_text = "\n".join([f"{m['sender']}: {m['content']}" for m in timeline])
-            summary = await summarize_context(raw_text, max_chars=120)
+            records = history[-limit_count:]
+            raw_text = "\n".join([f"{m['sender']}: {m['content']}" for m in records])
+            summary = await summarize_context(raw_text, is_report=True, msg_count=len(records))
             if summary:
-                await send_group_message(ws, group_id, f"群聊总结（{len(timeline)}条）：\n{summary}")
+                await send_group_message(ws, group_id, f"【群聊简报·最近 {len(records)} 条消息】\n{summary}")
             else:
                 await send_group_message(ws, group_id, "生成总结失败，请稍后重试")
         return True
@@ -1118,21 +1184,23 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
     at_target = target_uid if is_at else None
     await send_segmented_group_message(ws, group_id, reply, is_command_report=(is_admin and ADMIN_MODE == "root"), at_user_id=at_target)
 
-    # 将机器人自己的回复也写入当前群的时间线，让对话上下文完整，防止机器人自言自语或遗忘自己说过的话
+    # 将机器人自己的回复也写入当前群的时间线与长历史池，让对话上下文完整，防止机器人自言自语或遗忘自己说过的话
     clean_reply_record = remove_trailing_period(strip_markdown(reply)).strip()
     if clean_reply_record:
-        group_timelines[group_id].append({
+        bot_record = {
             "sender": "小鲸鱼",
             "content": clean_reply_record,
             "time": time.time()
-        })
+        }
+        group_timelines[group_id].append(bot_record)
+        group_history_pool[group_id].append(bot_record)
 
     # 成功发回后，为当前用户开启或刷新专属 60 秒免 @ 追问窗口（每人独立维护）
     if target_uid:
         user_follow_up_expire[(group_id, target_uid)] = time.time() + FOLLOW_UP_WINDOW
-        # 异步更新当前群友的记忆与好感度（使用群友刚才实际说的内容判断）
+        # 异步更新当前群友的记忆与好感度（结合群友发言与机器人回复由 AI 动态判定）
         content_to_analyze = user_text or (timeline[-1]["content"] if timeline else "")
-        asyncio.create_task(update_user_memory_async(target_uid, sender_nick, content_to_analyze, group_id=group_id))
+        asyncio.create_task(update_user_memory_async(target_uid, sender_nick, content_to_analyze, group_id=group_id, bot_reply=clean_reply_record))
 
 async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict):
     """群消息主处理流水线"""
@@ -1153,7 +1221,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     now = time.time()
     
     # 提取纯文本与精准 @ 判定（基于 OneBot 11 规范的 QQ 号精准判定）
-    # 匹配针对机器人自身的 @ CQ 码（兼容任何可选属性）
+    # 匹配针对机器人 QQ 1000000000 的 @ CQ 码（兼容任何可选属性）
     is_at = bool(re.search(rf"\[CQ:at,[^\]]*qq={BOT_QQ}[^\]]*\]", raw_message))
     
     # 也检查 OneBot11 原始 message 数组节点（结构化消息最稳健）
@@ -1305,11 +1373,13 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     group_last_activity[group_id] = now
     
     prefix = "[管理员] " if is_admin else ""
-    group_timelines[group_id].append({
+    record_item = {
         "sender": f"{prefix}{sender_nick}",
         "content": full_content,
         "time": now
-    })
+    }
+    group_timelines[group_id].append(record_item)
+    group_history_pool[group_id].append(record_item)
     logger.info("[群 %d][%s] %s%s: %s", group_id, "被@" if is_at else "群聊", prefix, sender_nick, full_content)
     
     # 检查是否直接呼叫机器人：显式 @ 机器人，或者回复引用了机器人之前的发言
@@ -1663,6 +1733,7 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
     full_content = f"{reply_prefix} {clean_body}" if reply_prefix else clean_body
     logger.info("[私聊] 主人 life 来信: %s", full_content)
     admin_private_timeline.append(f"life: {full_content}")
+    admin_private_history.append(f"life: {full_content}")
     
     timeline_str = "\n".join(admin_private_timeline)
     current_task = asyncio.current_task()
@@ -1678,6 +1749,7 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         return
         
     admin_private_timeline.append(f"小鲸鱼: {reply}")
+    admin_private_history.append(f"小鲸鱼: {reply}")
     await asyncio.sleep(0.8)
     await send_private_message(ws, ADMIN_QQ, reply, is_command_report=(ADMIN_MODE == "root"))
 
