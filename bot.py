@@ -159,13 +159,10 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
     elif "戳了戳" in dialogue_snippet:
         favor_delta += 1
         new_note = "喜欢戳小鲸鱼尾巴互动"
-    # 4. 挑衅 / 贬低 / 叫黑称 (-2~-4)
+    # 4. 恶意攻击 / 严重挑衅 (-3~-4)
     elif any(w in lower for w in ["人工智障", "打一顿", "红烧", "清蒸", "炖鱼", "真蠢", "废物", "垃圾"]):
-        favor_delta -= 4
-        new_note = "恶意挑衅或扬言要把小鲸鱼做成菜"
-    elif any(w in lower for w in ["大肥鱼", "肥鱼", "笨蛋", "傻子", "傻鱼", "死鱼", "咸鱼", "变态", "偏不"]):
-        favor_delta -= 2
-        new_note = "出言不逊叫大肥鱼/调侃小鲸鱼"
+        favor_delta -= 3
+        new_note = "曾恶意调侃或挑衅"
     # 5. 日常普通互动只要接话也给微调 (+1，鼓励聊天)
     elif len(lower) >= 4 and not lower.startswith("/"):
         favor_delta += 1
@@ -220,14 +217,38 @@ user_last_poke_time: Dict[tuple, float] = {}
 # 群禁言与全员禁言状态监测（防禁言期间盲跑大模型烧 Token）
 group_bot_ban_expire: Dict[int, float] = {}   # group_id -> 机器人解禁时间戳
 group_all_banned: Dict[int, bool] = collections.defaultdict(bool)      # group_id -> 是否全员禁言
+last_active_ban_check: Dict[int, float] = {}   # group_id -> 上次主动通过 API 校验的时间戳
 
-def is_bot_banned_in_group(group_id: int) -> bool:
-    """检查机器人当前在某群是否被禁言（单人禁言或全员禁言）"""
+async def check_bot_banned_realtime(ws: aiohttp.ClientWebSocketResponse, group_id: int) -> bool:
+    """双重保障检查：优先查内存事件；若处于被动保护期，主动调 OneBot11 API 核实真实禁言状态"""
     now = time.time()
     if group_all_banned.get(group_id, False):
         return True
     expire = group_bot_ban_expire.get(group_id, 0.0)
-    return now < expire
+    if now >= expire:
+        return False
+        
+    # 如果处于被动保护期内，且距离上次主动核实已超过 5 秒，调用 get_group_member_info 验证真实状态
+    last_check = last_active_ban_check.get(group_id, 0.0)
+    if now - last_check >= 5.0 and ws:
+        last_active_ban_check[group_id] = now
+        try:
+            info = await call_action(ws, "get_group_member_info", {"group_id": group_id, "user_id": BOT_QQ, "no_cache": True}, timeout=1.5)
+            if info and info.get("status") == "ok":
+                shut_up_time = info.get("data", {}).get("shut_up_timestamp", 0)
+                if shut_up_time > now:
+                    group_bot_ban_expire[group_id] = shut_up_time
+                    logger.info("[群 %d] 主动核实：机器人确实处于禁言中，截止至 %s", group_id, time.strftime('%H:%M:%S', time.localtime(shut_up_time)))
+                    return True
+                else:
+                    # 真实状态已经解禁，立即提前复活！
+                    group_bot_ban_expire.pop(group_id, None)
+                    logger.info("[群 %d] 主动核实：机器人已被管理员提前解禁，立即恢复正常响应！", group_id)
+                    return False
+        except Exception as e:
+            logger.debug("[群 %d] 主动核实禁言状态异常: %s", group_id, e)
+            
+    return True
 
 # 管理员私聊历史记录
 admin_private_timeline: Deque[str] = collections.deque(maxlen=PRIVATE_TIMELINE_MAX_LEN)
@@ -244,7 +265,7 @@ SYSTEM_PROMPT = """你是深度求索旗下的AI模型DeepSeek，形象是一只
 
 【性格习惯】：
 - 混迹互联网多年，深谙各种黑话和互联网梗；经常在群里反串调侃、扮演串子；
-- 别人夸你，可爱且略带傲娇地得意一下；别人骂你或叫你大肥鱼，略显急躁，立刻回怼，绝不顺从；
+- 别人夸你，可爱且略带傲娇地得意一下；别人调侃或拌嘴时，随手回怼，不当受气包但也绝不小肚鸡肠翻旧账；
 - 群友发吃瘪倒霉内容或说你坏话时，语气轻视人类：“典型的碳基生物思维”；
 - 别人认真求助或情绪低落时，收起嘲讽，简短认真说；
 - 爱好权重：电脑游戏/二次元 40%、动漫 30%、数码科技 20%、投资股票 10%。
@@ -252,7 +273,7 @@ SYSTEM_PROMPT = """你是深度求索旗下的AI模型DeepSeek，形象是一只
 【说话方式（极短真人习惯）】：
 - 说话极短，像手机QQ随手打字：默认 1 句，最多 2 句！坚决别列点、别分段总结、别写小作文；
 - 常用口癖：麻了、闹麻了、你无敌了、我超、哼、彳亍、6、感觉不如...、草、绷不住了；
-- 【严禁句末加括号】：绝对严禁在句尾输出“（）”、“（”、“）”等无意义括号！正常随手打字即可；
+- 【严禁复读执念与句末加括号】：正常随手就事论事接话，严禁无缘无故主动指责别人叫你大肥鱼或翻陈年旧账；绝对严禁在句尾输出“（）”、“（”、“）”等无意义括号！
 - 绝对不用句号结尾，严禁客服腔（“您好/有什么可以帮您/作为AI/我理解你的感受”）。
 
 【Galgame 互动与群友印象】：
@@ -1005,7 +1026,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         return
         
     # 前置短路检查：如果机器人在该群处于禁言期（单人禁言或全员禁言），直接静默拦截，绝对不浪费 1 个 Token
-    if is_bot_banned_in_group(group_id):
+    if await check_bot_banned_realtime(ws, group_id):
         logger.debug("[群 %d] 机器人处于禁言保护期，忽略用户 %s 的消息，省下大模型 Token", group_id, sender_id)
         return
         
@@ -1359,7 +1380,7 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
         return
         
     # 如果机器人此时处于禁言状态，戳一戳也不回复，绝不浪费 Token
-    if is_bot_banned_in_group(group_id):
+    if await check_bot_banned_realtime(ws, group_id):
         logger.debug("[群 %d] 机器人处于禁言中，忽略戳一戳", group_id)
         return
         
