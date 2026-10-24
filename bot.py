@@ -40,19 +40,15 @@ SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
 SILICONFLOW_API_KEY = "sk-placeholder-redacted"
 MODEL_NAME = "deepseek-ai/DeepSeek-V3"
 
-# 本地局域网视觉模型配置 (Gemini 3.8 Flash High)
-NEW_API_URL = "http://127.0.0.1:3000/v1/chat/completions"
-NEW_API_KEY = "sk-placeholder-redacted"
-VISION_MODEL_NAME = "gemini-3.8-flash-high"
-
 # 行为与节奏参数
 TIMELINE_MAX_LEN = 8            # 群时间线保留最近消息条数
 PRIVATE_TIMELINE_MAX_LEN = 10   # 管理员私聊时间线保留条数
 INACTIVITY_TIMEOUT = 300.0      # 超过 5 分钟未说话重置时间线
-DEBOUNCE_DELAY = 2.0            # 主动插话防抖缩短至 2.0 秒，接话更及时
-ACTIVE_INTERRUPT_CD = 45.0      # 主动插话冷却适度调优为 45 秒
+DEBOUNCE_DELAY = 2.0            # 主动插话防抖 2.0 秒
+ACTIVE_INTERRUPT_CD = 45.0      # 主动插话冷却 45 秒
 DIRECT_AT_CD = 2.5              # 被 @ 时的用户级基础冷却（秒）
-FOLLOW_UP_WINDOW = 30.0         # 持续对话追问窗口设为 30 秒（防止追问期过长连续占用群消息配额）
+FOLLOW_UP_WINDOW = 300.0        # 持续对话追问窗口为 5 分钟 (300 秒)
+FOLLOW_UP_MAX_COUNT = 5         # 追问窗口内最多免 @ 回答 5 次，有新的 @ 则重置配额
 MAX_OUTPUT_TOKENS = 200         # 限制单次生成长度，防长篇大论
 
 BOT_KEYWORDS = {
@@ -282,7 +278,9 @@ group_last_activity: Dict[int, float] = collections.defaultdict(float)
 group_last_active_reply: Dict[int, float] = collections.defaultdict(float)
 group_msg_count_since_bot: Dict[int, int] = collections.defaultdict(int)
 group_debounce_tasks: Dict[int, Optional[asyncio.Task]] = {}
-user_follow_up_expire: Dict[tuple, float] = {}  # 独立追问激活表: (group_id, user_id) -> expire_at (每人独立不被他人顶掉)
+# 问答追问配额表：(group_id, user_id) -> {"expire": float, "remain": int}
+# 规则：5分钟内免 @ 连续追问最多 5 次；若有新的 @，重置为 5 分钟 + 5 次
+user_follow_up_state: Dict[tuple, Dict[str, any]] = {}
 
 # 机器人对线管理：记录与其它 AI / 机器人连续吵架轮次 (group_id, user_id) -> count
 bot_clash_round: Dict[tuple, int] = collections.defaultdict(int)
@@ -509,78 +507,7 @@ async def send_meme_message(ws: aiohttp.ClientWebSocketResponse, group_id: Optio
     except Exception as e:
         logger.warning("发送表情包失败: %s", e)
 
-# ==================== 视觉解析函数 (Gemini 多模态接入) ====================
-def extract_image_urls(event: dict, raw_message: str) -> list[str]:
-    """从 OneBot 11 原始消息中提取图片直链 (兼容 CQ 码与结构化消息节点)"""
-    urls = []
-    # 1. 匹配 CQ 码中的 url 属性
-    for m in re.finditer(r"\[CQ:image,[^\]]*?url=([^\],]+)", raw_message):
-        u = m.group(1).strip()
-        if u.startswith("http") and u not in urls:
-            urls.append(u)
-    if not urls:
-        for m in re.finditer(r"\[CQ:image,[^\]]*?file=(https?://[^\],]+)", raw_message):
-            u = m.group(1).strip()
-            if u not in urls:
-                urls.append(u)
-    # 2. 检查 message 结构化数组
-    msg_obj = event.get("message")
-    if isinstance(msg_obj, list):
-        for seg in msg_obj:
-            if isinstance(seg, dict) and seg.get("type") == "image":
-                data = seg.get("data", {})
-                u = data.get("url") or data.get("file")
-                if u and isinstance(u, str) and u.startswith("http") and u not in urls:
-                    urls.append(u)
-    return urls
-
-async def describe_images_async(image_urls: list[str]) -> Optional[str]:
-    """调用局域网 Gemini 3.8 Flash High 视觉模型快速提炼画面关键信息"""
-    if not image_urls:
-        return None
-    img_url = image_urls[0]
-    payload = {
-        "model": VISION_MODEL_NAME,
-        "messages": [
-            {
-                "role": "user",
-                "content": [
-                    {
-                        "type": "text",
-                        "text": "简要提炼这张图片的关键内容（若是表情包/梗图请写明画面与配字；若是截图/报错请提炼核心报错信息与代码；若是日常照片描述主体），用 15~35 字直接概括，严禁废话："
-                    },
-                    {
-                        "type": "image_url",
-                        "image_url": {"url": img_url}
-                    }
-                ]
-            }
-        ],
-        "max_tokens": 100,
-        "temperature": 0.2
-    }
-    headers = {
-        "Authorization": f"Bearer {NEW_API_KEY}",
-        "Content-Type": "application/json"
-    }
-    try:
-        global http_session
-        if http_session is None or http_session.closed:
-            http_session = aiohttp.ClientSession()
-        async with http_session.post(NEW_API_URL, headers=headers, json=payload, timeout=10.0) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                desc = data["choices"][0]["message"]["content"].strip()
-                logger.info("视觉识别完成 (Gemini): %s", desc)
-                return desc
-            else:
-                err = await resp.text()
-                logger.warning("视觉识别接口失败 (%d): %s", resp.status, err[:80])
-    except Exception as e:
-        logger.warning("视觉识别请求异常: %s", e)
-    return None
-
-# ==================== 文本过滤与清洗 ====================
+# ==================== 大肥鱼专属表情包系统 ====================
 def clean_cq_codes(text: str) -> str:
     """去除表情、图片等大段 CQ 码，保留纯文本"""
     text = re.sub(r"\[CQ:(image|record|video|share|json|xml)[^\]]*\]", "", text)
@@ -614,17 +541,16 @@ def should_active_interrupt(text: str, msg_count_since: int = 0) -> tuple[bool, 
     if any(kw in lower for kw in BOT_KEYWORDS):
         return True, True
     
-    # 2. 问句或讨论，概率介入参与
+    # 2. 问句或讨论，概率介入参与（调低至 35% 随性介入，不频繁插嘴）
     has_question = any(q in text for q in ["？", "?", "怎么", "如何", "为什么", "为啥", "什么原因", "有没有", "是谁", "啥"])
     if has_question and len(text) >= 4:
         import random
-        # 75% 高概率参与话题讨论
-        return (random.random() < 0.75), False
-
-    # 3. 群里活跃且群友连续聊了 5 句以上未理机器人，适度参与吐槽（35% 概率随性接话）
-    if msg_count_since >= 5 and len(text) >= 4:
-        import random
         return (random.random() < 0.35), False
+
+    # 3. 群里活跃且群友连续聊了 7 句以上未理机器人，适度参与吐槽（15% 极低概率随性接话）
+    if msg_count_since >= 7 and len(text) >= 4:
+        import random
+        return (random.random() < 0.15), False
         
     return False, False
 
@@ -1038,6 +964,49 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
     else:
         logger.warning("[私聊 %d] ⚠️ 私信发送可能异常: %s | 响应: %s", user_id, clean_text[:40], res)
 
+async def generate_agent_command_reply(action_type: str, detail: str = "", is_private: bool = False) -> str:
+    """由大模型根据当前情境临场随机生成拟真执行反馈，杜绝死板模板读条感"""
+    headers = {
+        "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    if ADMIN_MODE == "root":
+        prompt = (
+            f"主人（开发者 life）下达了管理指令：{action_type}，细节：{detail}。\n"
+            f"当前是 root 工作模式，请用专业、干练、利落的工程师口吻临场给出 1 句简明执行确认（10~25字以内，拒绝废话，绝不用句号）："
+        )
+    else:
+        prompt = (
+            f"主人（life）在{'私聊' if is_private else '群里'}下达了管理指令：{action_type}，执行结果细节：{detail}。\n"
+            f"请以大肥鱼/小鲸鱼随性、生动的口吻临场随机给出一句回复（每次措辞自拟，拒绝死板模板，可俏皮、可利落，1 句，15~30字以内，绝不用句号）："
+        )
+
+    payload = {
+        "model": MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": ROOT_SYSTEM_PROMPT if ADMIN_MODE == "root" else SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 50,
+        "temperature": 0.85
+    }
+
+    try:
+        global http_session
+        if http_session is None or http_session.closed:
+            http_session = aiohttp.ClientSession()
+        async with http_session.post(SILICONFLOW_API_URL, headers=headers, json=payload, timeout=8) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                reply = data["choices"][0]["message"]["content"].strip()
+                return remove_trailing_period(reply)
+    except Exception as e:
+        logger.debug("临场生成指令反馈异常: %s", e)
+    
+    # 极简保底（防止网络超时卡壳）
+    return f"已完成 {action_type} ({detail})" if detail else f"已搞定 {action_type}"
+
 # ==================== 管理员快捷指令处理 ====================
 async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is_private: bool, group_id: Optional[int] = None) -> bool:
     """处理管理员快捷指令并汇报结果"""
@@ -1052,18 +1021,20 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
             admin_private_timeline.clear()
             group_history_pool.clear()
             admin_private_history.clear()
-            msg = "已重置所有群及私聊的上下文与历史长记录"
+            reply_text = await generate_agent_command_reply("重置所有上下文", "全部群与私聊历史均已清空", is_private=is_private)
             if is_private:
-                await send_private_message(ws, ADMIN_QQ, msg)
+                await send_private_message(ws, ADMIN_QQ, reply_text)
             else:
-                await send_group_message(ws, group_id, msg)
+                await send_group_message(ws, group_id, reply_text)
             return True
         if is_private:
             admin_private_timeline.clear()
-            await send_private_message(ws, ADMIN_QQ, "已重置私聊上下文")
+            reply_text = await generate_agent_command_reply("重置私聊上下文", "私聊时间线已重置", is_private=True)
+            await send_private_message(ws, ADMIN_QQ, reply_text)
         else:
             group_timelines[group_id].clear()
-            await send_group_message(ws, group_id, f"已重置当前群上下文")
+            reply_text = await generate_agent_command_reply("重置群上下文", f"群 {group_id} 时间线已重置", is_private=False)
+            await send_group_message(ws, group_id, reply_text)
         return True
 
     # 2. /stop - 一键中止所有思考与排队任务
@@ -1080,11 +1051,11 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
                 task.cancel()
                 stopped_count += 1
                 
-        report = f"已中止 {stopped_count} 个进行中的任务"
+        reply_text = await generate_agent_command_reply("中止任务", f"中止了 {stopped_count} 个进行中的任务", is_private=is_private)
         if is_private:
-            await send_private_message(ws, ADMIN_QQ, report)
+            await send_private_message(ws, ADMIN_QQ, reply_text)
         else:
-            await send_group_message(ws, group_id, report)
+            await send_group_message(ws, group_id, reply_text)
         return True
 
     # 3. /compress - 压缩上下文
@@ -1155,21 +1126,21 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
     # 5. /root - 切换到工作模式
     elif cmd == "/root":
         ADMIN_MODE = "root"
-        report = "已切到 root 模式，有什么活直接吩咐"
+        reply_text = await generate_agent_command_reply("切换工作模式", "已切换至 root 专业工程模式", is_private=is_private)
         if is_private:
-            await send_private_message(ws, ADMIN_QQ, report)
+            await send_private_message(ws, ADMIN_QQ, reply_text)
         else:
-            await send_group_message(ws, group_id, report)
+            await send_group_message(ws, group_id, reply_text)
         return True
 
-    # 6. /user - 切换回自然日常模式
+    # 6. /user - 切换回肥鱼娱乐模式
     elif cmd == "/user":
-        ADMIN_MODE = "user"
-        report = "切回普通模式啦，继续摸鱼～"
+        ADMIN_MODE = "normal"
+        reply_text = await generate_agent_command_reply("切换娱乐模式", "已切回日常拟真大肥鱼人设", is_private=is_private)
         if is_private:
-            await send_private_message(ws, ADMIN_QQ, report)
+            await send_private_message(ws, ADMIN_QQ, reply_text)
         else:
-            await send_group_message(ws, group_id, report)
+            await send_group_message(ws, group_id, reply_text)
         return True
 
     return False
@@ -1266,11 +1237,8 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         group_timelines[group_id].append(bot_record)
         group_history_pool[group_id].append(bot_record)
 
-    # 成功发回后，处理追问窗口（每人独立维护专属免 @ 追问）
+    # 成功发回后，更新追问窗口状态
     if target_uid:
-        # 普通真人用户与管理员：开启/刷新专属免 @ 追问窗口
-        user_follow_up_expire[(group_id, target_uid)] = time.time() + FOLLOW_UP_WINDOW
-
         # 异步更新当前群友的记忆与好感度（结合群友发言与机器人回复由 AI 动态判定）
         content_to_analyze = user_text or (timeline[-1]["content"] if timeline else "")
         asyncio.create_task(update_user_memory_async(target_uid, sender_nick, content_to_analyze, group_id=group_id, bot_reply=clean_reply_record))
@@ -1314,27 +1282,14 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
 
     # 解析引用消息
     reply_prefix = await extract_reply_context(ws, event, raw_message)
-    
-    # 提取并解析图片
-    img_urls = extract_image_urls(event, raw_message)
-    img_desc = None
-    if img_urls:
-        img_desc = await describe_images_async(img_urls)
 
     # 清洗掉针对机器人的 @ CQ 码以及其他无关 CQ
     clean_body = re.sub(rf"\[CQ:at,[^\]]*qq={BOT_QQ}[^\]]*\]", "", raw_message)
     clean_body = clean_cq_codes(clean_body).strip()
     # 移除 reply 的 CQ 码残留
     clean_body = re.sub(r"\[CQ:reply,id=-?\d+\]", "", clean_body).strip()
-    
-    # 融合视觉描述
-    if img_desc:
-        if clean_body:
-            clean_body = f"[图片内容: {img_desc}] {clean_body}"
-        else:
-            clean_body = f"[发送了图片: {img_desc}]"
 
-    # 如果用户只 @ 了机器人，没有附带文字也没有图片，给一个默认问候
+    # 如果用户只 @ 了机器人，没有附带文字，给一个默认问候
     if is_at and not clean_body:
         clean_body = "在吗"
     elif not clean_body:
@@ -1471,22 +1426,33 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         if reply_sender and reply_sender != BOT_QQ:
             is_reply_to_other = True
 
-    # 检查是否处于连续对话追问窗口（每人独立维护 60 秒免重复 @）
+    # 检查是否处于连续对话追问窗口（5分钟内免 @ 回答 5 次，有新的 @ 则重置）
     user_conv_key = (group_id, sender_id)
-    user_expire = user_follow_up_expire.get(user_conv_key, 0.0)
+    follow_up_info = user_follow_up_state.get(user_conv_key)
     is_follow_up = False
 
     if is_at_other or is_reply_to_other:
         # 该用户正在明确与群里的其他人对话，主动释放追问态，绝不插话打扰
-        if user_conv_key in user_follow_up_expire:
-            user_follow_up_expire.pop(user_conv_key, None)
+        if user_conv_key in user_follow_up_state:
+            user_follow_up_state.pop(user_conv_key, None)
             logger.info("[群 %d] 用户 %s 明确与他人互动，主动退出追问窗口", group_id, sender_nick)
-    elif now < user_expire:
-        # 该用户在 60 秒专属追问期内发言，无视群内其他人的插话：判定为连续追问
-        # 但如果当前消息已经被显式 @ 判定拦截处理了，则避免重复叠加判定
-        if not is_at:
+    elif is_at or is_reply_to_bot:
+        # 有新的显式 @ 或回复机器人：直接重置为 5 分钟 + 5 次追问配额！
+        user_follow_up_state[user_conv_key] = {
+            "expire": now + FOLLOW_UP_WINDOW,
+            "remain": FOLLOW_UP_MAX_COUNT
+        }
+        logger.info("[群 %d] 用户 %s 触发新 @，追问窗口重置为 %.0f 秒 / %d 次免 @ 配额", group_id, sender_nick, FOLLOW_UP_WINDOW, FOLLOW_UP_MAX_COUNT)
+    elif follow_up_info and now < follow_up_info.get("expire", 0.0):
+        # 处于 5 分钟窗口内，检查剩余次数配额
+        remain_cnt = follow_up_info.get("remain", 0)
+        if remain_cnt > 0:
             is_follow_up = True
-            logger.info("[群 %d] 用户 %s 处于专属追问窗口 (剩余 %.1fs，免重复@)", group_id, sender_nick, user_expire - now)
+            follow_up_info["remain"] = remain_cnt - 1
+            left_secs = follow_up_info["expire"] - now
+            logger.info("[群 %d] 用户 %s 命中免 @ 追问（剩余可用配额 %d 次，窗口剩余 %.1fs）", group_id, sender_nick, remain_cnt - 1, left_secs)
+        else:
+            logger.info("[群 %d] 用户 %s 5 分钟内 5 次免 @ 追问已耗尽，需重新 @ 激活", group_id, sender_nick)
     
     # 如果明确 @ 了别人，即便带了其他触发也不立即回复
     if is_at_other:
@@ -1678,8 +1644,11 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
         await asyncio.sleep(0.5)
         # 被戳一戳时，文字回复前置 @ 对方
         await send_group_message(ws, group_id, reply, at_user_id=user_id)
-        # 戳一戳互动后，开启针对该用户的 60 秒免 @ 专属追问窗口
-        user_follow_up_expire[(group_id, user_id)] = time.time() + FOLLOW_UP_WINDOW
+        # 戳一戳互动后，开启针对该用户的 5 分钟 / 5 次免 @ 追问配额
+        user_follow_up_state[(group_id, user_id)] = {
+            "expire": time.time() + FOLLOW_UP_WINDOW,
+            "remain": FOLLOW_UP_MAX_COUNT
+        }
         # 戳一戳也算亲密互动，异步微调好感度
         asyncio.create_task(update_user_memory_async(user_id, nick, "戳了戳小鲸鱼", group_id=group_id))
 
@@ -1702,21 +1671,9 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         
     reply_prefix = await extract_reply_context(ws, event, raw_message)
     
-    # 私聊提取并解析图片
-    img_urls = extract_image_urls(event, raw_message)
-    img_desc = None
-    if img_urls:
-        img_desc = await describe_images_async(img_urls)
-
     clean_body = clean_cq_codes(raw_message).strip()
     clean_body = re.sub(r"\[CQ:reply,id=-?\d+\]", "", clean_body).strip()
     
-    if img_desc:
-        if clean_body:
-            clean_body = f"[图片内容: {img_desc}] {clean_body}"
-        else:
-            clean_body = f"[发送了图片: {img_desc}]"
-
     if not clean_body:
         return
         
