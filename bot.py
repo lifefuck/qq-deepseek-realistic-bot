@@ -71,19 +71,26 @@ logging.basicConfig(
 )
 logger = logging.getLogger("DeepSeekBot")
 
-# ==================== 群友持久化记忆与好感度 (Memory) ====================
+# ==================== 群友持久化记忆与好感度 (按群隔离) ====================
 MEMORY_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_memories.json")
-# 数据结构: str(user_id) -> {"nickname": str, "favor": int, "traits": str, "notes": list[str], "updated_at": float}
-user_memories: Dict[str, dict] = {}
+# 数据结构: str(group_id) -> { str(user_id) -> {"nickname": str, "favor": int, "traits": str, "notes": list[str], "updated_at": float} }
+# 私聊的 group_id 为 "private"
+user_memories: Dict[str, Dict[str, dict]] = {}
 
 def load_user_memories():
-    """从磁盘加载群友记忆库"""
+    """从磁盘加载按群隔离的群友记忆库"""
     global user_memories
     if os.path.exists(MEMORY_FILE_PATH):
         try:
             with open(MEMORY_FILE_PATH, "r", encoding="utf-8") as f:
-                user_memories = json.load(f)
-            logger.info("已成功加载 %d 位群友的持久化记忆！", len(user_memories))
+                raw_data = json.load(f)
+                # 兼容旧版本平铺结构，如果是平铺则自动迁移或初始化
+                if raw_data and not any(isinstance(v, dict) and any(isinstance(sub_v, dict) for sub_v in v.values()) for v in raw_data.values() if isinstance(v, dict)):
+                    user_memories = {"default": raw_data}
+                else:
+                    user_memories = raw_data
+            total_users = sum(len(users) for users in user_memories.values() if isinstance(users, dict))
+            logger.info("已成功加载按群隔离记忆库，共 %d 个分区，%d 位群友档案！", len(user_memories), total_users)
         except Exception as e:
             logger.error("加载群友记忆库失败: %s", e)
             user_memories = {}
@@ -100,12 +107,18 @@ def save_user_memories():
     except Exception as e:
         logger.error("保存群友记忆库失败: %s", e)
 
-def get_or_create_user_memory(user_id: int, nickname: str = "") -> dict:
-    """获取或初始化群友记忆"""
+def get_or_create_user_memory(user_id: int, nickname: str = "", group_id: Optional[int] = None) -> dict:
+    """获取或初始化群友记忆（按群隔离）"""
+    gid_key = str(group_id) if group_id else "private"
+    if gid_key not in user_memories or not isinstance(user_memories[gid_key], dict):
+        user_memories[gid_key] = {}
+        
+    group_scope = user_memories[gid_key]
     uid_str = str(user_id)
     is_admin_user = (int(user_id) == ADMIN_QQ)
-    if uid_str not in user_memories:
-        user_memories[uid_str] = {
+    
+    if uid_str not in group_scope:
+        group_scope[uid_str] = {
             "nickname": nickname or str(user_id),
             "favor": 100 if is_admin_user else 50,  # 主人默认满分好感度
             "traits": "主人兼创造者" if is_admin_user else "普通群友",
@@ -113,36 +126,55 @@ def get_or_create_user_memory(user_id: int, nickname: str = "") -> dict:
             "updated_at": time.time()
         }
     if is_admin_user:
-        user_memories[uid_str]["traits"] = "主人兼创造者"
-        if user_memories[uid_str].get("favor", 0) < 95:
-            user_memories[uid_str]["favor"] = 100
-    if nickname and user_memories[uid_str].get("nickname") != nickname:
-        user_memories[uid_str]["nickname"] = nickname
-    return user_memories[uid_str]
+        group_scope[uid_str]["traits"] = "主人兼创造者"
+        if group_scope[uid_str].get("favor", 0) < 95:
+            group_scope[uid_str]["favor"] = 100
+    if nickname and group_scope[uid_str].get("nickname") != nickname:
+        group_scope[uid_str]["nickname"] = nickname
+    return group_scope[uid_str]
 
-def clear_single_user_memory(target_uid: int) -> bool:
-    """清除单个群友的记忆"""
+def clear_single_user_memory(target_uid: int, group_id: Optional[int] = None) -> bool:
+    """清除单个群或全局的群友记忆"""
     uid_str = str(target_uid)
-    if uid_str in user_memories:
-        del user_memories[uid_str]
+    cleared = False
+    if group_id:
+        gid_key = str(group_id)
+        if gid_key in user_memories and uid_str in user_memories[gid_key]:
+            del user_memories[gid_key][uid_str]
+            cleared = True
+    else:
+        # 未指定群时在所有分区清理该用户
+        for gid_key, group_scope in user_memories.items():
+            if isinstance(group_scope, dict) and uid_str in group_scope:
+                del group_scope[uid_str]
+                cleared = True
+    if cleared:
         save_user_memories()
-        return True
-    return False
+    return cleared
+
+def clear_group_all_memories(group_id: int) -> int:
+    """清空指定群的所有记忆档案"""
+    gid_key = str(group_id)
+    if gid_key in user_memories:
+        count = len(user_memories[gid_key])
+        user_memories[gid_key] = {}
+        save_user_memories()
+        return count
+    return 0
 
 def clear_all_user_memories() -> int:
-    """清除所有记忆"""
+    """清除所有群的记忆（保留结构）"""
     global user_memories
-    count = len(user_memories)
+    count = sum(len(users) for users in user_memories.values() if isinstance(users, dict))
     user_memories = {}
     save_user_memories()
     return count
 
-async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snippet: str):
-    """根据群友输入内容异步微调群友记忆与好感度（轻量后台执行，不阻塞即时回复）"""
+async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snippet: str, group_id: Optional[int] = None):
+    """根据群友输入内容异步微调群友记忆与好感度（按群隔离）"""
     if user_id == BOT_QQ:
-        # 机器人自己不参与好感度分析
         return
-    mem = get_or_create_user_memory(user_id, sender_nick)
+    mem = get_or_create_user_memory(user_id, sender_nick, group_id=group_id)
     
     # 规则快速判定与好感度微调（分析群友发送的话）
     lower = dialogue_snippet.lower()
@@ -533,7 +565,7 @@ async def extract_reply_context(ws: aiohttp.ClientWebSocketResponse, event: dict
     return None
 
 # ==================== LLM 调用 ====================
-async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False, is_private: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, sender_nick: str = "") -> Optional[str]:
+async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False, is_private: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, sender_nick: str = "", group_id: Optional[int] = None) -> Optional[str]:
     """请求 SiliconFlow DeepSeek-V3 模型"""
     headers = {
         "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
@@ -545,7 +577,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
     # 群友记忆与好感度上下文注入
     user_mem_prompt = ""
     if target_uid and target_uid != BOT_QQ:
-        mem = get_or_create_user_memory(target_uid, sender_nick)
+        mem = get_or_create_user_memory(target_uid, sender_nick, group_id=group_id)
         notes_str = "、".join(mem.get("notes", [])) if mem.get("notes") else "初次接触"
         user_mem_prompt = f"【当前交谈群友信息】：昵称: {mem.get('nickname')}, 好感度: {mem.get('favor')}/100, 历史印象: {notes_str}\n"
 
@@ -817,8 +849,18 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
     global ADMIN_MODE
     cmd = cmd.strip()
     
-    # 1. /new - 重置上下文
-    if cmd == "/new":
+    # 1. /new - 重置上下文 (支持 /new all 重置所有群)
+    if cmd.startswith("/new"):
+        args = cmd.split()
+        if len(args) > 1 and args[1].lower() in ["all", "所有", "全部"]:
+            group_timelines.clear()
+            admin_private_timeline.clear()
+            msg = "已重置所有群及私聊的上下文时间线"
+            if is_private:
+                await send_private_message(ws, ADMIN_QQ, msg)
+            else:
+                await send_group_message(ws, group_id, msg)
+            return True
         if is_private:
             admin_private_timeline.clear()
             await send_private_message(ws, ADMIN_QQ, "已重置私聊上下文")
@@ -927,17 +969,20 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
     return False
 
 async def handle_memory_summary_command(ws: aiohttp.ClientWebSocketResponse, group_id: Optional[int] = None, user_id: Optional[int] = None):
-    """公开指令: /memory 或 /memary 生成群友记忆库与好感度总结（所有人可用）"""
-    if not user_memories:
-        report = "当前暂无群友记忆记录"
+    """公开指令: /memory 或 /memary 生成当前群友记忆库与好感度总结（按群隔离）"""
+    gid_key = str(group_id) if group_id else "private"
+    current_scope = user_memories.get(gid_key, {})
+    if not current_scope:
+        report = "当前群聊暂无群友记忆记录" if group_id else "私聊暂无记忆记录"
     else:
-        lines = [f"群友记忆档案（共 {len(user_memories)} 位）："]
-        for uid, info in user_memories.items():
+        title = f"本群群友记忆档案（共 {len(current_scope)} 位）：" if group_id else f"私聊记忆档案（共 {len(current_scope)} 位）："
+        lines = [title]
+        for uid, info in current_scope.items():
             nick = info.get("nickname", uid)
             favor = info.get("favor", 50)
             notes = "、".join(info.get("notes", [])) if info.get("notes") else "无特殊印象"
             # Galgame 好感度评级
-            admin_suffix = " (管理员)" if uid == str(ADMIN_QQ) else ""
+            admin_suffix = " (主人)" if uid == str(ADMIN_QQ) else ""
             if favor >= 80:
                 status = "💖恋慕/宠溺"
             elif favor >= 65:
@@ -975,7 +1020,7 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         running_tasks.add(current_task)
         
     try:
-        reply = await call_deepseek(dialogue_text, is_at=is_at, is_admin=is_admin, is_private=False, is_mention=is_mention, target_uid=target_uid, sender_nick=sender_nick)
+        reply = await call_deepseek(dialogue_text, is_at=is_at, is_admin=is_admin, is_private=False, is_mention=is_mention, target_uid=target_uid, sender_nick=sender_nick, group_id=group_id)
     finally:
         if current_task:
             running_tasks.discard(current_task)
@@ -1018,7 +1063,7 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         user_follow_up_expire[(group_id, target_uid)] = time.time() + FOLLOW_UP_WINDOW
         # 异步更新当前群友的记忆与好感度（使用群友刚才实际说的内容判断）
         content_to_analyze = user_text or (timeline[-1]["content"] if timeline else "")
-        asyncio.create_task(update_user_memory_async(target_uid, sender_nick, content_to_analyze))
+        asyncio.create_task(update_user_memory_async(target_uid, sender_nick, content_to_analyze, group_id=group_id))
 
 async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict):
     """群消息主处理流水线"""
@@ -1106,9 +1151,9 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             m_clear = re.search(r"(?:memory|memary|记忆|档案)?\s*(?:清除|删掉|清空|重置)\s*(?:用户|群友)?\s*(\d{5,11})", clean_body, re.IGNORECASE)
         if m_clear:
             target_qq = int(m_clear.group(1))
-            cleared = clear_single_user_memory(target_qq)
+            cleared = clear_single_user_memory(target_qq, group_id=group_id)
             if cleared:
-                report = f"已清除群友 (QQ {target_qq}) 的记忆档案"
+                report = f"已清除本群群友 (QQ {target_qq}) 的记忆档案"
             else:
                 report = f"记忆库中暂无 (QQ {target_qq}) 的记录"
             await send_group_message(ws, group_id, report, is_command_report=True)
@@ -1136,7 +1181,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         if m_delta:
             is_sub = any(s in op_sign for s in ["减", "扣", "降低", "跌", "下降", "-"])
             actual_delta = -delta_val if is_sub else delta_val
-            mem = get_or_create_user_memory(target_qq)
+            mem = get_or_create_user_memory(target_qq, group_id=group_id)
             old_f = mem.get("favor", 50)
             new_f = max(0, min(100, old_f + actual_delta))
             mem["favor"] = new_f
@@ -1156,7 +1201,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
                 # 倒序形式: group(1)是数值, group(2)是QQ
                 new_favor = max(0, min(100, int(m_favor.group(1))))
                 target_qq = int(m_favor.group(2))
-                mem = get_or_create_user_memory(target_qq)
+                mem = get_or_create_user_memory(target_qq, group_id=group_id)
                 mem["favor"] = new_favor
                 mem["updated_at"] = time.time()
                 save_user_memories()
@@ -1166,7 +1211,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         if m_favor:
             target_qq = int(m_favor.group(1))
             new_favor = max(0, min(100, int(m_favor.group(2))))
-            mem = get_or_create_user_memory(target_qq)
+            mem = get_or_create_user_memory(target_qq, group_id=group_id)
             mem["favor"] = new_favor
             mem["updated_at"] = time.time()
             save_user_memories()
@@ -1412,7 +1457,7 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
         # 戳一戳互动后，开启针对该用户的 60 秒免 @ 专属追问窗口
         user_follow_up_expire[(group_id, user_id)] = time.time() + FOLLOW_UP_WINDOW
         # 戳一戳也算亲密互动，异步微调好感度
-        asyncio.create_task(update_user_memory_async(user_id, nick, "戳了戳小鲸鱼"))
+        asyncio.create_task(update_user_memory_async(user_id, nick, "戳了戳小鲸鱼", group_id=group_id))
 
     # 戳回去！调用 OneBot 11 group_poke 动作回戳对方
     try:
@@ -1470,9 +1515,9 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
             m_clear = re.search(r"(?:memory|memary|记忆|档案)?\s*(?:清除|删掉|清空|重置)\s*(?:用户|群友)?\s*(\d{5,11})", clean_body, re.IGNORECASE)
         if m_clear:
             target_qq = int(m_clear.group(1))
-            cleared = clear_single_user_memory(target_qq)
+            cleared = clear_single_user_memory(target_qq, group_id=group_id)
             if cleared:
-                report = f"已清除群友 (QQ {target_qq}) 的记忆档案"
+                report = f"已清除本群群友 (QQ {target_qq}) 的记忆档案"
             else:
                 report = f"记忆库中暂无 (QQ {target_qq}) 的记录"
             await send_private_message(ws, ADMIN_QQ, report, is_command_report=True)
@@ -1500,7 +1545,7 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         if m_delta:
             is_sub = any(s in op_sign for s in ["减", "扣", "降低", "跌", "下降", "-"])
             actual_delta = -delta_val if is_sub else delta_val
-            mem = get_or_create_user_memory(target_qq)
+            mem = get_or_create_user_memory(target_qq, group_id=group_id)
             old_f = mem.get("favor", 50)
             new_f = max(0, min(100, old_f + actual_delta))
             mem["favor"] = new_f
@@ -1518,7 +1563,7 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
             if m_favor:
                 new_favor = max(0, min(100, int(m_favor.group(1))))
                 target_qq = int(m_favor.group(2))
-                mem = get_or_create_user_memory(target_qq)
+                mem = get_or_create_user_memory(target_qq, group_id=group_id)
                 mem["favor"] = new_favor
                 mem["updated_at"] = time.time()
                 save_user_memories()
@@ -1528,7 +1573,7 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         if m_favor:
             target_qq = int(m_favor.group(1))
             new_favor = max(0, min(100, int(m_favor.group(2))))
-            mem = get_or_create_user_memory(target_qq)
+            mem = get_or_create_user_memory(target_qq, group_id=group_id)
             mem["favor"] = new_favor
             mem["updated_at"] = time.time()
             save_user_memories()
