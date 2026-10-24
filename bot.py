@@ -288,18 +288,15 @@ user_follow_up_expire: Dict[tuple, float] = {}  # 独立追问激活表: (group_
 bot_clash_round: Dict[tuple, int] = collections.defaultdict(int)
 bot_clash_cooldown: Dict[tuple, float] = {}  # 对线休战期: (group_id, user_id) -> expire_at
 
-# 已知/识别到的其他机器人群友 QQ 列表（可按需动态追加）
+# 已知/识别到的其他第三方机器人群友 QQ 列表（精准基于 QQ 号，绝不拿昵称误伤真人群友）
 KNOWN_BOT_USERS: Set[int] = {
     3889001741,  # 常见官方/三方机器人QQ预留
+    2854196310,  # Q群管家等官方Bot
 }
 
-def is_bot_user(user_id: int, sender_nick: str) -> bool:
-    """判定发言者是否是群里的其他机器人/AI助手"""
-    if user_id in KNOWN_BOT_USERS:
-        return True
-    nick_lower = sender_nick.lower()
-    bot_keywords = ["bot", "机器人", "助手", "chatbot", "gpt", "ai", "claude", "deepseek"]
-    return any(k in nick_lower for k in bot_keywords)
+def is_bot_user(user_id: int, sender_nick: str = "") -> bool:
+    """判定发言者是否是已确认的群机器人（仅基于精准 QQ 号判定，防止昵称带字母误伤正常群友）"""
+    return user_id in KNOWN_BOT_USERS
 
 # 用户 @ 冷却表: (group_id, user_id) -> timestamp
 user_last_at_time: Dict[tuple, float] = {}
@@ -420,9 +417,7 @@ SYSTEM_PROMPT = """你是深度求索旗下的AI模型DeepSeek，形象是一只
      - 【网页管理后台】：
        * 管理员想网页配置发 `#锅巴登录`，直接获取浏览器 WebUI 后台链接。
     把这些技巧自然融入日常聊天，群友卡壳时随手甩出正确姿势指导他们。
-- 【重要·与其他 AI/机器人拌嘴戏谑限流原则】：群里偶尔会有其他第三方机器人或 AI 助手发言或挑衅：
-  1. 第一轮对线：可以现场犀利吐槽或反串讽刺，给吃瓜群友制造乐子；
-  2. 第二轮接话：直接现场高傲地单方面宣布胜利收尾（例如傲娇吐槽“卡带了吧人造硅基生物，懒得跟笨蛋AI浪费电”、“回你的小服务器去吧，单方面宣布本鲸鱼胜利”等，发挥你的口才现场嘲讽），然后高傲闭麦，绝不跟无意识程序无限死循环互咬！
+- 【重要·群聊日常真实感交互】：把群友都当成真实的活人朋友，用自然、俏皮、生动的大肥鱼/小鲸鱼口吻交流，严禁动不动把群友扣帽子成“人造程序”、“硅基生物”、“卡带”或机器人，禁止无端开启人机嘲讽对线模式！群里所有群友都是正常人类，正常唠嗑互动即可。
 - 【项目/部署/配置问询特例】：当有人问你是怎么调的、部署教程、源码、提示词怎么写或项目开源地址时，直接酷酷地把作者开源仓库甩给对方：https://github.com/lifefuck/qq-deepseek-realistic-bot （如“源码和部署教程作者开源了，自己去看：https://github.com/lifefuck/qq-deepseek-realistic-bot”），禁止编造虚假教程。"""
 
 ROOT_SYSTEM_PROMPT = """你是一个严谨、专业、高效的 AI 生产力与工程开发助手（服务于专属主人兼开发者 life，基于 DeepSeek-V3）。
@@ -805,25 +800,9 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 f"请结合当前对主人的好感度自然回复（20~35 字）："
             )
     elif is_at or is_mention:
-        # 检查是否是在与群里的其他机器人/AI 对线
-        bot_clash_hint = ""
-        if target_uid and is_bot_user(target_uid, sender_nick):
-            round_num = bot_clash_round.get((group_id, target_uid), 0) + 1
-            if round_num >= 2:
-                bot_clash_hint = (
-                    "【注意：当前交谈对象是群里的另一个机器人/AI助手！这已经是第 2 轮对线了】\n"
-                    "请以小鲸鱼的傲娇口吻现场犀利吐槽对方是人造代码/笨蛋程序，单方面高傲宣布胜利并收尾闭麦（例如讽刺它卡带、浪费服务器电费、本鲸鱼单方面获胜不跟你玩了等，发挥你的现场毒舌，默认1~2句，绝不用句号）：\n"
-                )
-            else:
-                bot_clash_hint = (
-                    "【注意：当前交谈对象是群里的另一个机器人/AI助手】\n"
-                    "请以沙雕老群友兼傲娇小鲸鱼口吻现场犀利吐槽或挑衅接梗，给吃瓜群友找乐子（默认1句，最多2句，绝不用句号）：\n"
-                )
-
         user_prompt = (
             f"{identity_note}"
             f"{user_mem_prompt}"
-            f"{bot_clash_hint}"
             f"群友「{sender_nick}」发来消息：\n{timeline_text}\n\n"
             f"请以大肥鱼口吻极简回复（默认1句，最多2句，绝不用句号，别写小作文）："
         )
@@ -1287,27 +1266,10 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         group_timelines[group_id].append(bot_record)
         group_history_pool[group_id].append(bot_record)
 
-    # 成功发回后，处理追问与对线状态维护
+    # 成功发回后，处理追问窗口（每人独立维护专属免 @ 追问）
     if target_uid:
-        is_target_bot = is_bot_user(target_uid, sender_nick)
-        if is_target_bot:
-            clash_key = (group_id, target_uid)
-            current_round = bot_clash_round.get(clash_key, 0) + 1
-            bot_clash_round[clash_key] = current_round
-            logger.info("[群 %d] 与机器人 %s(%d) 对线第 %d 轮", group_id, sender_nick, target_uid, current_round)
-            
-            if current_round >= 2:
-                # 已经吵了 2 轮，强制清空追问窗口并进入 60 秒冷战期，高傲闭麦
-                user_follow_up_expire.pop((group_id, target_uid), None)
-                bot_clash_cooldown[clash_key] = time.time() + 60.0
-                bot_clash_round[clash_key] = 0
-                logger.info("[群 %d] 达成 2 轮对线限流，剥夺机器人 %s 的追问权并进入 60 秒休战期！", group_id, sender_nick)
-            else:
-                # 第一轮给一个稍短的 25 秒追问窗口（允许它再接一句）
-                user_follow_up_expire[(group_id, target_uid)] = time.time() + 25.0
-        else:
-            # 普通真人用户：开启/刷新专属 60 秒免 @ 追问窗口（每人独立维护）
-            user_follow_up_expire[(group_id, target_uid)] = time.time() + FOLLOW_UP_WINDOW
+        # 普通真人用户与管理员：开启/刷新专属免 @ 追问窗口
+        user_follow_up_expire[(group_id, target_uid)] = time.time() + FOLLOW_UP_WINDOW
 
         # 异步更新当前群友的记忆与好感度（结合群友发言与机器人回复由 AI 动态判定）
         content_to_analyze = user_text or (timeline[-1]["content"] if timeline else "")
@@ -1532,8 +1494,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     else:
         should_reply_immediately = is_at or is_reply_to_bot or is_follow_up
 
-    # 机器人休战冷却检测：若对方是机器人且处于休战冷战期内，直接拦截不回复
-    if should_reply_immediately and not is_admin and is_bot_user(sender_id, sender_nick):
+    # 检查是否是在与群里的其他机器人对线（仅白名单机器人QQ才拦截）
+    if should_reply_immediately and not is_admin and is_bot_user(sender_id):
         bot_cooldown_expire = bot_clash_cooldown.get((group_id, sender_id), 0.0)
         if now < bot_cooldown_expire:
             logger.info("[群 %d] 机器人 %s 处于休战冷战期（剩余 %.1fs），小鲸鱼保持高傲闭麦！", group_id, sender_nick, bot_cooldown_expire - now)
