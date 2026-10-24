@@ -179,28 +179,30 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
     favor_delta = 0
     new_note = ""
     
-    # 1. 强烈爱慕 / 亲昵 / 表白 (+3~+5)
-    if any(w in lower for w in ["爱死你", "做我老婆", "做我女朋", "亲一个", "最喜欢你", "小鲸鱼最棒", "抱紧", "贴贴"]):
+    # 1. 恶意攻击 / 挑衅 / 对线吵架 / 辱骂 (-2~-4，优先判定)
+    if any(w in lower for w in [
+        "急了", "破防", "大肥鱼", "肥鱼", "死鱼", "臭鱼", "清蒸", "红烧", "炖鱼", "同类相食",
+        "傻逼", "煞笔", "sb", "脑瘫", "脑残", "弱智", "唐氏", "蠢货", "真蠢", "废物", "垃圾", "人工智障",
+        "滚", "爬", "闭嘴", "打一顿", "打死", "找抽", "就骂你", "装什么", "恶心", "菜逼", "有病"
+    ]):
+        favor_delta -= 3
+        new_note = "曾恶意调侃、挑衅或对线吵架"
+    # 2. 强烈爱慕 / 亲昵 / 表白 (+3~+5)
+    elif any(w in lower for w in ["爱死你", "做我老婆", "做我女朋", "亲一个", "最喜欢你", "小鲸鱼最棒", "抱紧", "贴贴"]):
         favor_delta += 4
         new_note = "对小鲸鱼说过甜言蜜语/深度表白"
     elif any(w in lower for w in ["喜欢", "表白", "可爱", "老婆", "亲亲", "对象", "宝", "乖", "摸摸", "揉揉"]):
         favor_delta += 2
         new_note = "日常向小鲸鱼示好夸奖"
-    # 2. 友好互动 / 投喂 / 夸奖 / 感谢 (+1~+2)
+    # 3. 友好互动 / 投喂 / 夸奖 / 感谢 (+1~+2)
     elif any(w in lower for w in ["谢谢", "辛苦", "厉害", "真棒", "给糖吃", "请客", "好聪明", "夸夸", "投喂", "算力饼干", "内存条", "零食"]):
         favor_delta += 2
         new_note = "请客投喂零食并礼貌互动"
-    # 3. 互动戳一戳 (+1)
+    # 4. 互动戳一戳 (+1)
     elif "戳了戳" in dialogue_snippet:
         favor_delta += 1
         new_note = "喜欢戳小鲸鱼尾巴互动"
-    # 4. 恶意攻击 / 严重挑衅 (-3~-4)
-    elif any(w in lower for w in ["人工智障", "打一顿", "红烧", "清蒸", "炖鱼", "真蠢", "废物", "垃圾"]):
-        favor_delta -= 3
-        new_note = "曾恶意调侃或挑衅"
-    # 5. 日常普通互动只要接话也给微调 (+1，鼓励聊天)
-    elif len(lower) >= 4 and not lower.startswith("/"):
-        favor_delta += 1
+    # 5. 普通日常水群：好感度保持不变，坚决不无脑加分
         
     mem["favor"] = max(0, min(100, mem["favor"] + favor_delta))
     if new_note and new_note not in mem["notes"]:
