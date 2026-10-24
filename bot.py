@@ -1128,6 +1128,10 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     elif not clean_body:
         return
 
+    # 游戏指令或前缀为 # / / 的非 AI 指令，交给云崽等扩展插件处理，AI 机器人主动忽略避免抢答
+    if clean_body.startswith(("#", "井")):
+        return
+
     # 公开指令检测: /memory 或 /memary（所有人均可查看好感度与记忆总结）
     if clean_body.startswith(("/memary", "/memory")):
         await handle_memory_summary_command(ws, group_id=group_id)
