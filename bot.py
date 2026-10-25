@@ -314,10 +314,10 @@ AVATARS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets",
 def get_status_avatar_b64(emotion: str = "angry") -> Optional[str]:
     """根据大肥鱼情绪获取状态立绘 base64 (angry / sleep / shy / think)"""
     mapping = {
-        "angry": "01_生气鼓鼓_大头.png",
-        "sleep": "02_睡衣晚安_大头.png",
-        "shy": "03_脸红害羞_大头.png",
-        "think": "04_好奇思考_大头.png"
+        "angry": "01_生气鼓鼓_大头.webp",
+        "sleep": "02_睡衣晚安_大头.webp",
+        "shy": "03_脸红害羞_大头.webp",
+        "think": "04_好奇思考_大头.webp"
     }
     fname = mapping.get(emotion)
     if not fname:
@@ -602,7 +602,7 @@ def get_random_meme_b64(text_hint: str = "") -> Optional[str]:
     
     files = [
         f for f in os.listdir(cat_dir)
-        if f.lower().endswith(('.png', '.jpg', '.jpeg', '.gif'))
+        if f.lower().endswith(('.webp', '.jpg', '.jpeg', '.gif'))
         and os.path.getsize(os.path.join(cat_dir, f)) <= 1200 * 1024  # 限制在 1.2MB 以内，防止大图撑爆 WebSocket
     ]
     if not files:
