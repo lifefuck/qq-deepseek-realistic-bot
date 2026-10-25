@@ -29,9 +29,9 @@ import games
 import connectors
 
 # ==================== 基础配置 ====================
-NAPCAT_WS_URL = "ws://127.0.0.1:3001"
-BOT_QQ = 1000000000
-ADMIN_QQ = 1000000001            # 最高超级管理员 (life)
+NAPCAT_WS_URL = os.environ.get("NAPCAT_WS_URL", "ws://127.0.0.1:3001")
+BOT_QQ = int(os.environ.get("BOT_QQ", "1000000000"))
+ADMIN_QQ = int(os.environ.get("ADMIN_QQ", "1000000001"))            # 最高超级管理员 (life)
 
 ALLOWED_GROUPS: Set[int] = {
     123456789,
@@ -40,8 +40,8 @@ ALLOWED_GROUPS: Set[int] = {
     123456786,
 }
 
-SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
-SILICONFLOW_API_KEY = "sk-placeholder-redacted"
+SILICONFLOW_API_URL = os.environ.get("DEEPSEEK_API_URL", "https://api.siliconflow.cn/v1/chat/completions")
+SILICONFLOW_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-placeholder-redacted")
 MODEL_NAME = "deepseek-ai/DeepSeek-V3"
 
 # 行为与节奏参数
