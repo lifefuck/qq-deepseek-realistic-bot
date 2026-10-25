@@ -348,20 +348,6 @@ group_debounce_tasks: Dict[int, Optional[asyncio.Task]] = {}
 # 规则：5分钟内免 @ 连续追问最多 5 次；若有新的 @，重置为 5 分钟 + 5 次
 user_follow_up_state: Dict[tuple, Dict[str, any]] = {}
 
-# 机器人对线管理：记录与其它 AI / 机器人连续吵架轮次 (group_id, user_id) -> count
-bot_clash_round: Dict[tuple, int] = collections.defaultdict(int)
-bot_clash_cooldown: Dict[tuple, float] = {}  # 对线休战期: (group_id, user_id) -> expire_at
-
-# 已知/识别到的其他第三方机器人群友 QQ 列表（精准基于 QQ 号，绝不拿昵称误伤真人群友）
-KNOWN_BOT_USERS: Set[int] = {
-    3889001741,  # 常见官方/三方机器人QQ预留
-    2854196310,  # Q群管家等官方Bot
-}
-
-def is_bot_user(user_id: int, sender_nick: str = "") -> bool:
-    """判定发言者是否是已确认的群机器人（仅基于精准 QQ 号判定，防止昵称带字母误伤正常群友）"""
-    return user_id in KNOWN_BOT_USERS
-
 # 用户 @ 冷却表: (group_id, user_id) -> timestamp
 user_last_at_time: Dict[tuple, float] = {}
 
@@ -1998,13 +1984,6 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         should_reply_immediately = False
     else:
         should_reply_immediately = is_at or is_reply_to_bot or is_follow_up
-
-    # 检查是否是在与群里的其他机器人对线（仅白名单机器人QQ才拦截）
-    if should_reply_immediately and not is_admin and is_bot_user(sender_id):
-        bot_cooldown_expire = bot_clash_cooldown.get((group_id, sender_id), 0.0)
-        if now < bot_cooldown_expire:
-            logger.info("[群 %d] 机器人 %s 处于休战冷战期（剩余 %.1fs），小鲸鱼保持高傲闭麦！", group_id, sender_nick, bot_cooldown_expire - now)
-            return
 
     # 1. 直接呼叫模式（@、引用机器人 或 专属追问中）：立即触发响应
     if should_reply_immediately:
