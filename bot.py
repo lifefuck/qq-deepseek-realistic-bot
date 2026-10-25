@@ -599,10 +599,121 @@ async def send_meme_message(ws: aiohttp.ClientWebSocketResponse, group_id: Optio
     except Exception as e:
         logger.warning("发送表情包失败: %s", e)
 
-# ==================== 大肥鱼专属表情包系统 ====================
+# ==================== 大肥鱼专属表情包与消息清洗系统 ====================
+def parse_card_content(text: str) -> str:
+    """从分享卡片段（json / xml / share）里抽标题、描述、BV号与链接，避免被一刀切抹掉"""
+    def _parse_card_match(m):
+        body = m.group(2)
+        titles = []
+        bvs = []
+        
+        # 提取 BV 号
+        bv_match = re.search(r'(BV[0-9A-Za-z]{10})', body)
+        if bv_match:
+            bvs.append(bv_match.group(1))
+            
+        # 寻找 JSON data/content
+        m_val = re.search(r'(?:data|content)=([\s\S]+)', body)
+        raw_val = m_val.group(1).strip() if m_val else ""
+        if raw_val:
+            # 兼容 HTML/CQ 转义
+            unescaped = (
+                raw_val.replace("&#44;", ",")
+                .replace("&amp;", "&")
+                .replace("&#91;", "[")
+                .replace("&#93;", "]")
+                .replace("&quot;", '"')
+            )
+            # 有时整个 JSON 外部被双引号包裹
+            if unescaped.startswith('"') and unescaped.endswith('"'):
+                try:
+                    unescaped = json.loads(unescaped)
+                except Exception:
+                    unescaped = unescaped[1:-1]
+            try:
+                obj = json.loads(unescaped) if isinstance(unescaped, str) else unescaped
+                def walk(o):
+                    if isinstance(o, dict):
+                        for k, v in o.items():
+                            if isinstance(v, str):
+                                if k.lower() in ("title", "desc", "summary", "prompt") and v.strip():
+                                    titles.append(v.strip())
+                            else:
+                                walk(v)
+                    elif isinstance(o, list):
+                        for item in o:
+                            walk(item)
+                walk(obj)
+            except Exception:
+                pass
+                
+        if not titles:
+            for key in ["title", "desc", "summary"]:
+                for m_t in re.finditer(rf'{key}=["\']?([^"\'\],]+)', body, re.IGNORECASE):
+                    val = m_t.group(1).replace("&#44;", ",").replace("&amp;", "&").strip()
+                    if val and val not in titles:
+                        titles.append(val)
+        
+        header = "[分享视频卡片]" if bvs else "[分享卡片]"
+        title_str = " · ".join(list(dict.fromkeys(titles))[:2]) if titles else "（网页/卡片分享）"
+        extra = f" (BV号: {bvs[0]})" if bvs else ""
+        return f"{header} {title_str}{extra}"
+
+    return re.sub(r"\[CQ:(share|json|xml),([\s\S]*?)\]", _parse_card_match, text)
+
+async def expand_forward_messages(ws: aiohttp.ClientWebSocketResponse, text: str) -> str:
+    """识别合并转发 CQ 码 [CQ:forward,id=xxx]，向 NapCat 拉取详情并展开成多行聊天记录"""
+    m = re.search(r"\[CQ:forward,id=([^\]]+)\]", text)
+    if not m:
+        return text
+    fid = m.group(1)
+    
+    # 尝试拉取合并转发节点
+    res = await call_action(ws, "get_forward_msg", {"message_id": fid}, timeout=2.0)
+    if not res or res.get("status") != "ok":
+        res = await call_action(ws, "get_forward_msg", {"id": fid}, timeout=2.0)
+        
+    messages = []
+    if res and isinstance(res.get("data"), dict):
+        messages = res["data"].get("messages") or []
+    elif res and isinstance(res.get("data"), list):
+        messages = res["data"]
+        
+    if not messages:
+        return text.replace(m.group(0), "[合并转发聊天记录]")
+        
+    lines = [f"[合并转发聊天记录 · 共 {len(messages)} 条]"]
+    for msg_node in messages[:10]:  # 截取前 10 条避免过长
+        sender = (msg_node.get("sender") or {}).get("nickname") or (msg_node.get("sender") or {}).get("card") or "某人"
+        raw_msg = msg_node.get("raw_message") or msg_node.get("content") or msg_node.get("message") or ""
+        if isinstance(raw_msg, list):
+            segs = []
+            for seg in raw_msg:
+                if isinstance(seg, dict):
+                    if seg.get("type") == "text":
+                        segs.append(seg.get("data", {}).get("text", ""))
+                    elif seg.get("type") == "image":
+                        segs.append("[图片]")
+                    elif seg.get("type") == "face":
+                        segs.append("[表情]")
+                    elif seg.get("type") in ("json", "xml", "share"):
+                        segs.append("[卡片]")
+                elif isinstance(seg, str):
+                    segs.append(seg)
+            raw_msg = "".join(segs)
+        clean_node_text = clean_cq_codes(str(raw_msg)).strip()
+        if clean_node_text:
+            lines.append(f"  {sender}: {clean_node_text[:120]}")
+            
+    expanded_text = "\n".join(lines)
+    return text.replace(m.group(0), expanded_text)
+
 def clean_cq_codes(text: str) -> str:
-    """去除表情、图片等大段 CQ 码，保留纯文本"""
-    text = re.sub(r"\[CQ:(image|record|video|share|json|xml)[^\]]*\]", "", text)
+    """去除表情、图片等大段 CQ 码，保留纯文本与卡片语义"""
+    # 先做卡片语义提取
+    text = parse_card_content(text)
+    # 再剥离纯媒体类 CQ 码
+    text = re.sub(r"\[CQ:(image|record|video)[^\]]*\]", "", text)
     text = re.sub(r"\[CQ:(face|poke)[^\]]*\]", "", text)
     return text.strip()
 
@@ -1193,7 +1304,8 @@ async def generate_agent_command_reply(action_type: str, detail: str = "", is_pr
         "Content-Type": "application/json"
     }
     
-    if ADMIN_MODE == "root":
+    channel_mode = get_channel_mode(None)
+    if channel_mode == "root":
         prompt = (
             f"主人（开发者 life）下达了管理指令：{action_type}，细节：{detail}。\n"
             f"当前是 root 工作模式，请用专业、干练、利落的工程师口吻临场给出 1 句简明执行确认（10~25字以内，拒绝废话，绝不用句号）："
@@ -1519,8 +1631,9 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 累加该群自上次机器人发言以来的消息条数
     group_msg_count_since_bot[group_id] += 1
 
-    # 解析引用消息
+    # 解析引用消息与合并转发
     reply_prefix = await extract_reply_context(ws, event, raw_message)
+    raw_message = await expand_forward_messages(ws, raw_message)
 
     # 清洗掉针对机器人的 @ CQ 码以及其他无关 CQ
     clean_body = re.sub(rf"\[CQ:at,[^\]]*qq={BOT_QQ}[^\]]*\]", "", raw_message)
@@ -1551,7 +1664,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             return
 
     # 管理员在 root 工作模式下直接下达生产命令拦截 (支持修改/清除/重置指定群友的 memory 与好感度)
-    if is_admin and ADMIN_MODE == "root":
+    channel_mode = get_channel_mode(group_id)
+    if is_admin and channel_mode == "root":
         # 1. 清除/重置某人 memory
         # 兼容: 重置3650199442memary / 清除 3650199442 memory / 删掉群友 3650199442 记忆 / 清空3650199442
         m_clear = re.search(r"(?:清除|删掉|清空|重置)\s*(?:用户|群友)?\s*(\d{5,11})\s*(?:的)?\s*(?:memory|memary|记忆|档案)?", clean_body, re.IGNORECASE)
@@ -1815,7 +1929,8 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool) -> Optional[str]:
         "Content-Type": "application/json"
     }
     
-    if is_admin and ADMIN_MODE == "root":
+    channel_mode = get_channel_mode(group_id)
+    if is_admin and channel_mode == "root":
         user_prompt = (
             f"主人在群里戳了你一下。当前是 root 工作模式，简明回应主人有什么任务要安排（1 句，10~20 字，严禁演戏）："
         )
@@ -1827,8 +1942,8 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool) -> Optional[str]:
         user_prompt = (
             f"群友「{sender_nick}」在群里戳了你一下。请用大肥鱼口吻随手回怼或吐槽（1 句，如“?戳我干嘛”、“手痒是吧”，禁止脏话辱骂，绝不用句号，严禁括号）："
         )
-        
-    sys_content = ROOT_SYSTEM_PROMPT if (is_admin and ADMIN_MODE == "root") else SYSTEM_PROMPT
+    
+    sys_content = ROOT_SYSTEM_PROMPT if (is_admin and channel_mode == "root") else SYSTEM_PROMPT
     payload = {
         "model": MODEL_NAME,
         "messages": [
@@ -1984,6 +2099,7 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         return
         
     reply_prefix = await extract_reply_context(ws, event, raw_message)
+    raw_message = await expand_forward_messages(ws, raw_message)
     
     clean_body = clean_cq_codes(raw_message).strip()
     clean_body = re.sub(r"\[CQ:reply,id=-?\d+\]", "", clean_body).strip()
