@@ -1,0 +1,33 @@
+{
+  "123456789": {
+    "mode": "user",
+    "enable_interject": true,
+    "interject_prob": 0.35,
+    "enable_sleep": true,
+    "enable_poke": true
+  },
+  "123456788": {
+    "mode": "user",
+    "enable_interject": true,
+    "interject_prob": 0.35,
+    "enable_sleep": true,
+    "enable_poke": true
+  },
+  "123456787": {
+    "mode": "user",
+    "enable_interject": true,
+    "interject_prob": 0.35,
+    "enable_sleep": true,
+    "enable_poke": true
+  },
+  "123456786": {
+    "mode": "user",
+    "enable_interject": true,
+    "interject_prob": 0.35,
+    "enable_sleep": true,
+    "enable_poke": true
+  },
+  "private": {
+    "mode": "user"
+  }
+}

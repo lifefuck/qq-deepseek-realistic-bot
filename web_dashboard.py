@@ -7,7 +7,7 @@ import datetime
 import html
 import logging
 import time
-from typing import Callable, Deque, Dict, Any
+from typing import Callable, Deque, Dict, Any, Optional
 from aiohttp import web
 
 recent_web_logs: Deque[str] = collections.deque(maxlen=60)
@@ -201,6 +201,112 @@ INDEX_HTML = """<!DOCTYPE html>
     }
     .group-stat-label { color: var(--text-muted); }
     .group-stat-val { font-weight: 600; color: var(--text-main); }
+
+    /* 按群独立调节控件样式 */
+    .controls-box {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin: 8px 0;
+    }
+    .control-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 13px;
+    }
+    .control-label {
+      font-weight: 600;
+      color: var(--text-main);
+    }
+    .btn-mode-toggle {
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: all 0.15s ease;
+    }
+    .btn-mode-user {
+      background: var(--primary-light);
+      color: var(--primary);
+      border-color: #bfdbfe;
+    }
+    .btn-mode-root {
+      background: var(--warning-light);
+      color: var(--warning);
+      border-color: #fde68a;
+    }
+    .switch-pill {
+      display: inline-flex;
+      background: #e2e8f0;
+      border-radius: 9999px;
+      padding: 2px;
+      cursor: pointer;
+      user-select: none;
+    }
+    .switch-pill span {
+      padding: 2px 10px;
+      border-radius: 9999px;
+      font-size: 11px;
+      font-weight: 600;
+      color: #64748b;
+      transition: all 0.15s ease;
+    }
+    .switch-pill.active-on .opt-on {
+      background: #10b981;
+      color: #ffffff;
+      box-shadow: var(--shadow-sm);
+    }
+    .switch-pill.active-off .opt-off {
+      background: #94a3b8;
+      color: #ffffff;
+      box-shadow: var(--shadow-sm);
+    }
+    .slider-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      width: 140px;
+    }
+    .slider-box input[type=range] {
+      flex: 1;
+      accent-color: var(--primary);
+      cursor: pointer;
+    }
+    .slider-val {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--primary);
+      min-width: 32px;
+      text-align: right;
+    }
+    .toast {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: #0f172a;
+      color: #ffffff;
+      padding: 10px 18px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      transform: translateY(10px);
+      pointer-events: none;
+      z-index: 9999;
+    }
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
 
     .tabs {
       display: flex;
@@ -497,12 +603,52 @@ INDEX_HTML = """<!DOCTYPE html>
       document.getElementById('valUserCount').innerText = totalUsers + " 位群友";
     }
 
+    let toastTimer = null;
+    function showToast(msg) {
+      let t = document.getElementById('toastBox');
+      if (!t) {
+        t = document.createElement('div');
+        t.id = 'toastBox';
+        t.className = 'toast';
+        document.body.appendChild(t);
+      }
+      t.innerText = msg || "设置已保存并实时生效";
+      t.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => t.classList.remove('show'), 2000);
+    }
+
+    async function setGroupConfig(groupId, key, val) {
+      try {
+        const res = await fetch('/api/group/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ group_id: groupId, key: key, value: val })
+        });
+        if (res.ok) {
+          showToast("群 " + groupId + " 已更新 " + key);
+          fetchState();
+        } else {
+          showToast("保存失败");
+        }
+      } catch (e) {
+        showToast("网络请求错误");
+      }
+    }
+
     function renderGroups(data) {
       const container = document.getElementById('groupGrid');
       if (!data.groups) return;
 
       let html = "";
       for (const g of data.groups) {
+        const cfg = g.config || {};
+        const isRoot = cfg.mode === "root";
+        const isInterjectOn = cfg.enable_interject !== false;
+        const isSleepOn = cfg.enable_sleep !== false;
+        const isPokeOn = cfg.enable_poke !== false;
+        const probPct = Math.round((cfg.interject_prob || 0.35) * 100);
+
         let badgeClass = "badge-slate";
         if (g.interject_why.includes("热场")) badgeClass = "badge-success";
         else if (g.interject_why.includes("冷场")) badgeClass = "badge-info";
@@ -510,24 +656,104 @@ INDEX_HTML = """<!DOCTYPE html>
         html += `
           <div class="group-card">
             <div class="group-card-header">
-              <span class="group-id">群号: ${g.group_id}</span>
-              <span class="badge ${badgeClass}">${g.interject_why} (权重 ${(g.interject_prob * 100).toFixed(0)}%)</span>
+              <span class="group-id">
+                群 ${g.group_id}
+                <button class="btn-mode-toggle ${isRoot ? 'btn-mode-root' : 'btn-mode-user'}"
+                  onclick="setGroupConfig('${g.group_id}', 'mode', '${isRoot ? 'user' : 'root'}')">
+                  ${isRoot ? '🛠️ root模式 (点切闲聊)' : '💬 user闲聊 (点切root)'}
+                </button>
+              </span>
+              <span class="badge ${badgeClass}">${g.interject_why}</span>
             </div>
-            <div class="group-stat-row">
-              <span class="group-stat-label">群内最新消息</span>
-              <span class="group-stat-val">${formatRelative(g.last_msg_ago)}</span>
+
+            <!-- 独立调节控制区 -->
+            <div class="controls-box">
+              <div class="control-row">
+                <span class="control-label">主动插话开关</span>
+                <div class="switch-pill ${isInterjectOn ? 'active-on' : 'active-off'}"
+                  onclick="setGroupConfig('${g.group_id}', 'enable_interject', ${!isInterjectOn})">
+                  <span class="opt-on">开启</span>
+                  <span class="opt-off">静音</span>
+                </div>
+              </div>
+
+              <div class="control-row">
+                <span class="control-label">插话意愿 (基准概率)</span>
+                <div class="slider-box">
+                  <input type="range" min="5" max="80" step="5" value="${probPct}"
+                    onchange="setGroupConfig('${g.group_id}', 'interject_prob', this.value / 100)"
+                    oninput="this.nextElementSibling.innerText = this.value + '%'">
+                  <span class="slider-val">${probPct}%</span>
+                </div>
+              </div>
+
+              <div class="control-row">
+                <span class="control-label">01:00~07:00 睡眠作息</span>
+                <div class="switch-pill ${isSleepOn ? 'active-on' : 'active-off'}"
+                  onclick="setGroupConfig('${g.group_id}', 'enable_sleep', ${!isSleepOn})">
+                  <span class="opt-on">入睡</span>
+                  <span class="opt-off">全天</span>
+                </div>
+              </div>
+
+              <div class="control-row">
+                <span class="control-label">戳一戳互动与回戳</span>
+                <div class="switch-pill ${isPokeOn ? 'active-on' : 'active-off'}"
+                  onclick="setGroupConfig('${g.group_id}', 'enable_poke', ${!isPokeOn})">
+                  <span class="opt-on">允许</span>
+                  <span class="opt-off">忽略</span>
+                </div>
+              </div>
             </div>
-            <div class="group-stat-row">
-              <span class="group-stat-label">大肥鱼上次发言</span>
-              <span class="group-stat-val">${formatRelative(g.last_bot_reply_ago)}</span>
-            </div>
-            <div class="group-stat-row">
-              <span class="group-stat-label">静默连续积攒</span>
-              <span class="group-stat-val">${g.msg_count_since} 句群聊</span>
+
+            <!-- 统计指标 -->
+            <div style="margin-top:2px;">
+              <div class="group-stat-row">
+                <span class="group-stat-label">群内最新消息</span>
+                <span class="group-stat-val">${formatRelative(g.last_msg_ago)}</span>
+              </div>
+              <div class="group-stat-row">
+                <span class="group-stat-label">大肥鱼上次发言</span>
+                <span class="group-stat-val">${formatRelative(g.last_bot_reply_ago)}</span>
+              </div>
+              <div class="group-stat-row">
+                <span class="group-stat-label">连续未回积攒</span>
+                <span class="group-stat-val">${g.msg_count_since} 句群聊</span>
+              </div>
             </div>
           </div>
         `;
       }
+
+      // 附加私聊专属卡片
+      const privCfg = (data.configs && data.configs.private) || { mode: "user" };
+      const isPrivRoot = privCfg.mode === "root";
+      html += `
+        <div class="group-card" style="border-color: #cbd5e1;">
+          <div class="group-card-header">
+            <span class="group-id" style="color: #475569;">
+              🔒 主人私聊直通
+              <button class="btn-mode-toggle ${isPrivRoot ? 'btn-mode-root' : 'btn-mode-user'}"
+                onclick="setGroupConfig('private', 'mode', '${isPrivRoot ? 'user' : 'root'}')">
+                ${isPrivRoot ? '🛠️ root模式 (点切闲聊)' : '💬 user闲聊 (点切root)'}
+              </button>
+            </span>
+            <span class="badge badge-gold">主人专属通道</span>
+          </div>
+          <div class="controls-box">
+            <div class="control-row">
+              <span class="control-label">私聊默认工作模式</span>
+              <span style="font-size:12px; font-weight:600; color:var(--text-main);">
+                ${isPrivRoot ? '技术搭档 (代码/排障/无字数限制)' : '日常伴聊 (口头禅/傲娇/短句)'}
+              </span>
+            </div>
+          </div>
+          <div style="font-size:12px; color:var(--text-muted); margin-top:8px;">
+            私聊支持使用 <code>/root</code> 或 <code>/user</code> 自由切换，拥有免睡眠直接唤醒特权。
+          </div>
+        </div>
+      `;
+
       container.innerHTML = html;
     }
 
@@ -648,8 +874,8 @@ INDEX_HTML = """<!DOCTYPE html>
 </html>
 """
 
-async def create_web_app(get_status_func: Callable[[], Dict[str, Any]]) -> web.Application:
-    """构建 aiohttp web 实例"""
+async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_config_func: Optional[Callable[[Optional[int], str, Any], bool]] = None) -> web.Application:
+    """构建 aiohttp web 实例，支持查询与独立群配置写入"""
     app = web.Application()
 
     async def handle_index(request: web.Request):
@@ -663,13 +889,38 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]]) -> web.A
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    async def handle_update_config(request: web.Request):
+        if not update_config_func:
+            return web.json_response({"error": "未提供配置更新回调"}, status=500)
+        try:
+            body = await request.json()
+            raw_gid = body.get("group_id")
+            key = body.get("key")
+            val = body.get("value")
+
+            if not key:
+                return web.json_response({"error": "缺少 key 参数"}, status=400)
+
+            gid = None
+            if raw_gid and str(raw_gid).lower() != "private":
+                try:
+                    gid = int(raw_gid)
+                except ValueError:
+                    gid = None
+
+            ok = update_config_func(gid, key, val)
+            return web.json_response({"status": "ok" if ok else "fail"})
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
+
     app.router.add_get("/", handle_index)
     app.router.add_get("/api/status", handle_status)
+    app.router.add_post("/api/group/config", handle_update_config)
     return app
 
-async def start_web_server(get_status_func: Callable[[], Dict[str, Any]], port: int = 8088):
+async def start_web_server(get_status_func: Callable[[], Dict[str, Any]], update_config_func: Optional[Callable[[Optional[int], str, Any], bool]] = None, port: int = 8088):
     """启动 Web 仪表盘"""
-    app = await create_web_app(get_status_func)
+    app = await create_web_app(get_status_func, update_config_func)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", port)
