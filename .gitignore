@@ -5,3 +5,4 @@ __pycache__/
 user_memories.json
 *.log
 .DS_Store
+__pycache__/
