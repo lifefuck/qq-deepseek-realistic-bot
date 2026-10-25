@@ -3,6 +3,9 @@
 __pycache__/
 *.pyc
 user_memories.json
+.dashboard_auth
+*.auth
+*.json.tmp
 *.log
 .DS_Store
 __pycache__/

@@ -7,6 +7,9 @@ import datetime
 import html
 import logging
 import time
+import base64
+import hmac
+import os
 from typing import Callable, Deque, Dict, Any, Optional
 from aiohttp import web
 
@@ -895,9 +898,49 @@ INDEX_HTML = """<!DOCTYPE html>
 </html>
 """
 
+AUTH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dashboard_auth")
+
+def get_auth_credentials() -> tuple[str, str]:
+    """获取仪表盘认证凭据，优先从环境变量读取，其次读 .dashboard_auth 本地文件"""
+    env_auth = os.environ.get("DASHBOARD_AUTH")
+    if env_auth and ":" in env_auth:
+        u, p = env_auth.split(":", 1)
+        return u.strip(), p.strip()
+    if os.path.exists(AUTH_FILE):
+        try:
+            with open(AUTH_FILE, "r", encoding="utf-8") as f:
+                line = f.readline().strip()
+                if ":" in line:
+                    u, p = line.split(":", 1)
+                    return u.strip(), p.strip()
+        except Exception:
+            pass
+    return "admin", "admin"
+
+@web.middleware
+async def basic_auth_middleware(request: web.Request, handler):
+    """全局 HTTP Basic 认证中间件，杜绝公网裸奔"""
+    auth_header = request.headers.get("Authorization")
+    valid_user, valid_pass = get_auth_credentials()
+    if auth_header and auth_header.startswith("Basic "):
+        try:
+            raw_creds = base64.b64decode(auth_header[6:]).decode("utf-8")
+            if ":" in raw_creds:
+                u, p = raw_creds.split(":", 1)
+                if hmac.compare_digest(u, valid_user) and hmac.compare_digest(p, valid_pass):
+                    return await handler(request)
+        except Exception:
+            pass
+
+    return web.Response(
+        status=401,
+        text="401 Unauthorized: Access to QQ Bot Dashboard requires authentication.\n",
+        headers={"WWW-Authenticate": 'Basic realm="QQ Bot Secure Dashboard", charset="UTF-8"'}
+    )
+
 async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_config_func: Optional[Callable[[Optional[int], str, Any], bool]] = None) -> web.Application:
     """构建 aiohttp web 实例，支持查询与独立群配置写入"""
-    app = web.Application()
+    app = web.Application(middlewares=[basic_auth_middleware])
 
     async def handle_index(request: web.Request):
         return web.Response(text=INDEX_HTML, content_type="text/html", charset="utf-8")
