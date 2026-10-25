@@ -898,6 +898,142 @@ INDEX_HTML = """<!DOCTYPE html>
 </html>
 """
 
+LOGIN_HTML = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>大肥鱼 AI 控制台 · 安全登录</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #f1f5f9;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .login-card {
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 16px;
+      box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.05), 0 8px 10px -6px rgba(0, 0, 0, 0.02);
+      padding: 36px 32px;
+      width: 100%;
+      max-width: 380px;
+      text-align: center;
+    }
+    .logo {
+      font-size: 38px;
+      margin-bottom: 12px;
+    }
+    h1 {
+      font-size: 20px;
+      font-weight: 700;
+      color: #0f172a;
+      margin-bottom: 6px;
+    }
+    p {
+      font-size: 13px;
+      color: #64748b;
+      margin-bottom: 24px;
+    }
+    .input-group {
+      margin-bottom: 18px;
+      text-align: left;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #475569;
+      margin-bottom: 6px;
+    }
+    input {
+      width: 100%;
+      padding: 12px 14px;
+      border: 1px solid #cbd5e1;
+      border-radius: 10px;
+      font-size: 14px;
+      outline: none;
+      transition: all 0.2s;
+    }
+    input:focus {
+      border-color: #0284c7;
+      box-shadow: 0 0 0 3px rgba(2, 132, 199, 0.15);
+    }
+    button {
+      width: 100%;
+      padding: 12px;
+      background: #0284c7;
+      color: #ffffff;
+      border: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    button:hover {
+      background: #0369a1;
+    }
+    .err-msg {
+      margin-top: 14px;
+      font-size: 13px;
+      color: #ef4444;
+      display: none;
+    }
+  </style>
+</head>
+<body>
+  <div class="login-card">
+    <div class="logo">🐟</div>
+    <h1>大肥鱼 AI 控制台</h1>
+    <p>请输入安全访问密钥以进入后台</p>
+    <div class="input-group">
+      <label for="pwd">访问密码</label>
+      <input type="password" id="pwd" placeholder="输入密钥" autofocus>
+    </div>
+    <button id="btn" onclick="doLogin()">进入控制台</button>
+    <div id="errMsg" class="err-msg">密码错误，请重新输入</div>
+  </div>
+  <script>
+    document.getElementById('pwd').addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') doLogin();
+    });
+    async function doLogin() {
+      const p = document.getElementById('pwd').value.trim();
+      if (!p) return;
+      const btn = document.getElementById('btn');
+      btn.innerText = "正在验证...";
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password: p })
+        });
+        if (res.ok) {
+          window.location.reload();
+        } else {
+          document.getElementById('errMsg').style.display = 'block';
+          btn.innerText = "进入控制台";
+          btn.disabled = false;
+        }
+      } catch (e) {
+        document.getElementById('errMsg').innerText = "网络异常，请重试";
+        document.getElementById('errMsg').style.display = 'block';
+        btn.innerText = "进入控制台";
+        btn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html>
+"""
+
 AUTH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dashboard_auth")
 
 def get_auth_credentials() -> tuple[str, str]:
@@ -917,30 +1053,73 @@ def get_auth_credentials() -> tuple[str, str]:
             pass
     return "admin", "admin"
 
-@web.middleware
-async def basic_auth_middleware(request: web.Request, handler):
-    """全局 HTTP Basic 认证中间件，杜绝公网裸奔"""
-    auth_header = request.headers.get("Authorization")
+def check_authenticated(request: web.Request) -> bool:
+    """多通道鉴权：支持 URL Key / Cookie Session / HTTP Basic Header"""
     valid_user, valid_pass = get_auth_credentials()
+    
+    # 1. 检查 URL 参数 ?key=... 或 ?token=...
+    q_key = request.query.get("key") or request.query.get("token")
+    if q_key and hmac.compare_digest(q_key, valid_pass):
+        return True
+
+    # 2. 检查 Cookie (30天持久会话)
+    cookie_token = request.cookies.get("dashboard_session")
+    if cookie_token and hmac.compare_digest(cookie_token, valid_pass):
+        return True
+
+    # 3. 检查 HTTP Basic Header (兼容脚本/命令行)
+    auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Basic "):
         try:
             raw_creds = base64.b64decode(auth_header[6:]).decode("utf-8")
             if ":" in raw_creds:
                 u, p = raw_creds.split(":", 1)
                 if hmac.compare_digest(u, valid_user) and hmac.compare_digest(p, valid_pass):
-                    return await handler(request)
+                    return True
         except Exception:
             pass
 
-    return web.Response(
-        status=401,
-        text="401 Unauthorized: Access to QQ Bot Dashboard requires authentication.\n",
-        headers={"WWW-Authenticate": 'Basic realm="QQ Bot Secure Dashboard", charset="UTF-8"'}
-    )
+    return False
+
+@web.middleware
+async def session_auth_middleware(request: web.Request, handler):
+    """现代化无感会话拦截器，彻底解决原生弹窗死循环问题"""
+    # 登录接口必须放行
+    if request.path == "/api/login":
+        return await handler(request)
+
+    if check_authenticated(request):
+        response = await handler(request)
+        # 如果是带 ?key= 访问，顺便帮用户种上 Cookie，下次无需输入
+        q_key = request.query.get("key") or request.query.get("token")
+        if q_key and isinstance(response, web.Response):
+            response.set_cookie("dashboard_session", q_key, max_age=2592000, path="/", samesite="Lax")
+        return response
+
+    # 未认证情况：
+    # 访问页面，直接渲染整洁漂亮的卡片登录表单
+    if request.path == "/" and request.method == "GET":
+        return web.Response(text=LOGIN_HTML, content_type="text/html", charset="utf-8")
+
+    # 访问后台 API 轮询，返回 JSON 401（绝不发 WWW-Authenticate 头，避免浏览器弹原生框）
+    return web.json_response({"error": "unauthorized", "message": "请先登录控制台"}, status=401)
 
 async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_config_func: Optional[Callable[[Optional[int], str, Any], bool]] = None) -> web.Application:
     """构建 aiohttp web 实例，支持查询与独立群配置写入"""
-    app = web.Application(middlewares=[basic_auth_middleware])
+    app = web.Application(middlewares=[session_auth_middleware])
+
+    async def handle_login(request: web.Request):
+        try:
+            body = await request.json()
+            pwd = body.get("password", "").strip()
+            _, valid_pass = get_auth_credentials()
+            if pwd and hmac.compare_digest(pwd, valid_pass):
+                resp = web.json_response({"status": "ok"})
+                resp.set_cookie("dashboard_session", valid_pass, max_age=2592000, path="/", samesite="Lax")
+                return resp
+            return web.json_response({"error": "密码错误"}, status=403)
+        except Exception as e:
+            return web.json_response({"error": str(e)}, status=500)
 
     async def handle_index(request: web.Request):
         return web.Response(text=INDEX_HTML, content_type="text/html", charset="utf-8")
@@ -978,6 +1157,7 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
             return web.json_response({"error": str(e)}, status=500)
 
     app.router.add_get("/", handle_index)
+    app.router.add_post("/api/login", handle_login)
     app.router.add_get("/api/status", handle_status)
     app.router.add_post("/api/group/config", handle_update_config)
     return app
