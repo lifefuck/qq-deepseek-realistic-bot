@@ -527,7 +527,7 @@ INDEX_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
-    let currentTab = "";
+    let currentTab = "978074744";
     let latestData = null;
 
     function formatRelative(secondsAgo) {
@@ -661,6 +661,7 @@ INDEX_HTML = """<!DOCTYPE html>
         const isPokeOn = cfg.enable_poke !== false;
         const isGamesOn = cfg.enable_games !== false;
         const isSearchOn = cfg.enable_search !== false;
+        const isYunzaiOn = cfg.enable_yunzai !== false;
         const probPct = Math.round((cfg.interject_prob || 0.35) * 100);
 
         let badgeClass = "badge-slate";
@@ -735,6 +736,15 @@ INDEX_HTML = """<!DOCTYPE html>
                   onclick="setGroupConfig('${g.group_id}', 'enable_search', ${!isSearchOn})">
                   <span class="opt-on">开启</span>
                   <span class="opt-off">离线</span>
+                </div>
+              </div>
+
+              <div class="control-row">
+                <span class="control-label">云崽游戏生态 (原神/星铁/米游社)</span>
+                <div class="switch-pill ${isYunzaiOn ? 'active-on' : 'active-off'}"
+                  onclick="setGroupConfig('${g.group_id}', 'enable_yunzai', ${!isYunzaiOn})">
+                  <span class="opt-on">开启</span>
+                  <span class="opt-off">禁用</span>
                 </div>
               </div>
             </div>
