@@ -1,0 +1,16 @@
+[Unit]
+Description=QQ DeepSeek Realistic Bot (OneBot 11)
+After=network.target
+
+[Service]
+Type=simple
+# 请根据实际安装路径修改 WorkingDirectory 与 Python 解释器路径
+WorkingDirectory=%h/projects/qq-deepseek-realistic-bot
+ExecStart=%h/projects/qq-deepseek-realistic-bot/.venv/bin/python %h/projects/qq-deepseek-realistic-bot/bot.py
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

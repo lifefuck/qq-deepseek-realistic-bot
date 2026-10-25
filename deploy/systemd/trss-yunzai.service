@@ -1,0 +1,16 @@
+[Unit]
+Description=TRSS Yunzai Bot for Game Features
+After=network.target redis-local.service
+Wants=redis-local.service
+
+[Service]
+Type=simple
+# 请根据实际安装路径修改工作目录与 node 执行路径
+WorkingDirectory=%h/projects/trss-yunzai
+ExecStart=/usr/bin/node %h/projects/trss-yunzai/app.js
+Restart=always
+RestartSec=3
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target
