@@ -1,0 +1,13 @@
+[Unit]
+Description=Standalone Redis for Yunzai Bot
+After=network.target
+
+[Service]
+Type=simple
+# 请根据实际安装路径修改 redis-server 路径与工作目录
+ExecStart=/usr/bin/redis-server --bind 127.0.0.1 --port 6379 --daemonize no
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
