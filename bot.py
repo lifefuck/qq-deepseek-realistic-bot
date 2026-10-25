@@ -43,7 +43,7 @@ ALLOWED_GROUPS: Set[int] = {
 }
 
 SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
-SILICONFLOW_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-placeholder-redacted")
+SILICONFLOW_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-you...here")
 MODEL_NAME = "deepseek-ai/DeepSeek-V3"
 
 # 行为与节奏参数
@@ -344,6 +344,7 @@ group_last_activity: Dict[int, float] = collections.defaultdict(float)
 group_last_active_reply: Dict[int, float] = collections.defaultdict(float)
 group_msg_count_since_bot: Dict[int, int] = collections.defaultdict(int)
 group_debounce_tasks: Dict[int, Optional[asyncio.Task]] = {}
+group_silence_until: Dict[int, float] = {}  # 管理员 /stop 后的群主动插话静默期: group_id -> timestamp
 # 问答追问配额表：(group_id, user_id) -> {"expire": float, "remain": int}
 # 规则：5分钟内免 @ 连续追问最多 5 次；若有新的 @，重置为 5 分钟 + 5 次
 user_follow_up_state: Dict[tuple, Dict[str, any]] = {}
@@ -1422,19 +1423,22 @@ async def generate_agent_command_reply(action_type: str, detail: str = "", is_pr
 
 # ==================== 管理员快捷指令处理 ====================
 async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is_private: bool, group_id: Optional[int] = None) -> bool:
-    """处理管理员快捷指令并汇报结果"""
+    """处理管理员快捷指令并汇报结果（大小写不敏感，秒级汇报）"""
     global ADMIN_MODE
     cmd = cmd.strip()
+    cmd_lower = cmd.lower()
     
-    # 1. /new - 重置上下文 (支持 /new all 重置所有群)
-    if cmd.startswith("/new"):
+    # 1. /new - 重置上下文 (支持 /new all 重置所有群与私聊)
+    if cmd_lower.startswith("/new"):
         args = cmd.split()
         if len(args) > 1 and args[1].lower() in ["all", "所有", "全部"]:
             group_timelines.clear()
             admin_private_timeline.clear()
             group_history_pool.clear()
             admin_private_history.clear()
-            reply_text = await generate_agent_command_reply("重置所有上下文", "全部群与私聊历史均已清空", is_private=is_private)
+            user_follow_up_state.clear()
+            group_silence_until.clear()
+            reply_text = "已重置所有群与私聊的上下文、历史记录及追问状态"
             if is_private:
                 await send_private_message(ws, ADMIN_QQ, reply_text)
             else:
@@ -1442,29 +1446,49 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
             return True
         if is_private:
             admin_private_timeline.clear()
-            reply_text = await generate_agent_command_reply("重置私聊上下文", "私聊时间线已重置", is_private=True)
+            admin_private_history.clear()
+            reply_text = "已清空私聊上下文与历史池"
             await send_private_message(ws, ADMIN_QQ, reply_text)
         else:
             group_timelines[group_id].clear()
-            reply_text = await generate_agent_command_reply("重置群上下文", f"群 {group_id} 时间线已重置", is_private=False)
+            group_history_pool[group_id].clear()
+            # 清空该群追问状态并解除静音
+            for k in list(user_follow_up_state.keys()):
+                if k[0] == group_id:
+                    user_follow_up_state.pop(k, None)
+            group_silence_until.pop(group_id, None)
+            reply_text = f"已重置本群 ({group_id}) 上下文与发言历史池"
             await send_group_message(ws, group_id, reply_text)
         return True
 
-    # 2. /stop - 一键中止所有思考与排队任务
-    elif cmd == "/stop":
+    # 2. /stop - 一键紧急刹车中止所有思考与排队任务并开启静默
+    elif cmd_lower.startswith("/stop"):
         stopped_count = 0
-        # 取消所有群的 debounce
+        # 1. 取消所有群的防抖任务
         for gid, task in list(group_debounce_tasks.items()):
             if task and not task.done():
                 task.cancel()
                 stopped_count += 1
-        # 取消所有运行中的 LLM 请求
+        # 2. 取消所有运行中的大模型思考/生成请求
         for task in list(running_tasks):
             if not task.done():
                 task.cancel()
                 stopped_count += 1
                 
-        reply_text = await generate_agent_command_reply("中止任务", f"中止了 {stopped_count} 个进行中的任务", is_private=is_private)
+        # 3. 清理追问窗口并开启静默保护，杜绝刚叫停又自动插话
+        if group_id:
+            for k in list(user_follow_up_state.keys()):
+                if k[0] == group_id:
+                    user_follow_up_state.pop(k, None)
+            group_silence_until[group_id] = time.time() + 600.0  # 10 分钟静默期
+            group_msg_count_since_bot[group_id] = 0
+            reply_text = f"已一键急刹车，中止了 {stopped_count} 个任务，并开启本群静默（不再主动插话）" if stopped_count > 0 else "当前无进行中任务，已清空追问并开启本群静默，保持安静"
+        else:
+            user_follow_up_state.clear()
+            for gid in ALLOWED_GROUPS:
+                group_silence_until[gid] = time.time() + 600.0
+            reply_text = f"已一键急刹车，中止了 {stopped_count} 个任务，并开启全局群静默" if stopped_count > 0 else "当前无进行中任务，已清空追问并开启全局群静默"
+
         if is_private:
             await send_private_message(ws, ADMIN_QQ, reply_text)
         else:
@@ -1472,38 +1496,45 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
         return True
 
     # 3. /compress - 压缩上下文
-    elif cmd == "/compress":
+    elif cmd_lower.startswith("/compress"):
         if is_private:
-            if not admin_private_timeline:
+            history = list(admin_private_history) if admin_private_history else list(admin_private_timeline)
+            if not history:
                 await send_private_message(ws, ADMIN_QQ, "私聊历史为空，无需压缩")
                 return True
-            raw_text = "\n".join(admin_private_timeline)
-            orig_len = len(admin_private_timeline)
-            summary = await summarize_context(raw_text, max_chars=40)
+            raw_text = "\n".join(history)
+            orig_len = len(history)
+            summary = await summarize_context(raw_text, max_chars=50)
             if summary:
                 admin_private_timeline.clear()
                 admin_private_timeline.append(f"[上下文精简摘要]: {summary}")
+                admin_private_history.clear()
+                admin_private_history.append(f"[上下文精简摘要]: {summary}")
                 await send_private_message(ws, ADMIN_QQ, f"已压缩私聊历史（{orig_len}条）：\n{summary}")
             else:
                 await send_private_message(ws, ADMIN_QQ, "压缩失败，未获取到有效摘要")
         else:
             timeline = group_timelines[group_id]
-            if not timeline:
+            history = group_history_pool[group_id]
+            pool = history if history else timeline
+            if not pool:
                 await send_group_message(ws, group_id, "群上下文为空，无需压缩")
                 return True
-            raw_text = "\n".join([f"{m['sender']}: {m['content']}" for m in timeline])
-            orig_len = len(timeline)
-            summary = await summarize_context(raw_text, max_chars=40)
+            raw_text = "\n".join([f"{m['sender']}: {m['content']}" for m in pool])
+            orig_len = len(pool)
+            summary = await summarize_context(raw_text, max_chars=50)
             if summary:
                 timeline.clear()
                 timeline.append({"sender": "系统记忆", "content": f"[前情摘要: {summary}]", "time": time.time()})
+                history.clear()
+                history.append({"sender": "系统记忆", "content": f"[前情摘要: {summary}]", "time": time.time()})
                 await send_group_message(ws, group_id, f"已压缩群上下文（{orig_len}条）：\n{summary}")
             else:
                 await send_group_message(ws, group_id, "生成摘要失败，保持原样")
         return True
 
     # 4. /b - 总结群聊上下文内容（只汇报总结，不修改/不清空历史上下文）
-    elif cmd == "/b" or cmd.startswith("/b "):
+    elif cmd_lower == "/b" or cmd_lower.startswith(("/b ", "/brief", "/summary")):
         # 解析条数参数，例如 /b 50 或 /b 100，默认 50 条，最大支持 200 条
         limit_count = 50
         parts = cmd.split()
@@ -1537,7 +1568,7 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
         return True
 
     # 5. /root - 切换到工作模式 (支持按群独立切换)
-    elif cmd.startswith("/root"):
+    elif cmd_lower.startswith("/root"):
         target_gid = None
         parts = cmd.split()
         if len(parts) > 1 and parts[1].isdigit():
@@ -1555,7 +1586,7 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
         return True
 
     # 6. /user - 切换回肥鱼娱乐模式 (支持按群独立切换)
-    elif cmd.startswith("/user"):
+    elif cmd_lower.startswith("/user"):
         target_gid = None
         parts = cmd.split()
         if len(parts) > 1 and parts[1].isdigit():
@@ -1747,8 +1778,12 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         logger.debug("[群 %d] 识别为游戏指令: %r，主动转交云崽处理，跳过 AI 回复", group_id, clean_body)
         return
 
+    # 规范化指令前缀与小写，兼容全角斜杠与输入法大小写
+    norm_cmd = clean_body.replace("／", "/").strip()
+    norm_lower = norm_cmd.lower()
+
     # 公开指令检测: /memory 或 /memary（所有人均可查看好感度与记忆总结）
-    if clean_body.startswith(("/memary", "/memory")):
+    if norm_lower.startswith(("/memary", "/memory")):
         await handle_memory_summary_command(ws, group_id=group_id)
         return
 
@@ -1789,9 +1824,19 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
                 await send_group_message(ws, group_id, f"👀 好像是动画截图，但画面不够典型，我不太确信是不是《{anime_info.get('data', {}).get('anilist', {}).get('title', {}).get('native', '某部番')}》", at_user_id=sender_id)
                 return
 
-    # 管理员快捷指令检测
-    if is_admin and clean_body.startswith(("/new", "/stop", "/compress", "/b", "/root", "/user")):
-        handled = await handle_admin_command(ws, clean_body, is_private=False, group_id=group_id)
+    # 管理员快捷指令检测（忽略大小写，兼容全角斜杠与常用刹车词）
+    if is_admin and (
+        norm_lower.startswith(("/new", "/stop", "/compress", "/b", "/root", "/user"))
+        or norm_lower in ("stop", "new", "compress", "闭嘴", "停", "暂停")
+    ):
+        target_cmd = norm_cmd
+        if norm_lower in ("stop", "闭嘴", "停", "暂停"):
+            target_cmd = "/stop"
+        elif norm_lower == "new":
+            target_cmd = "/new"
+        elif norm_lower == "compress":
+            target_cmd = "/compress"
+        handled = await handle_admin_command(ws, target_cmd, is_private=False, group_id=group_id)
         if handled:
             return
 
@@ -2024,6 +2069,12 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         group_last_msg_time[group_id] = now
         return
         
+    # 检查管理员 /stop 设置的群主动插话静默保护期
+    silence_exp = group_silence_until.get(group_id, 0.0)
+    if now < silence_exp:
+        logger.debug("[群 %d] 处于管理员 /stop 静默保护期（剩余 %.0fs），保持静默不插话", group_id, silence_exp - now)
+        return
+
     # 意图门控：结合冷热场动态权重、代称、讨论疑问词综合判定插话
     should_trigger, is_mention_bot = should_active_interrupt(clean_body, group_id=group_id, msg_count_since=group_msg_count_since_bot[group_id])
     group_last_msg_time[group_id] = now
@@ -2049,7 +2100,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         old_task.cancel()
     group_debounce_tasks[group_id] = asyncio.create_task(debounced_step(group_id, sender_nick, is_mention_bot, sender_id, clean_body))
 
-async def call_deepseek_poke(sender_nick: str, is_admin: bool) -> Optional[str]:
+async def call_deepseek_poke(sender_nick: str, is_admin: bool, group_id: Optional[int] = None) -> Optional[str]:
     """生成大肥鱼被戳一戳时的随性反应"""
     headers = {
         "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
@@ -2195,7 +2246,7 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
     
     # 异步调用模型生成傲娇动态回复
     nick = "管理员" if is_admin else "群友"
-    reply = await call_deepseek_poke(nick, is_admin=is_admin)
+    reply = await call_deepseek_poke(nick, is_admin=is_admin, group_id=group_id)
     if reply:
         await asyncio.sleep(0.5)
         # 被戳一戳时，文字回复前置 @ 对方
@@ -2239,8 +2290,12 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         logger.debug("[私聊] 识别为游戏/Cookie指令: %r，交由云崽处理，跳过 AI 回复", clean_body)
         return
 
+    # 规范化指令前缀与小写，兼容全角斜杠与输入法大小写
+    norm_cmd = clean_body.replace("／", "/").strip()
+    norm_lower = norm_cmd.lower()
+
     # 公开指令检测: /memory 或 /memary（私聊支持查看）
-    if clean_body.startswith(("/memary", "/memory")):
+    if norm_lower.startswith(("/memary", "/memory")):
         await handle_memory_summary_command(ws, user_id=ADMIN_QQ)
         return
 
@@ -2251,8 +2306,18 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         logger.info("[作息系统] 主人发起私聊，大肥鱼自动解除睡眠状态 30 分钟！")
 
     # 管理员指令拦截
-    if clean_body.startswith(("/new", "/stop", "/compress", "/b", "/root", "/user")):
-        handled = await handle_admin_command(ws, clean_body, is_private=True)
+    if (
+        norm_lower.startswith(("/new", "/stop", "/compress", "/b", "/root", "/user"))
+        or norm_lower in ("stop", "new", "compress", "闭嘴", "停", "暂停")
+    ):
+        target_cmd = norm_cmd
+        if norm_lower in ("stop", "闭嘴", "停", "暂停"):
+            target_cmd = "/stop"
+        elif norm_lower == "new":
+            target_cmd = "/new"
+        elif norm_lower == "compress":
+            target_cmd = "/compress"
+        handled = await handle_admin_command(ws, target_cmd, is_private=True)
         if handled:
             return
 
@@ -2294,7 +2359,7 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         if m_delta:
             is_sub = any(s in op_sign for s in ["减", "扣", "降低", "跌", "下降", "-"])
             actual_delta = -delta_val if is_sub else delta_val
-            mem = get_or_create_user_memory(target_qq, group_id=group_id)
+            mem = get_or_create_user_memory(target_qq, group_id=None)
             old_f = mem.get("favor", 50)
             new_f = max(0, min(100, old_f + actual_delta))
             mem["favor"] = new_f
