@@ -342,6 +342,7 @@ group_last_active_reply: Dict[int, float] = collections.defaultdict(float)
 group_msg_count_since_bot: Dict[int, int] = collections.defaultdict(int)
 group_debounce_tasks: Dict[int, Optional[asyncio.Task]] = {}
 group_silence_until: Dict[int, float] = {}  # 管理员 /stop 后的群主动插话静默期: group_id -> timestamp
+group_names_cache: Dict[int, str] = {}      # 群号与群名称映射缓存: group_id -> group_name
 # 问答追问配额表：(group_id, user_id) -> {"expire": float, "remain": int}
 # 规则：5分钟内免 @ 连续追问最多 5 次；若有新的 @，重置为 5 分钟 + 5 次
 user_follow_up_state: Dict[tuple, Dict[str, any]] = {}
@@ -2430,8 +2431,10 @@ def get_bot_dashboard_status() -> Dict[str, Any]:
         msg_count = group_msg_count_since_bot.get(gid, 0)
         base_p = float(cfg.get("interject_prob", 0.35))
         prob, why = calculate_interject_probability(gid, base_p)
+        g_name = group_names_cache.get(gid, f"群聊 {gid}")
         groups_data.append({
             "group_id": gid,
+            "group_name": g_name,
             "config": cfg,
             "last_msg_ago": (now - last_msg) if last_msg > 0 else -1,
             "last_bot_reply_ago": (now - last_reply) if last_reply > 0 else -1,
@@ -2475,6 +2478,21 @@ async def main():
                 logger.info("正在连接 NapCat OneBot 11 (%s)...", NAPCAT_WS_URL)
                 async with session.ws_connect(NAPCAT_WS_URL) as ws:
                     logger.info("✅ 成功连接到 NapCat WebSocket！开始监听消息事件。")
+                    # 异步刷新各群名称
+                    async def refresh_group_names():
+                        try:
+                            res = await call_action(ws, "get_group_list", {}, timeout=3.0)
+                            if res and res.get("status") == "ok" and isinstance(res.get("data"), list):
+                                for item in res["data"]:
+                                    gid = item.get("group_id")
+                                    gname = item.get("group_name")
+                                    if gid and gname:
+                                        group_names_cache[gid] = gname
+                                logger.info("成功同步 %d 个群的群名称缓存: %s", len(group_names_cache), group_names_cache)
+                        except Exception as ge:
+                            logger.debug("获取群列表名称异常: %s", ge)
+                    asyncio.create_task(refresh_group_names())
+
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
                             try:
