@@ -20,6 +20,7 @@ import random
 import base64
 import re
 import time
+import datetime
 import uuid
 from typing import Deque, Dict, Optional, Set, Tuple
 import aiohttp
@@ -50,6 +51,23 @@ DIRECT_AT_CD = 2.5              # 被 @ 时的用户级基础冷却（秒）
 FOLLOW_UP_WINDOW = 300.0        # 持续对话追问窗口为 5 分钟 (300 秒)
 FOLLOW_UP_MAX_COUNT = 5         # 追问窗口内最多免 @ 回答 5 次，有新的 @ 则重置配额
 MAX_OUTPUT_TOKENS = 200         # 限制单次生成长度，防长篇大论
+
+# 拟真作息睡眠参数 (01:00 ~ 07:00 CST 为入睡期)
+SLEEP_START_HOUR = 1
+SLEEP_END_HOUR = 7
+sleep_override_until: float = 0.0          # 主人专属叫醒生效截止时间戳
+user_sleep_reply_cd: Dict[tuple, float] = collections.defaultdict(float)  # 限制半夜对单个群友每 3 分钟最多回一句梦话
+
+# 疲劳度衰减参数 (防群友连续狂 @ 调戏)
+user_mention_burst: Dict[tuple, Deque[float]] = collections.defaultdict(lambda: collections.deque(maxlen=10))
+user_fatigue_until: Dict[tuple, float] = collections.defaultdict(float)
+
+# 群聊冷热场时间戳追踪 (活跃期提权 + 冷场降权)
+group_last_msg_time: Dict[int, float] = collections.defaultdict(float)        # 群内上一条消息时间
+group_last_bot_reply_time: Dict[int, float] = collections.defaultdict(float)  # 机器人在该群上次说话时间
+
+# 反模板套路削平队列 (记录最近发出的 6 条回复)
+recent_bot_replies: Deque[str] = collections.defaultdict(lambda: collections.deque(maxlen=6))[0]
 
 BOT_KEYWORDS = {
     "大肥鱼", "肥鱼", "小鲸鱼", "鲸鱼", "鲸宝", "deepseek", "v3", "r1", 
@@ -542,26 +560,131 @@ def is_low_info_message(text: str) -> bool:
     low_info_words = {"哈哈", "哈哈哈", "666", "好的", "收到", "确实", "可以", "牛逼", "问号", "点赞"}
     return clean in low_info_words
 
-def should_active_interrupt(text: str, msg_count_since: int = 0) -> tuple[bool, bool]:
+def sanitize_text(text: str) -> str:
+    """清理非法 Unicode 孤立代理项及残损控制字符，防止发给大模型 API 时报 400"""
+    if not text:
+        return ""
+    return text.encode("utf-8", "replace").decode("utf-8", "ignore")
+
+def is_bot_sleeping() -> bool:
+    """判断当前是否为夜间入睡期 (01:00 ~ 07:00 CST)，主人叫醒期除外"""
+    global sleep_override_until
+    now = time.time()
+    if now < sleep_override_until:
+        return False
+    # 获取中国标准时间 CST (UTC+8) 小时
+    cst_hour = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).hour
+    return SLEEP_START_HOUR <= cst_hour < SLEEP_END_HOUR
+
+def check_user_fatigue(group_id: int, user_id: int) -> tuple[bool, bool]:
     """
-    判断是否应该主动插话。
+    群友疲劳度衰减检查：防无聊群友高频疯狂 @ 调戏机器人
+    返回: (is_fatigued: bool, is_first_trigger: bool)
+    """
+    if user_id == ADMIN_QQ:
+        return False, False  # 主人享有特权，永远不疲劳
+
+    now = time.time()
+    key = (group_id, user_id)
+    if now < user_fatigue_until[key]:
+        return True, False  # 正在疲劳冷却中
+
+    dq = user_mention_burst[key]
+    while dq and now - dq[0] > 120.0:
+        dq.popleft()
+    dq.append(now)
+
+    if len(dq) >= 5:
+        # 2 分钟内连续 @ 达到 5 次，触发 60 秒疲劳冷却
+        user_fatigue_until[key] = now + 60.0
+        return True, True
+    return False, False
+
+def de_template(reply: str) -> str:
+    """
+    反模板套路削平闸门 (参考 Estrella Bot anti-template 设计)
+    连续出现破折号抖机灵（——...）或相同词起手时，削平形状保留原话，拒绝句式坍塌
+    """
+    global recent_bot_replies
+    text = reply.strip()
+    if not text:
+        return reply
+
+    # 1. 削平破折号抖机灵 (如连续多句以 "——..." 结尾)
+    if "——" in text or "—" in text:
+        dash_count = sum(1 for r in recent_bot_replies if "——" in r or "—" in r)
+        if dash_count >= 2:
+            m = re.search(r"[—]{1,2}[^，。！？\n]{2,15}$", text)
+            if m:
+                trimmed = text[:m.start()].strip()
+                if len(trimmed) >= 3:
+                    logger.info("[反模板闸] 削平连续破折号抖机灵: %r -> %r", text, trimmed)
+                    text = trimmed
+
+    # 2. 削平同一口头禅连续起手 (如连续多句以 "好家伙" / "行吧" / "啧" / "不是" 起手)
+    clean_op = re.sub(r"^[~～!！?？\s,，。]+", "", text)
+    if len(clean_op) >= 2:
+        op2 = clean_op[:2]
+        op3 = clean_op[:3]
+        match_count = 0
+        for r in recent_bot_replies:
+            clean_r = re.sub(r"^[~～!！?？\s,，。]+", "", r)
+            if clean_r.startswith(op3) or (len(op2) == 2 and clean_r.startswith(op2)):
+                match_count += 1
+        if match_count >= 2:
+            cut_len = len(op3) if clean_op.startswith(op3) else len(op2)
+            trimmed = clean_op[cut_len:].lstrip("，, 。.！!~～")
+            if len(trimmed) >= 2:
+                logger.info("[反模板闸] 削平连续口头禅起手: %r -> %r", text, trimmed)
+                text = trimmed
+
+    return text
+
+def calculate_interject_probability(group_id: int, base_prob: float) -> tuple[float, str]:
+    """
+    计算插话冷热场动态权重 (参考 Estrella Bot interject 活跃提权 + 冷场降权)
+    """
+    now = time.time()
+    last_msg = group_last_msg_time.get(group_id, 0.0)
+    last_reply = group_last_bot_reply_time.get(group_id, 0.0)
+
+    # 冷场降权：若本条之前群里沉寂超过 10 分钟 (600s)，大幅降权至 0.25x，绝不当破冰显眼包
+    if last_msg > 0 and (now - last_msg) >= 600.0:
+        return base_prob * 0.25, "冷场降权(0.25x)"
+
+    # 热场提权：若机器人在 10 分钟内刚在该群说过话，说明参与热聊，提权 1.5x 积极接话
+    if last_reply > 0 and (now - last_reply) < 600.0:
+        return min(0.85, base_prob * 1.5), "热场提权(1.5x)"
+
+    return base_prob, "常规概率"
+
+def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int = 0) -> tuple[bool, bool]:
+    """
+    判断是否应该主动插话（引入冷热场动态调节）。
     返回: (should_trigger: bool, is_mention_bot: bool)
     """
+    # 睡眠期严格禁止任何主动插话
+    if is_bot_sleeping():
+        return False, False
+
     lower = text.lower()
     # 1. 明确提到机器人、模型、AI或相关代称梗词（100% 触发）
     if any(kw in lower for kw in BOT_KEYWORDS):
         return True, True
     
-    # 2. 问句或讨论，概率介入参与（调低至 35% 随性介入，不频繁插嘴）
+    # 2. 问句或讨论，结合冷热场动态介入
     has_question = any(q in text for q in ["？", "?", "怎么", "如何", "为什么", "为啥", "什么原因", "有没有", "是谁", "啥"])
     if has_question and len(text) >= 4:
+        final_prob, why = calculate_interject_probability(group_id, 0.35)
+        logger.info("[群 %d] 插话问句触发判定: 基准=0.35, 调整后=%.2f (%s)", group_id, final_prob, why)
         import random
-        return (random.random() < 0.35), False
+        return (random.random() < final_prob), False
 
-    # 3. 群里活跃且群友连续聊了 7 句以上未理机器人，适度参与吐槽（15% 极低概率随性接话）
+    # 3. 群里活跃且群友连续聊了 7 句以上未理机器人，适度参与吐槽
     if msg_count_since >= 7 and len(text) >= 4:
+        final_prob, why = calculate_interject_probability(group_id, 0.15)
         import random
-        return (random.random() < 0.15), False
+        return (random.random() < final_prob), False
         
     return False, False
 
@@ -753,7 +876,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"你正在旁观，若想吐槽反串或有想法，用 1 句极短接话；插不上话输出 [PASS]："
         )
     
-    system_content = ROOT_SYSTEM_PROMPT if is_root_work else SYSTEM_PROMPT
+    system_content = sanitize_text(ROOT_SYSTEM_PROMPT if is_root_work else SYSTEM_PROMPT)
+    user_prompt = sanitize_text(user_prompt)
     max_tokens_val = 1500 if is_root_work else MAX_OUTPUT_TOKENS
     temperature_val = 0.75 if is_root_work else 0.8
     payload = {
@@ -928,6 +1052,12 @@ def split_reply_segments(text: str) -> list[str]:
 
 async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None):
     """分段拟真发送：闲聊时智能切分 1~2 条连续发送，root 模式整块发送"""
+    # 经过反模板闸削平套路，避免句式坍塌
+    if not is_command_report and ADMIN_MODE != "root":
+        text = de_template(text)
+    recent_bot_replies.append(text)
+    group_last_bot_reply_time[group_id] = time.time()
+
     if is_command_report or len(text) > 120 or ADMIN_MODE == "root":
         await send_group_message(ws, group_id, text, is_command_report=is_command_report, at_user_id=at_user_id)
         return
@@ -963,6 +1093,10 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
     """向 NapCat 发送私聊消息并捕获发送状态"""
     if "[PASS]" in text:
         return
+    if not is_command_report and ADMIN_MODE != "root":
+        text = de_template(text)
+    recent_bot_replies.append(text)
+
     clean_text = strip_markdown(text).strip()
     # 过滤末尾句号
     clean_text = remove_trailing_period(clean_text)
@@ -1403,6 +1537,44 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             await send_group_message(ws, group_id, report, is_command_report=True)
             return
 
+    # 拟真作息睡眠系统 (01:00 ~ 07:00 CST 为入睡期)
+    if is_bot_sleeping():
+        if is_admin:
+            # 主人专属唤醒特权
+            wake_words = ["醒醒", "起床", "别睡了", "起来了", "起来", "快醒醒", "别睡啦", "上工", "开工", "干活"]
+            is_wake = any(w in clean_body for w in wake_words) or clean_body.startswith(("/root", "/user"))
+            if is_wake:
+                sleep_override_until = now + 1800.0  # 临时唤醒 30 分钟
+                logger.info("[作息系统] 主人 %s 触发专属叫醒词，大肥鱼临时唤醒 30 分钟接活！", sender_nick)
+                wake_reply = random.choice([
+                    "(迷迷糊糊揉眼睛，从被窝钻出来) 主人我醒啦，大半夜怎么啦～",
+                    "(打了个长长的哈欠) 呼...主人叫我呀，我醒了！有啥急事快吩咐～",
+                    "(被子一掀瞬间精神) 到！主人我在呢，大半夜需要我做什么呀～"
+                ])
+                await send_group_message(ws, group_id, wake_reply, at_user_id=sender_id)
+                return
+            # 主人正常交谈自动唤醒接活
+            sleep_override_until = now + 1800.0
+        else:
+            # 普通群友在睡眠期（选项 B：睡意梦话提示并继续睡）
+            if is_at or bool(re.search(r"\[CQ:reply,id=-?\d+\]", raw_message)):
+                key = (group_id, sender_id)
+                last_sleep_reply = user_sleep_reply_cd.get(key, 0.0)
+                if now - last_sleep_reply > 180.0:
+                    user_sleep_reply_cd[key] = now
+                    sleepy_quips = [
+                        "呼呼...别吵我睡觉（拉起被子翻身继续睡）",
+                        "唔...好困，明天睡醒再说啦 (打哈欠潜水)",
+                        "呼噜噜...zzz (闭着眼睛吐了个泡泡)",
+                        "大半夜不睡觉抓鱼是吧...困死了不理你 (把头缩进被窝)",
+                        "呼...困得眼睛睁不开，明天白天再找我玩嘛 (翻身)"
+                    ]
+                    await send_group_message(ws, group_id, random.choice(sleepy_quips), at_user_id=sender_id)
+                return
+            else:
+                # 旁观消息静默入睡，绝不主动插话
+                return
+
     # 拼装包含引用的文本
     if reply_prefix:
         full_content = f"{reply_prefix} {clean_body}"
@@ -1484,6 +1656,20 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 1. 直接呼叫模式（@、引用机器人 或 专属追问中）：立即触发响应
     if should_reply_immediately:
         if not is_admin:
+            # 疲劳度衰减检查：防止同一群友短时间内连续疯狂 @ 调戏
+            is_fatigued, is_first_trigger = check_user_fatigue(group_id, sender_id)
+            if is_fatigued:
+                if is_first_trigger:
+                    tired_quips = [
+                        "哎呀别连环艾特啦，本鱼头好大要歇会儿 (翻身潜水)",
+                        "歇会儿歇会儿，你手不酸我嘴都酸了！(闭麦60秒)",
+                        "吵死啦！本大肥鱼也是需要休息的，等会再理你 (溜走)",
+                        "闹麻了，连着喊我不累嘛，本鲸宝要去喝口水冷静一下"
+                    ]
+                    await send_group_message(ws, group_id, random.choice(tired_quips), at_user_id=sender_id)
+                logger.info("[群 %d] 用户 %s 触发疲劳防调戏限制，本次略过", group_id, sender_nick)
+                return
+
             key = (group_id, sender_id)
             last_at = user_last_at_time.get(key, 0.0)
             # 追问状态下防抖设为 2.0 秒，非追问常规被@为 2.5 秒基础冷却
@@ -1503,10 +1689,12 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 2. 旁观模式（未直接找机器人）：严格门控过滤，绝不乱插嘴
     # 过滤短语无意义废话
     if is_low_info_message(clean_body):
+        group_last_msg_time[group_id] = now
         return
         
-    # 意图门控：结合代称、讨论疑问词与群内水群热度综合判定插话
-    should_trigger, is_mention_bot = should_active_interrupt(clean_body, msg_count_since=group_msg_count_since_bot[group_id])
+    # 意图门控：结合冷热场动态权重、代称、讨论疑问词综合判定插话
+    should_trigger, is_mention_bot = should_active_interrupt(clean_body, group_id=group_id, msg_count_since=group_msg_count_since_bot[group_id])
+    group_last_msg_time[group_id] = now
     if not should_trigger:
         return
         
@@ -1649,6 +1837,22 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
             return
         user_last_poke_time[(group_id, user_id)] = now
 
+    # 拟真睡眠作息检查：若正在睡觉被戳
+    if is_bot_sleeping():
+        if is_admin:
+            sleep_override_until = now + 1800.0  # 主人戳一戳直接唤醒 30 分钟
+            logger.info("[作息系统] 主人戳一戳叫醒大肥鱼！")
+        else:
+            logger.info("[群 %d] 处于睡眠期，被群友 %s 戳一戳，触发翻身梦话反应", group_id, user_id)
+            await asyncio.sleep(0.5)
+            sleep_poke = random.choice([
+                "(闭着眼睛把尾巴缩进被窝，翻身继续睡)",
+                "(被戳得翻了个身，砸吧砸吧嘴没醒)",
+                "呼噜...别戳啦，在睡觉呢 (扯被子盖住头)"
+            ])
+            await send_group_message(ws, group_id, sleep_poke, at_user_id=user_id)
+            return
+
     logger.info("[群 %d] 机器人被 %s 戳一戳！触发动态傲娇回复...", group_id, f"管理员 {user_id}" if is_admin else f"群友 {user_id}")
     
     # 异步调用模型生成傲娇动态回复
@@ -1701,6 +1905,12 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         await handle_memory_summary_command(ws, user_id=ADMIN_QQ)
         return
 
+    # 管理员私聊直接自动唤醒睡眠状态 30 分钟
+    global sleep_override_until
+    if is_bot_sleeping():
+        sleep_override_until = time.time() + 1800.0
+        logger.info("[作息系统] 主人发起私聊，大肥鱼自动解除睡眠状态 30 分钟！")
+
     # 管理员指令拦截
     if clean_body.startswith(("/new", "/stop", "/compress", "/b", "/root", "/user")):
         handled = await handle_admin_command(ws, clean_body, is_private=True)
@@ -1715,9 +1925,9 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
             m_clear = re.search(r"(?:memory|memary|记忆|档案)?\s*(?:清除|删掉|清空|重置)\s*(?:用户|群友)?\s*(\d{5,11})", clean_body, re.IGNORECASE)
         if m_clear:
             target_qq = int(m_clear.group(1))
-            cleared = clear_single_user_memory(target_qq, group_id=group_id)
+            cleared = clear_single_user_memory(target_qq, group_id=None)
             if cleared:
-                report = f"已清除本群群友 (QQ {target_qq}) 的记忆档案"
+                report = f"已清除群友 (QQ {target_qq}) 的全部记忆档案"
             else:
                 report = f"记忆库中暂无 (QQ {target_qq}) 的记录"
             await send_private_message(ws, ADMIN_QQ, report, is_command_report=True)
