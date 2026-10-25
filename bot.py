@@ -693,11 +693,12 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         if ADMIN_MODE == "root":
             user_prompt = (
                 f"{identity_note}"
-                f"以下是你与专属主人兼开发者 (QQ {ADMIN_QQ}) 的私聊指令与工作需求：\n{timeline_text}\n\n"
-                f"【核心执行要求 - 当前为 /root 生产工作模式】：\n"
-                f"1. 主人拥有绝对最高权限，正在向你下达具体的工程与开发任务；\n"
-                f"2. 彻底杜绝任何傲娇演戏、受气甩尾巴、推脱或敷衍糊弄行为；\n"
-                f"3. 以严谨、专业、高效的工程师标准认真作答，提供详实、严密、可直接落地的实质成果或代码方案，篇幅按需求展开，严禁假大空："
+                f"【当前交谈者身份】：专属主人兼创造者「{sender_nick}」(QQ {ADMIN_QQ})\n"
+                f"以下是你们的历史对话记录：\n{timeline_text}\n\n"
+                f"【核心交互原则】：\n"
+                f"1. 你依然是主人身边那条熟悉的大肥鱼/小鲸鱼，在 /root 模式下你是他的私人技术搭档与秘书；\n"
+                f"2. 懂主人的日常口语、黑话、意图与暗语，绝不咬文嚼字，绝不打官腔背书；\n"
+                f"3. 像天天开黑写代码的老朋友一样交流，直接奔着解决问题去，干脆利落自然回复（1~2句，绝不用句号）："
             )
         else:
             user_prompt = (
@@ -712,9 +713,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             user_prompt = (
                 f"{identity_note}"
                 f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
-                f"【主人 (QQ {ADMIN_QQ}) 在群里向你下达工作指令】：\n"
-                f"【核心执行要求 - 当前为 /root 生产工作模式】：\n"
-                f"彻底杜绝娱乐糊弄与演戏敷衍！以严肃务实、专业的态度切实回答主人的工作与技术需求，直击痛点，给出完整详尽的实质内容："
+                f"【主人「{sender_nick}」(QQ {ADMIN_QQ}) 在群里找你】：\n"
+                f"当前是 /root 工作模式，你是主人的技术老搭档兼秘书。懂主人的大白话与口语意图，像熟人开黑一样干脆利落接话（1~2句，绝不用句号）："
             )
         else:
             user_prompt = (
@@ -1799,7 +1799,7 @@ async def main():
         try:
             async with aiohttp.ClientSession() as session:
                 logger.info("正在连接 NapCat OneBot 11 (%s)...", NAPCAT_WS_URL)
-                async with session.ws_connect(NAPCAT_WS_URL, heartbeat=20.0) as ws:
+                async with session.ws_connect(NAPCAT_WS_URL) as ws:
                     logger.info("✅ 成功连接到 NapCat WebSocket！开始监听消息事件。")
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
