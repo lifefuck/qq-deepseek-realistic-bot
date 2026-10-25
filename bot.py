@@ -27,11 +27,13 @@ import aiohttp
 import web_dashboard
 import games
 import connectors
+import cross_memory
+import media_resolver
 
 # ==================== 基础配置 ====================
 NAPCAT_WS_URL = os.environ.get("NAPCAT_WS_URL", "ws://127.0.0.1:3001")
-BOT_QQ = int(os.environ.get("BOT_QQ", "1000000000"))
-ADMIN_QQ = int(os.environ.get("ADMIN_QQ", "1000000001"))            # 最高超级管理员 (life)
+BOT_QQ = 1000000000
+ADMIN_QQ = 1000000001            # 最高超级管理员 (life)
 
 ALLOWED_GROUPS: Set[int] = {
     123456789,
@@ -40,7 +42,7 @@ ALLOWED_GROUPS: Set[int] = {
     123456786,
 }
 
-SILICONFLOW_API_URL = os.environ.get("DEEPSEEK_API_URL", "https://api.siliconflow.cn/v1/chat/completions")
+SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
 SILICONFLOW_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-placeholder-redacted")
 MODEL_NAME = "deepseek-ai/DeepSeek-V3"
 
@@ -273,8 +275,12 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
     mem["favor"] = max(0, min(100, old_favor + favor_delta))
     if new_note and new_note not in mem["notes"]:
         mem["notes"].append(new_note)
-        if len(mem["notes"]) > 5:
-            mem["notes"] = mem["notes"][-5:]
+        # 记忆条目与字符预算自愈引擎 (源自 dsh-companion 协议)：
+        # 当条目超过 6 条或总字符超过 120 字时，自动合并压缩为高密度事实
+        total_chars = sum(len(n) for n in mem["notes"])
+        if len(mem["notes"]) > 6 or total_chars > 120:
+            compact_notes = "；".join(mem["notes"])
+            mem["notes"] = [compact_notes[:100]]  # 截取提炼高密度关键印象，永不超额
             
     mem["updated_at"] = time.time()
     logger.info("[好感判定] 群 %s 用户 %s(%s): delta=%+d, impression=%r, 好感度: %d -> %d/100", 
@@ -1109,6 +1115,11 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
 
     system_content = sanitize_text(ROOT_SYSTEM_PROMPT if is_root_work else SYSTEM_PROMPT)
     user_prompt = sanitize_text(user_prompt + web_search_context)
+    # 注入跨群公共话题记忆（仅供认知背景，不破坏当前群独立性）
+    if group_id:
+        cross_topics_hint = cross_memory.cross_group_mgr.get_recent_topics_prompt(exclude_group_id=group_id, limit=3)
+        if cross_topics_hint:
+            user_prompt = sanitize_text(user_prompt + cross_topics_hint)
     max_tokens_val = 1500 if is_root_work else MAX_OUTPUT_TOKENS
     temperature_val = 0.75 if is_root_work else 0.8
     payload = {
@@ -1724,6 +1735,15 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     reply_prefix = await extract_reply_context(ws, event, raw_message)
     raw_message = await expand_forward_messages(ws, raw_message)
 
+    # 深度解析主流媒体短链 (抖音/小红书/B站短链)
+    if http_session and ("douyin.com" in raw_message or "xhslink.com" in raw_message or "b23.tv" in raw_message):
+        try:
+            media_info = await media_resolver.parse_media_content(http_session, raw_message)
+            if media_info and media_info.get("summary"):
+                raw_message = f"{raw_message}\n{media_info['summary']}"
+        except Exception:
+            pass
+
     # 清洗掉针对机器人的 @ CQ 码以及其他无关 CQ
     clean_body = re.sub(rf"\[CQ:at,[^\]]*qq={BOT_QQ}[^\]]*\]", "", raw_message)
     clean_body = clean_cq_codes(clean_body).strip()
@@ -1925,6 +1945,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     }
     group_timelines[group_id].append(record_item)
     group_history_pool[group_id].append(record_item)
+    # 异步非阻塞推入跨群公共话题（仅内存+脏标记）
+    cross_memory.cross_group_mgr.record_topic(group_id, sender_nick, full_content)
     logger.info("[群 %d][%s] %s%s: %s", group_id, "被@" if is_at else "群聊", prefix, sender_nick, full_content)
     
     # 检查是否直接呼叫机器人：显式 @ 机器人，或者回复引用了机器人之前的发言
@@ -2401,6 +2423,7 @@ async def main():
     # 启动轻量现代浅色 Web 仪表盘 (监听 0.0.0.0:8088)
     try:
         await web_dashboard.start_web_server(get_bot_dashboard_status, update_config_func=update_group_config, port=8088)
+        cross_memory.cross_group_mgr.start_background_flusher()
         logger.info("🌐 Web 仪表盘已成功启动并监听: http://0.0.0.0:8088")
     except Exception as e:
         logger.error("Web 仪表盘启动异常: %s", e)

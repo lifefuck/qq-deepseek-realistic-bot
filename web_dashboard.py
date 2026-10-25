@@ -10,7 +10,7 @@ import time
 from typing import Callable, Deque, Dict, Any, Optional
 from aiohttp import web
 
-recent_web_logs: Deque[str] = collections.deque(maxlen=60)
+recent_web_logs: Deque[str] = collections.deque(maxlen=200)
 
 class DequeLogHandler(logging.Handler):
     """拦截近期日志供 Web 仪表盘实时查看"""
@@ -435,9 +435,10 @@ INDEX_HTML = """<!DOCTYPE html>
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
       font-size: 12px;
       line-height: 1.6;
-      padding: 14px;
+      padding: 16px;
       border-radius: 8px;
-      height: 280px;
+      height: 520px;
+      max-height: 70vh;
       overflow-y: auto;
       white-space: pre-wrap;
       word-break: break-all;
