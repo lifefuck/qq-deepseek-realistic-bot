@@ -22,8 +22,9 @@ import re
 import time
 import datetime
 import uuid
-from typing import Deque, Dict, Optional, Set, Tuple
+from typing import Any, Deque, Dict, Optional, Set, Tuple
 import aiohttp
+import web_dashboard
 
 # ==================== 基础配置 ====================
 NAPCAT_WS_URL = "ws://127.0.0.1:3001"
@@ -82,6 +83,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger("DeepSeekBot")
+web_dashboard.setup_log_capture(logger)
+BOT_START_TIME = time.time()
 
 # ==================== 群友持久化记忆与好感度 (按群隔离) ====================
 MEMORY_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "user_memories.json")
@@ -2014,10 +2017,54 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
     await asyncio.sleep(0.8)
     await send_private_message(ws, ADMIN_QQ, reply, is_command_report=(ADMIN_MODE == "root"))
 
+# ==================== Web 仪表盘状态导出 ====================
+def get_bot_dashboard_status() -> Dict[str, Any]:
+    """生成供给轻量 Web 仪表盘的实时快照数据"""
+    now = time.time()
+    cst_tz = datetime.timezone(datetime.timedelta(hours=8))
+    start_dt = datetime.datetime.fromtimestamp(BOT_START_TIME, tz=cst_tz)
+
+    groups_data = []
+    for gid in sorted(ALLOWED_GROUPS):
+        last_msg = group_last_msg_time.get(gid, 0.0)
+        last_reply = group_last_bot_reply_time.get(gid, 0.0)
+        msg_count = group_msg_count_since_bot.get(gid, 0)
+        prob, why = calculate_interject_probability(gid, 0.35)
+        groups_data.append({
+            "group_id": gid,
+            "last_msg_ago": (now - last_msg) if last_msg > 0 else -1,
+            "last_bot_reply_ago": (now - last_reply) if last_reply > 0 else -1,
+            "msg_count_since": msg_count,
+            "interject_prob": prob,
+            "interject_why": why
+        })
+
+    return {
+        "bot": {
+            "qq": BOT_QQ,
+            "admin_qq": ADMIN_QQ,
+            "model": MODEL_NAME,
+            "admin_mode": ADMIN_MODE,
+            "is_sleeping": is_bot_sleeping(),
+            "sleep_override": (now < sleep_override_until),
+            "uptime": (now - BOT_START_TIME),
+            "start_time_str": start_dt.strftime("%Y-%m-%d %H:%M:%S")
+        },
+        "groups": groups_data,
+        "memories": user_memories
+    }
+
 # ==================== 主连接循环 ====================
 async def main():
     logger.info("启动 QQ DeepSeek 群聊 & 私聊机器人...")
     logger.info("白名单群: %s | 机器人 QQ: %d | 模型: %s | 管理员: %d", list(ALLOWED_GROUPS), BOT_QQ, MODEL_NAME, ADMIN_QQ)
+
+    # 启动轻量现代浅色 Web 仪表盘 (监听 0.0.0.0:8088)
+    try:
+        await web_dashboard.start_web_server(get_bot_dashboard_status, port=8088)
+        logger.info("🌐 Web 仪表盘已成功启动并监听: http://0.0.0.0:8088")
+    except Exception as e:
+        logger.error("Web 仪表盘启动异常: %s", e)
     
     while True:
         try:
