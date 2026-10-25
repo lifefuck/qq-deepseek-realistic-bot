@@ -40,7 +40,6 @@ ALLOWED_GROUPS: Set[int] = {
     123456788,
     123456787,
     123456786,
-    1000000007,
 }
 
 SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
