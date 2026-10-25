@@ -479,8 +479,8 @@ INDEX_HTML = """<!DOCTYPE html>
   <div class="grid-top">
     <div class="card">
       <div class="card-title">白名单群聊数量</div>
-      <div class="card-value" id="valGroupCount">5 个群</div>
-      <div class="card-sub" id="valGroupSub">123456789 / 123456788 / 123456787 / 123456786 / 692943881</div>
+      <div class="card-value" id="valGroupCount">4 个群</div>
+      <div class="card-sub" id="valGroupSub">123456789 / 123456788 / 123456787 / 123456786</div>
     </div>
     <div class="card">
       <div class="card-title">已建立群友档案</div>
