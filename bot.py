@@ -25,6 +25,8 @@ import uuid
 from typing import Any, Deque, Dict, Optional, Set, Tuple
 import aiohttp
 import web_dashboard
+import games
+import connectors
 
 # ==================== 基础配置 ====================
 NAPCAT_WS_URL = "ws://127.0.0.1:3001"
@@ -303,6 +305,32 @@ def check_and_record_group_rate_limit(group_id: int) -> bool:
     return True
 
 # ==================== 状态存储（按群隔离） ====================
+# 群聊近期图片缓存池 (用于两段式搜番与以图搜图): group_id -> deque of (image_url, timestamp, sender_nick)
+group_recent_images: Dict[int, Deque[Tuple[str, float, str]]] = collections.defaultdict(lambda: collections.deque(maxlen=10))
+
+# 情绪立绘目录
+AVATARS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "avatars", "v2-状态立绘")
+
+def get_status_avatar_b64(emotion: str = "angry") -> Optional[str]:
+    """根据大肥鱼情绪获取状态立绘 base64 (angry / sleep / shy / think)"""
+    mapping = {
+        "angry": "01_生气鼓鼓_大头.png",
+        "sleep": "02_睡衣晚安_大头.png",
+        "shy": "03_脸红害羞_大头.png",
+        "think": "04_好奇思考_大头.png"
+    }
+    fname = mapping.get(emotion)
+    if not fname:
+        return None
+    p = os.path.join(AVATARS_DIR, fname)
+    if os.path.exists(p):
+        try:
+            with open(p, "rb") as f:
+                return base64.b64encode(f.read()).decode("utf-8")
+        except Exception:
+            pass
+    return None
+
 group_timelines: Dict[int, Deque[Dict[str, any]]] = collections.defaultdict(lambda: collections.deque(maxlen=TIMELINE_MAX_LEN))
 # 长窗口历史池（用于 /b 深度群聊总结，保留最近 200 条）
 group_history_pool: Dict[int, Deque[Dict[str, any]]] = collections.defaultdict(lambda: collections.deque(maxlen=200))
@@ -386,7 +414,10 @@ DEFAULT_GROUP_CONFIG = {
     "enable_interject": True,   # 是否允许主动插话
     "interject_prob": 0.35,     # 主动插话基准概率 (0.0 ~ 1.0)
     "enable_sleep": True,       # 是否启用 01:00~07:00 拟真作息
-    "enable_poke": True         # 是否开启戳一戳互动与回戳
+    "enable_poke": True,        # 是否开启戳一戳互动与回戳
+    "enable_games": True,       # 是否开启数字炸弹/掷骰子等文字游戏
+    "enable_search": True,      # 是否开启联网热点检索 (鸭鸭搜/B站)
+    "enable_bilibili_push": False # 是否开启定时热门视频推送 (默认关)
 }
 DEFAULT_PRIVATE_CONFIG = {
     "mode": "user"
@@ -991,6 +1022,7 @@ async def extract_reply_context(ws: aiohttp.ClientWebSocketResponse, event: dict
 # ==================== LLM 调用 ====================
 async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False, is_private: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, sender_nick: str = "", group_id: Optional[int] = None) -> Optional[str]:
     """请求 SiliconFlow DeepSeek-V3 模型"""
+    global http_session
     headers = {
         "Authorization": f"Bearer {SILICONFLOW_API_KEY}",
         "Content-Type": "application/json"
@@ -1060,8 +1092,23 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"你正在旁观，若想吐槽反串或有想法，用 1 句极短接话；插不上话输出 [PASS]："
         )
     
+    # 联网检索增强：当对话涉及最新时效词且群开启搜索时，自动注入轻量网页搜索上下文
+    web_search_context = ""
+    cfg = get_group_config(group_id)
+    if cfg.get("enable_search", True) and http_session:
+        time_keywords = ("今天", "最新", "热搜", "发布会", "刚刚", "最近发生", "发生什么事", "有什么新闻")
+        if any(kw in timeline_text for kw in time_keywords):
+            # 提取简短检索关键词
+            m_q = re.search(r'(?:今天|最新|刚刚|查查|搜搜|看下)?\s*([^\n，。？！]{3,20})', timeline_text)
+            query_str = m_q.group(1).strip() if m_q else timeline_text[-20:].strip()
+            if query_str:
+                search_res = await connectors.search_web_brief(http_session, query_str, limit=2)
+                if search_res:
+                    snippets_str = " | ".join([f"{r['title']}: {r['snippet']}" for r in search_res])
+                    web_search_context = f"\n【实时联网搜索参考（仅供知识辅助，依然保持自身人设）】：{snippets_str}\n"
+
     system_content = sanitize_text(ROOT_SYSTEM_PROMPT if is_root_work else SYSTEM_PROMPT)
-    user_prompt = sanitize_text(user_prompt)
+    user_prompt = sanitize_text(user_prompt + web_search_context)
     max_tokens_val = 1500 if is_root_work else MAX_OUTPUT_TOKENS
     temperature_val = 0.75 if is_root_work else 0.8
     payload = {
@@ -1074,7 +1121,6 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         "temperature": temperature_val
     }
     
-    global http_session
     if http_session is None or http_session.closed:
         http_session = aiohttp.ClientSession()
 
@@ -1148,6 +1194,30 @@ def remove_trailing_period(text: str) -> str:
     text = re.sub(r'[\(（][\)）]?\s*$', '', text).strip()
     return text
 
+# ==================== 外链防风控混淆器 ====================
+_OBFUSCATE_CHARS = ("中", "的", "了", "啊", "呀", "呢", "哦", "嘛", "啦", "哈")
+_OBFUSCATE_HOST_RE = re.compile(r"(https?://)([^/\s?#（）【】《》，。；：、！？]+)", re.IGNORECASE)
+_CN_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
+
+def obfuscate_urls_for_qq(text: str) -> str:
+    """在每个外链域名内部随机插一个汉字，打破 QQ 外链探测，100% 避开外链风控吞消息"""
+    if not text or "://" not in text:
+        return text
+
+    def _replace(m):
+        proto = m.group(1)
+        host = m.group(2)
+        if _CN_CHAR_RE.search(host):
+            return m.group(0)  # 已经混淆或包含中文，幂等跳过
+        ch = random.choice(_OBFUSCATE_CHARS)
+        if host.startswith("www.") and len(host) > 5:
+            pos = random.randint(1, 4)
+        else:
+            pos = random.randint(1, max(1, len(host) - 1))
+        return f"{proto}{host[:pos]}{ch}{host[pos:]}"
+
+    return _OBFUSCATE_HOST_RE.sub(_replace, text)
+
 # 群消息发送频率滑动窗口限制（QQ 群官方/NapCat 风控：单群 1 分钟最多 10 条）
 # 为确保绝对安全且留出管理与紧急指令配额，单群限制为每 60 秒最多 8 条，超出的自动排队或延时，避免被风控 1200 拦截
 group_sent_times: Dict[int, list[float]] = collections.defaultdict(list)
@@ -1158,6 +1228,8 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
     if "[PASS]" in text:
         return
     clean_text = strip_markdown(text).strip()
+    # 链接混淆防风控
+    clean_text = obfuscate_urls_for_qq(clean_text)
     # 过滤末尾句号
     clean_text = remove_trailing_period(clean_text)
     # 普通聊天强控 200 字防水群；管理汇报与 memory 概览解除字数硬截断限制（放宽至 2000 字）
@@ -1260,7 +1332,16 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     segments = split_reply_segments(text)
     # 25% 概率或强烈情绪时触发表情包
     should_send_meme = (random.random() < 0.25) or any(k in text for k in ["大肥鱼", "炸毛", "闹麻了", "草", "无敌了", "才不是", "哼", "气死"])
-    meme_b64 = get_random_meme_b64(text) if should_send_meme else None
+    # 情绪立绘或表情包选择：如果文本带有强烈情绪，优先匹配状态立绘，否则匹配随机表情包
+    status_avatar = None
+    if "气" in text or "死" in text or "滚" in text or "闭嘴" in text:
+        status_avatar = get_status_avatar_b64("angry")
+    elif "害羞" in text or "夸" in text or "爱" in text or "喜欢" in text:
+        status_avatar = get_status_avatar_b64("shy")
+    elif "为什么" in text or "怎么" in text or "思考" in text:
+        status_avatar = get_status_avatar_b64("think")
+
+    final_pic_b64 = status_avatar if status_avatar else (get_random_meme_b64(text) if should_send_meme else None)
 
     for i, seg in enumerate(segments):
         target_at = at_user_id if i == 0 else None
@@ -1269,10 +1350,10 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
             delay = min(1.2, max(0.5, len(seg) * 0.04))
             await asyncio.sleep(delay)
             
-    # 文字发完后，如果触发了表情包，延迟 0.5s 单独甩出一张真实图片表情包
-    if meme_b64:
+    # 文字发完后，如果触发了立绘或表情包，延迟 0.5s 单独甩出一张真实图片
+    if final_pic_b64:
         await asyncio.sleep(0.5)
-        await send_meme_message(ws, group_id=group_id, b64_data=meme_b64)
+        await send_meme_message(ws, group_id=group_id, b64_data=final_pic_b64)
 
 async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int, text: str, is_command_report: bool = False):
     """向 NapCat 发送私聊消息并捕获发送状态"""
@@ -1283,6 +1364,7 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
     recent_bot_replies.append(text)
 
     clean_text = strip_markdown(text).strip()
+    clean_text = obfuscate_urls_for_qq(clean_text)
     # 过滤末尾句号
     clean_text = remove_trailing_period(clean_text)
     max_len = 2000 if is_command_report else 200
@@ -1631,6 +1713,13 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 累加该群自上次机器人发言以来的消息条数
     group_msg_count_since_bot[group_id] += 1
 
+    # 捕获群聊中的图片进入两段式近期图片缓冲池
+    m_imgs = re.findall(r'\[CQ:image,[^\]]*url=([^\],]+)', raw_message)
+    if m_imgs:
+        for u in m_imgs:
+            u_clean = u.replace("&amp;", "&")
+            group_recent_images[group_id].append((u_clean, time.time(), sender_nick))
+
     # 解析引用消息与合并转发
     reply_prefix = await extract_reply_context(ws, event, raw_message)
     raw_message = await expand_forward_messages(ws, raw_message)
@@ -1656,6 +1745,43 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     if clean_body.startswith(("/memary", "/memory")):
         await handle_memory_summary_command(ws, group_id=group_id)
         return
+
+    # 1. 轻量文字游戏（免状态：roll、抽签、抛硬币）拦截
+    cfg = get_group_config(group_id)
+    if cfg.get("enable_games", True):
+        quick_game_reply = games.handle_quick_game_commands(clean_body)
+        if quick_game_reply:
+            await send_group_message(ws, group_id, quick_game_reply, at_user_id=sender_id)
+            return
+
+        # 2. 数字炸弹状态机拦截
+        handled_bomb, bomb_reply = games.process_number_bomb(group_id, clean_body, sender_id, sender_nick)
+        if handled_bomb and bomb_reply:
+            await send_group_message(ws, group_id, bomb_reply, at_user_id=sender_id)
+            return
+
+    # 3. 两段式搜番/搜动画截图出处拦截
+    if re.search(r"(?:什么番|哪部番|谁画的|出处|搜番|搜截图|找番)", clean_body):
+        # 寻找群内 90 秒内的有效图片
+        now_ts = time.time()
+        target_img_url = None
+        for img_u, img_t, img_sender in reversed(group_recent_images[group_id]):
+            if now_ts - img_t < 90.0:
+                target_img_url = img_u
+                break
+        if target_img_url and http_session:
+            anime_info = await connectors.search_anime_by_image(http_session, target_img_url)
+            if anime_info and not anime_info.get("uncertain"):
+                rep = (
+                    f"🎬 帮你看出来啦！这是动画《{anime_info['title']}》\n"
+                    f"第 {anime_info['episode']} 集 · 画面大概在 {anime_info['time']}\n"
+                    f"（匹配相似度: {anime_info['similarity']}%）"
+                )
+                await send_group_message(ws, group_id, rep, at_user_id=sender_id)
+                return
+            elif anime_info and anime_info.get("uncertain"):
+                await send_group_message(ws, group_id, f"👀 好像是动画截图，但画面不够典型，我不太确信是不是《{anime_info.get('data', {}).get('anilist', {}).get('title', {}).get('native', '某部番')}》", at_user_id=sender_id)
+                return
 
     # 管理员快捷指令检测
     if is_admin and clean_body.startswith(("/new", "/stop", "/compress", "/b", "/root", "/user")):

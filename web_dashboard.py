@@ -647,6 +647,8 @@ INDEX_HTML = """<!DOCTYPE html>
         const isInterjectOn = cfg.enable_interject !== false;
         const isSleepOn = cfg.enable_sleep !== false;
         const isPokeOn = cfg.enable_poke !== false;
+        const isGamesOn = cfg.enable_games !== false;
+        const isSearchOn = cfg.enable_search !== false;
         const probPct = Math.round((cfg.interject_prob || 0.35) * 100);
 
         let badgeClass = "badge-slate";
@@ -702,6 +704,24 @@ INDEX_HTML = """<!DOCTYPE html>
                   onclick="setGroupConfig('${g.group_id}', 'enable_poke', ${!isPokeOn})">
                   <span class="opt-on">允许</span>
                   <span class="opt-off">忽略</span>
+                </div>
+              </div>
+
+              <div class="control-row">
+                <span class="control-label">多人文字群游戏 (炸弹/roll)</span>
+                <div class="switch-pill ${isGamesOn ? 'active-on' : 'active-off'}"
+                  onclick="setGroupConfig('${g.group_id}', 'enable_games', ${!isGamesOn})">
+                  <span class="opt-on">开启</span>
+                  <span class="opt-off">禁用</span>
+                </div>
+              </div>
+
+              <div class="control-row">
+                <span class="control-label">联网时效检索 (最新/热点)</span>
+                <div class="switch-pill ${isSearchOn ? 'active-on' : 'active-off'}"
+                  onclick="setGroupConfig('${g.group_id}', 'enable_search', ${!isSearchOn})">
+                  <span class="opt-on">开启</span>
+                  <span class="opt-off">离线</span>
                 </div>
               </div>
             </div>
