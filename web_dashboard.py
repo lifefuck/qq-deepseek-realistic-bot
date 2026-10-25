@@ -462,10 +462,10 @@ INDEX_HTML = """<!DOCTYPE html>
 
   <header>
     <div class="header-left">
-      <img class="bot-avatar" src="https://q1.qlogo.cn/g?b=qq&nk=1000000000&s=100" alt="Bot Avatar" onerror="this.src='https://dummyimage.com/100x100/2563eb/ffffff?text=FISH'">
-      <div class="title-box">
-        <h1>🐟 大肥鱼 AI 控制台</h1>
-        <p>基座: DeepSeek-V3 · 实体 QQ: 1000000000 · 双 Bot 协同中</p>
+      <img class="bot-avatar" src="https://dummyimage.com/100x100/2563eb/ffffff?text=FISH" alt="Bot Avatar" onerror="this.src='https://dummyimage.com/100x100/2563eb/ffffff?text=FISH'">
+      <div>
+        <h2 id="valBotName">AI 状态</h2>
+        <p id="valBotQQ">基座: DeepSeek-V3 · 双 Bot 协同中</p>
       </div>
     </div>
     <div class="status-badges" id="headerBadges">
@@ -480,7 +480,7 @@ INDEX_HTML = """<!DOCTYPE html>
     <div class="card">
       <div class="card-title">白名单群聊数量</div>
       <div class="card-value" id="valGroupCount">4 个群</div>
-      <div class="card-sub" id="valGroupSub">123456789 / 123456788 / 123456787 / 123456786</div>
+      <div class="card-sub" id="valGroupSub">多群已载入</div>
     </div>
     <div class="card">
       <div class="card-title">已建立群友档案</div>
@@ -527,7 +527,7 @@ INDEX_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
-    let currentTab = "123456789";
+    let currentTab = "";
     let latestData = null;
 
     function formatRelative(secondsAgo) {

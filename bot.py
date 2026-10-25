@@ -32,14 +32,11 @@ import media_resolver
 
 # ==================== 基础配置 ====================
 NAPCAT_WS_URL = os.environ.get("NAPCAT_WS_URL", "ws://127.0.0.1:3001")
-BOT_QQ = 1000000000
-ADMIN_QQ = 1000000001            # 最高超级管理员 (life)
+BOT_QQ = int(os.environ.get("BOT_QQ", "1000000000"))
+ADMIN_QQ = int(os.environ.get("ADMIN_QQ", "1000000001"))            # 最高超级管理员 (life)
 
 ALLOWED_GROUPS: Set[int] = {
-    123456789,
-    123456788,
-    123456787,
-    123456786,
+    int(x.strip()) for x in os.environ.get("ALLOWED_GROUPS", "123456789").split(",") if x.strip().isdigit()
 }
 
 SILICONFLOW_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
@@ -266,7 +263,7 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
         old_favor = mem.get("favor", 80)
         mem["favor"] = max(80, min(100, old_favor + max(0, favor_delta)))
         mem["updated_at"] = time.time()
-        logger.info("[好感判定] 主人 life(1000000001) 好感维持: %d/100 (免脏标签污染)", mem["favor"])
+        logger.info("[好感判定] 主人 life(%s) 好感维持: %d/100 (免脏标签污染)", target_uid, mem["favor"])
         async with memory_write_lock:
             save_user_memories()
         return
@@ -1723,7 +1720,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     now = time.time()
     
     # 提取纯文本与精准 @ 判定（基于 OneBot 11 规范的 QQ 号精准判定）
-    # 匹配针对机器人 QQ 1000000000 的 @ CQ 码（兼容任何可选属性）
+    # 匹配针对机器人 QQ 的 @ CQ 码（兼容任何可选属性）
     is_at = bool(re.search(rf"\[CQ:at,[^\]]*qq={BOT_QQ}[^\]]*\]", raw_message))
     
     # 也检查 OneBot11 原始 message 数组节点（结构化消息最稳健）
