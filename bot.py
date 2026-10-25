@@ -408,7 +408,8 @@ DEFAULT_GROUP_CONFIG = {
     "enable_poke": True,        # 是否开启戳一戳互动与回戳
     "enable_games": True,       # 是否开启数字炸弹/掷骰子等文字游戏
     "enable_search": True,      # 是否开启联网热点检索 (鸭鸭搜/B站)
-    "enable_bilibili_push": False # 是否开启定时热门视频推送 (默认关)
+    "enable_bilibili_push": False, # 是否开启定时热门视频推送 (默认关)
+    "enable_yunzai": True       # 是否开启云崽游戏生态 (原神/星铁/米游社)
 }
 DEFAULT_PRIVATE_CONFIG = {
     "mode": "user"
@@ -443,6 +444,56 @@ def save_group_configs():
     except Exception as e:
         logger.error("保存群独立配置失败: %s", e)
 
+YUNZAI_OTHER_YAML = os.environ.get("YUNZAI_OTHER_YAML", "")
+
+def sync_yunzai_whitelist(group_id: int, enable: bool):
+    """同步修改云崽 other.yaml 中的 whiteGroup 白名单"""
+    if not YUNZAI_OTHER_YAML or not os.path.exists(YUNZAI_OTHER_YAML):
+        return
+    try:
+        with open(YUNZAI_OTHER_YAML, "r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        new_lines = []
+        in_white_group = False
+        white_groups = []
+        header_index = -1
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if stripped.startswith("whiteGroup:"):
+                in_white_group = True
+                header_index = len(new_lines)
+                new_lines.append(line)
+                continue
+            elif in_white_group:
+                if line and not line.startswith(" ") and not line.startswith("\t") and not stripped.startswith("#"):
+                    in_white_group = False
+                elif stripped.startswith("-"):
+                    m = re.search(r"-\s*(\d+)", stripped)
+                    if m:
+                        white_groups.append(int(m.group(1)))
+                    continue
+
+            new_lines.append(line)
+
+        if enable:
+            if group_id not in white_groups:
+                white_groups.append(group_id)
+        else:
+            white_groups = [g for g in white_groups if g != group_id]
+
+        group_lines = [f"  - {g}\n" for g in white_groups]
+        if header_index != -1:
+            for gl in reversed(group_lines):
+                new_lines.insert(header_index + 1, gl)
+
+        with open(YUNZAI_OTHER_YAML, "w", encoding="utf-8") as f:
+            f.writelines(new_lines)
+        logger.info("[云崽联动] 已同步群 %d 云崽白名单状态 -> %s (当前白名单: %s)", group_id, enable, white_groups)
+    except Exception as e:
+        logger.error("[云崽联动] 同步 other.yaml 失败: %s", e)
+
 def get_group_config(group_id: Optional[int]) -> dict:
     if group_id is None:
         return group_configs.get("private", DEFAULT_PRIVATE_CONFIG)
@@ -459,6 +510,8 @@ def update_group_config(group_id: Optional[int], key: str, value: Any) -> bool:
     cfg[key] = value
     save_group_configs()
     logger.info("[配置更新] 频道 %s 更新 %s -> %r", "私聊" if group_id is None else f"群 {group_id}", key, value)
+    if key == "enable_yunzai" and group_id is not None:
+        sync_yunzai_whitelist(group_id, bool(value))
     return True
 
 load_group_configs()
