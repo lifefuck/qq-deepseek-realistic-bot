@@ -463,9 +463,9 @@ INDEX_HTML = """<!DOCTYPE html>
   <header>
     <div class="header-left">
       <img class="bot-avatar" src="https://dummyimage.com/100x100/2563eb/ffffff?text=FISH" alt="Bot Avatar" onerror="this.src='https://dummyimage.com/100x100/2563eb/ffffff?text=FISH'">
-      <div>
-        <h2 id="valBotName">AI 状态</h2>
-        <p id="valBotQQ">基座: DeepSeek-V3 · 双 Bot 协同中</p>
+      <div class="title-box">
+        <h1>🐟 大肥鱼 AI 控制台</h1>
+        <p>基座: DeepSeek-V3 · 实体已就绪 · 双 Bot 协同中</p>
       </div>
     </div>
     <div class="status-badges" id="headerBadges">
@@ -609,7 +609,9 @@ INDEX_HTML = """<!DOCTYPE html>
       if (data.groups) {
         document.getElementById('valGroupCount').innerText = data.groups.length + " 个群";
         const sub = document.getElementById('valGroupSub');
-        if (sub) sub.innerText = data.groups.map(g => g.group_id).join(' / ');
+        if (sub) {
+          sub.innerText = data.groups.map(g => (g.group_name && !g.group_name.startsWith('群聊 ')) ? `${g.group_name} (${g.group_id})` : `${g.group_id}`).join(' / ');
+        }
       }
     }
 
@@ -665,11 +667,12 @@ INDEX_HTML = """<!DOCTYPE html>
         if (g.interject_why.includes("热场")) badgeClass = "badge-success";
         else if (g.interject_why.includes("冷场")) badgeClass = "badge-info";
 
+        const gName = g.group_name || `群 ${g.group_id}`;
         html += `
           <div class="group-card">
             <div class="group-card-header">
               <span class="group-id">
-                群 ${g.group_id}
+                ${gName} <span style="font-size:12px; color:var(--text-muted); font-weight:normal;">(${g.group_id})</span>
                 <button class="btn-mode-toggle ${isRoot ? 'btn-mode-root' : 'btn-mode-user'}"
                   onclick="setGroupConfig('${g.group_id}', 'mode', '${isRoot ? 'user' : 'root'}')">
                   ${isRoot ? '🛠️ root模式 (点切闲聊)' : '💬 user闲聊 (点切root)'}
@@ -796,9 +799,20 @@ INDEX_HTML = """<!DOCTYPE html>
         currentTab = groups[0];
       }
 
+      // 建立 group_id -> group_name 字典
+      const nameMap = {};
+      if (data.groups) {
+        for (const item of data.groups) {
+          nameMap[String(item.group_id)] = item.group_name;
+        }
+      }
+
       let html = "";
       for (const g of groups) {
-        const label = g === "private" ? "私聊专属记忆" : `群 ${g}`;
+        let label = g === "private" ? "私聊专属记忆" : `群 ${g}`;
+        if (g !== "private" && nameMap[String(g)] && !nameMap[String(g)].startsWith("群聊 ")) {
+          label = `${nameMap[String(g)]} (${g})`;
+        }
         const active = g === currentTab ? "active" : "";
         html += `<button class="tab-btn ${active}" onclick="switchTab('${g}')">${label} (${Object.keys(data.memories[g]).length})</button>`;
       }
