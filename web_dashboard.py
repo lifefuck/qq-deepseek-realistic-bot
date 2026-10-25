@@ -479,8 +479,8 @@ INDEX_HTML = """<!DOCTYPE html>
   <div class="grid-top">
     <div class="card">
       <div class="card-title">白名单群聊数量</div>
-      <div class="card-value" id="valGroupCount">4 个群</div>
-      <div class="card-sub">123456789 / 123456788 / 123456787 / 123456786</div>
+      <div class="card-value" id="valGroupCount">5 个群</div>
+      <div class="card-sub" id="valGroupSub">123456789 / 123456788 / 123456787 / 123456786 / 692943881</div>
     </div>
     <div class="card">
       <div class="card-title">已建立群友档案</div>
@@ -605,6 +605,12 @@ INDEX_HTML = """<!DOCTYPE html>
         }
       }
       document.getElementById('valUserCount').innerText = totalUsers + " 位群友";
+
+      if (data.groups) {
+        document.getElementById('valGroupCount').innerText = data.groups.length + " 个群";
+        const sub = document.getElementById('valGroupSub');
+        if (sub) sub.innerText = data.groups.map(g => g.group_id).join(' / ');
+      }
     }
 
     let toastTimer = null;
