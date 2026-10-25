@@ -113,15 +113,17 @@ def get_or_create_user_memory(user_id: int, nickname: str = "", group_id: Option
     
     if uid_str not in group_scope:
         group_scope[uid_str] = {
-            "nickname": nickname or str(user_id),
-            "favor": 50,  # 好感度初始为 50 基准，随日常自然互动增减
+            "nickname": "life" if is_admin_user else (nickname or str(user_id)),
+            "favor": 80 if is_admin_user else 50,  # 主人默认高好感基准，群友初始为 50 基准
             "traits": "主人兼创造者" if is_admin_user else "普通群友",
             "notes": ["专属主人兼创造者 life"] if is_admin_user else [],
             "updated_at": time.time()
         }
     if is_admin_user:
+        group_scope[uid_str]["nickname"] = "life"
         group_scope[uid_str]["traits"] = "主人兼创造者"
-    if nickname and group_scope[uid_str].get("nickname") != nickname:
+        group_scope[uid_str]["notes"] = ["专属主人兼创造者 life"]
+    elif nickname and group_scope[uid_str].get("nickname") != nickname:
         group_scope[uid_str]["nickname"] = nickname
     return group_scope[uid_str]
 
@@ -231,9 +233,18 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
         # 1. 委托大模型深度理解真实语境并给出动态判定
         favor_delta, new_note = await evaluate_favor_with_ai(user_id, sender_nick, dialogue_snippet, bot_reply=bot_reply)
 
-    # 主人特殊保护：如果用户是专属主人兼开发者，调侃对线不扣分（底线保底 50）
-    if user_id == ADMIN_QQ and favor_delta < 0:
-        favor_delta = 0
+    # 主人特殊保护：如果用户是专属主人兼开发者，不录入外部混乱标签，好感度保底 80，保持最高默契
+    if user_id == ADMIN_QQ:
+        mem["nickname"] = "life"
+        mem["traits"] = "主人兼创造者"
+        mem["notes"] = ["专属主人兼创造者 life"]
+        old_favor = mem.get("favor", 80)
+        mem["favor"] = max(80, min(100, old_favor + max(0, favor_delta)))
+        mem["updated_at"] = time.time()
+        logger.info("[好感判定] 主人 life(1000000001) 好感维持: %d/100 (免脏标签污染)", mem["favor"])
+        async with memory_write_lock:
+            save_user_memories()
+        return
 
     old_favor = mem.get("favor", 50)
     mem["favor"] = max(0, min(100, old_favor + favor_delta))
@@ -685,8 +696,11 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
     user_mem_prompt = ""
     if target_uid and target_uid != BOT_QQ:
         mem = get_or_create_user_memory(target_uid, sender_nick, group_id=group_id)
-        notes_str = "、".join(mem.get("notes", [])) if mem.get("notes") else "初次接触"
-        user_mem_prompt = f"【当前交谈群友信息】：昵称: {mem.get('nickname')}, 好感度: {mem.get('favor')}/100, 历史印象: {notes_str}\n"
+        if target_uid == ADMIN_QQ:
+            user_mem_prompt = f"【当前交谈者身份】：专属主人兼创造者 life（QQ {ADMIN_QQ}），拥有绝对最高权限与天然极高好感度。\n"
+        else:
+            notes_str = "、".join(mem.get("notes", [])) if mem.get("notes") else "初次接触"
+            user_mem_prompt = f"【当前交谈群友信息】：昵称: {mem.get('nickname')}, 好感度: {mem.get('favor')}/100, 历史印象: {notes_str}\n"
 
     is_root_work = is_admin and ADMIN_MODE == "root"
     if is_admin and is_private:
@@ -721,9 +735,9 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 f"{identity_note}"
                 f"{user_mem_prompt}"
                 f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
-                f"【注意识别对话者身份】：当前是你的专属主人兼创造者「{sender_nick}」(QQ {ADMIN_QQ}) 在群里呼叫你！\n"
-                f"（清楚知道对方是你的主人，不把主人当普通群友，态度自然真实，听主人的话，不搞做作工业撒娇）\n"
-                f"请结合当前对主人的好感度自然回复（20~35 字）："
+                f"【注意识别对话者身份】：当前是你的专属主人兼创造者 life (QQ {ADMIN_QQ}) 在群里呼叫你！\n"
+                f"（清楚知道对方是你的主人 life，态度自然真实、俏皮亲近，听主人的话，绝不搞错称呼）\n"
+                f"请结合当前对主人的极高好感度自然回复（20~35 字，绝不用句号）："
             )
     elif is_at or is_mention:
         user_prompt = (
