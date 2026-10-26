@@ -202,6 +202,18 @@ def build_forward_nodes(entries: list, title: str = "", bot_qq: int = 0, bot_nic
     return nodes
 
 
+# 🤓👆 连着出现就成了口头禅。同一个群最近 8 条里露过一次，这条就不再放行
+_OVERUSED_COMBO = "🤓👆"
+
+
+def _limit_combo(text: str, key: int) -> str:
+    if _OVERUSED_COMBO not in text:
+        return text
+    if any(_OVERUSED_COMBO in r for r in bot.recent_bot_replies.get(key, ())):
+        return text.replace(_OVERUSED_COMBO, "").strip()
+    return text
+
+
 async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None) -> str:
     """分段发送：闲聊时切成 1~2 条连续发出，root 模式整块发送。
 
@@ -216,6 +228,7 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     text, meme_tag = meme_catalog.extract_tag(text)
     if not text and not meme_tag:
         return ""
+    text = _limit_combo(text, group_id)
     bot.recent_bot_replies[group_id].append(text)
     bot.group_last_bot_reply_time[group_id] = time.time()
 
@@ -279,6 +292,7 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
     private_key = -1
     if not is_command_report and bot.get_channel_mode(None) != "root":
         text = bot.de_template(text, private_key)
+    text = _limit_combo(text, private_key)
     bot.recent_bot_replies[private_key].append(text)
 
     clean_text = bot.strip_markdown(text).strip()
