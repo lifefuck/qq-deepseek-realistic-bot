@@ -12,7 +12,6 @@ import cross_interaction
 import cross_memory
 import fun_features
 import games
-import group_stats
 import media_resolver
 import random
 import re
@@ -84,14 +83,13 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             bot.group_recent_images[group_id].append((u_clean, time.time(), sender_nick))
             # 只记下来源，等机器人真要接话时再取摘要，不为每张图白调一次视觉模型
 
-    # 记录群友艾特或交互到关系网
+    # 记下群友之间的 @，模型接话时用来判断谁跟谁熟
     m_ats = re.findall(r'\[CQ:at,[^\]]*qq=(\d+)[^\]]*\]', raw_message)
     for target_qq_str in m_ats:
         try:
             t_qq = int(target_qq_str)
             if t_qq != bot.BOT_QQ:
                 cross_interaction.record_interaction(group_id, sender_id, sender_nick, t_qq, target_qq_str)
-                group_stats.record_pair(group_id, sender_id, t_qq)
         except Exception:
             pass
 
@@ -144,18 +142,6 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 规范化指令前缀与小写，兼容全角斜杠与输入法大小写
     norm_cmd = clean_body.replace("／", "/").strip()
     norm_lower = norm_cmd.lower()
-
-    # 长期统计只累计条数/字数/时段，不落原文
-    group_stats.record_message(group_id, sender_id, sender_nick, clean_body)
-    group_stats.maybe_flush()
-
-    # 反向图灵测试投票：纯数字回复优先吞掉，别让模型抢答也别被炸弹游戏截胡
-    if fun_features.record_turing_vote(group_id, sender_id, clean_body):
-        return
-
-    # 群玩法指令（年鉴 / 关系网 / 周榜 / 图灵）
-    if await fun_features.handle_fun_command(ws, group_id, sender_id, clean_body):
-        return
 
     # 公开指令检测: /memory 或 /memary（所有人均可查看好感度与记忆总结）
     if norm_lower.startswith(("/memary", "/memory")):
@@ -475,10 +461,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     if not should_trigger:
         return
 
-    # 冷场时偶尔不接话，自己开一局玩法（年鉴/关系网/周榜/图灵），由 AI 决定
-    if not is_mention_bot and await fun_features.maybe_self_play(ws, group_id):
-        return
-        
+
     # 冷却时间门控：若未直接提及机器人且处于 CD 中，保持静默（若直接提及机器人或代称，CD 缩短为 3 秒；普通插话 10 秒）
     min_cd = 3.0 if is_mention_bot else 10.0
     if now - bot.group_last_active_reply[group_id] < min_cd:
