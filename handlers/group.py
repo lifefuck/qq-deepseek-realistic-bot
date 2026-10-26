@@ -10,7 +10,9 @@ import asyncio
 import connectors
 import cross_interaction
 import cross_memory
+import fun_features
 import games
+import group_stats
 import media_resolver
 import random
 import re
@@ -85,6 +87,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             t_qq = int(target_qq_str)
             if t_qq != bot.BOT_QQ:
                 cross_interaction.record_interaction(group_id, sender_id, sender_nick, t_qq, target_qq_str)
+                group_stats.record_pair(group_id, sender_id, t_qq)
         except Exception:
             pass
 
@@ -129,6 +132,18 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     norm_cmd = clean_body.replace("／", "/").strip()
     norm_lower = norm_cmd.lower()
 
+    # 长期统计只累计条数/字数/时段，不落原文
+    group_stats.record_message(group_id, sender_id, sender_nick, clean_body)
+    group_stats.maybe_flush()
+
+    # 反向图灵测试投票：纯数字回复优先吞掉，别让模型抢答也别被炸弹游戏截胡
+    if fun_features.record_turing_vote(group_id, sender_id, clean_body):
+        return
+
+    # 群玩法指令（年鉴 / 关系网 / 周榜 / 图灵）
+    if await fun_features.handle_fun_command(ws, group_id, sender_id, clean_body):
+        return
+
     # 公开指令检测: /memory 或 /memary（所有人均可查看好感度与记忆总结）
     if norm_lower.startswith(("/memary", "/memory")):
         await bot.handle_memory_summary_command(ws, group_id=group_id)
@@ -159,7 +174,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
                 break
         if target_img_url and bot.http_session:
             anime_info = await connectors.search_anime_by_image(bot.http_session, target_img_url)
-            if anime_info and not anime_info.get("uncertain"):
+            if anime_info and not anime_info.get("error") and not anime_info.get("uncertain"):
                 rep = (
                     f"🎬 帮你看出来啦！这是动画《{anime_info['title']}》\n"
                     f"第 {anime_info['episode']} 集 · 画面大概在 {anime_info['time']}\n"
@@ -170,6 +185,28 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             elif anime_info and anime_info.get("uncertain"):
                 await bot.send_group_message(ws, group_id, f"👀 好像是动画截图，但画面不够典型，我不太确信是不是《{anime_info.get('data', {}).get('anilist', {}).get('title', {}).get('native', '某部番')}》", at_user_id=sender_id)
                 return
+            elif anime_info and anime_info.get("error"):
+                # 以前这里是静默 return，群友等半天没反应，以为机器人装死
+                err = anime_info["error"]
+                if err == "quota":
+                    tip = "今天看图的额度被我造完了，明天再来（叉腰）"
+                elif err == "noresult":
+                    tip = "图我扒到了，但这不像是动画截图啊，你是不是发错图了"
+                elif err == "download":
+                    tip = "图扒不下来，QQ 那边拦我了，你重发一张试试"
+                else:
+                    tip = "搜番的服务今天抽风了，过会儿再问"
+                await bot.send_group_message(ws, group_id, tip, at_user_id=sender_id)
+                return
+        elif is_at:
+            # 艾特了却没图可搜，别让人干等
+            await bot.send_group_message(ws, group_id, "你要搜哪张图？先把图发出来我才能看", at_user_id=sender_id)
+            return
+
+    # 被 @ 还甩了张图过来，当斗图处理，直接从库存里挑一张回去，不浪费模型调用
+    if is_at and m_imgs and not re.search(r"(?:什么番|哪部番|出处|搜番|搜截图)", clean_body):
+        if await fun_features.meme_battle(ws, group_id, sender_id, clean_body):
+            return
 
     # 管理员快捷指令检测（忽略大小写，兼容全角斜杠与常用刹车词）
     if is_admin and (

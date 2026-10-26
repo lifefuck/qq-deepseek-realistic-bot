@@ -2,11 +2,28 @@
 .venv/
 __pycache__/
 *.pyc
-user_memories.json
-.dashboard_auth
-*.auth
-*.json.tmp
 *.log
 .DS_Store
+
+# 运行时状态与个人数据，别进版本库
+user_memories.json
+token_usage.json
+cross_group_topics.json
+group_configs.json
+data/*.json
+.dashboard_auth
 .dashboard_sessions.json
+*.auth
+*.json.tmp
+napcat_qr.png
+dist/
+meme-pack/.git/
+
+# 前端依赖，克隆后自己装
 web_ui/node_modules/
+deps/
+node_modules/
+
+# 备份快照
+*.bak
+.tmp_*
