@@ -20,5 +20,8 @@ for mod in ("bot", "handlers.group", "handlers.admin", "handlers.private", "serv
 print("import ok")
 EOF
 
+echo "==> 时间线切片检查"
+$PY scripts/check_timeline_slice.py
+
 echo "==> 冒烟测试"
 $PY tests/smoke.py
