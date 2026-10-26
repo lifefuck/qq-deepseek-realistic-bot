@@ -81,6 +81,9 @@ def strip_internal_monologue(text: str) -> str:
         return ""
     if "[PASS]" in text:
         return ""
+    # 整条就是一个括号旁白：模型爱写「（保持自然，别太热情）」这种表演提示，直接丢
+    if re.fullmatch(r"[\s\*]*[（(][^（）()]{1,60}[）)][\s\*]*", text):
+        return ""
     # 过滤类似 *（思考中...）* 或 （根据人设我需要...）
     cleaned = re.sub(r"[\*（(]\s*(?:根据人设|此时我|思考中|保持沉默|无需回复|内心独白)[^\*）)]*[\*）)]", "", text)
     return cleaned.strip()
