@@ -470,10 +470,10 @@ INDEX_HTML = """<!DOCTYPE html>
 
   <header>
     <div class="header-left">
-      <img class="bot-avatar" src="https://q1.qlogo.cn/g?b=qq&nk=3778339604&s=100" alt="Bot Avatar" onerror="this.src='https://dummyimage.com/100x100/2563eb/ffffff?text=FISH'">
+      <img class="bot-avatar" src="https://q1.qlogo.cn/g?b=qq&nk=__BOT_QQ__&s=100" alt="Bot Avatar" onerror="this.src='https://dummyimage.com/100x100/2563eb/ffffff?text=FISH'">
       <div class="title-box">
         <h1>🐟 大肥鱼 AI 控制台</h1>
-        <p>基座: DeepSeek-V3 · 实体 QQ: 3778339604 · 双 Bot 协同中</p>
+        <p>基座: DeepSeek-V3 · 实体 QQ: __BOT_QQ__ · 双 Bot 协同中</p>
       </div>
     </div>
     <div class="status-badges" id="headerBadges">
@@ -1322,7 +1322,9 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
             with open(dist_index, "r", encoding="utf-8") as f:
                 content = f.read()
             return web.Response(text=content, content_type="text/html", charset="utf-8")
-        return web.Response(text=INDEX_HTML, content_type="text/html", charset="utf-8")
+        # 页面里的机器人 QQ 从环境变量取，别把账号写进公开仓库
+        page = INDEX_HTML.replace("__BOT_QQ__", os.environ.get("BOT_QQ", "1000000000"))
+        return web.Response(text=page, content_type="text/html", charset="utf-8")
 
     async def handle_status(request: web.Request):
         try:
