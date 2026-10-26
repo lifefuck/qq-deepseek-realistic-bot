@@ -1,7 +1,8 @@
 # QQ DeepSeek Realistic Bot
 
 基于 OneBot 11（如 NapCat）和 DeepSeek-V3 的 QQ 群聊机器人。
-主要设计目标是像个正常群友一样在群里聊天，回复不带客服报幕腔，按标点自动分句，支持表情包和连续免 @ 追问，同时自带后台 Web 面板用于分群管理。
+目标是像个正常群友一样说话：短句、接梗、不客套，能按情绪配表情包，被 @ 一次后可以连着聊几句。自带后台 Web 面板做分群管理。
+普通闲聊单次请求约 1000 tokens，省在哪写在 [系统说明](docs/architecture.md) 里。
 
 ## 特性
 
@@ -14,7 +15,8 @@
 - **频控与防封**：单群 60 秒硬限频；检测到群禁言或自身被禁言时自动静默，不向 API 盲目发请求。
 - **云崽共存**：自动过滤游戏查询前缀（如 `#`、`面板` 等），游戏指令交由云崽处理，AI 不抢答。
 - **链接解析**：群友发抖音、B 站、小红书短链时自动抓取视频标题和简介，带着上下文回复。
-- **Web 控制台 (`:8088`)**：基于 Miuix Vue 3 重构的现代化控制台（自带构建产物开箱即用），可分群调整插话基准概率、观测冷热场动态权重雷达、开关夜间睡眠、查看群友记忆与实时日志。
+- **表情包跟情绪走**：138 张图事先打好情绪和关键词，模型在句末标 `[MEME:情绪]`，就按这个情绪挑图，不再纯随机。
+- **Web 控制台 (`:8088`)**：Miuix Vue 3 写的控制台，构建产物直接带着，可分群调插话概率、看冷热场权重、开关夜间睡眠、查群友记忆和实时日志。
 
 ## 文档
 
@@ -83,8 +85,8 @@ After=network.target
 
 [Service]
 Type=simple
-WorkingDirectory=/home/lmxy/projects/qq-deepseek-realistic-bot
-ExecStart=/home/lmxy/projects/qq-deepseek-realistic-bot/.venv/bin/python bot.py
+WorkingDirectory=%h/projects/qq-deepseek-realistic-bot
+ExecStart=%h/projects/qq-deepseek-realistic-bot/.venv/bin/python bot.py
 Restart=always
 RestartSec=5
 
@@ -103,8 +105,6 @@ WantedBy=default.target
 | `/new` | 管理员 | 清空当前群或私聊的会话上下文 |
 | `/new all` | 管理员 | 清空所有群上下文 |
 | `/stop` | 管理员 | 停止当前生成并清空等待队列 |
-| `/compress` | 管理员 | 手动压缩当前群上下文 |
-| `/b [条数]` | 管理员 | 总结最近群聊记录，默认 50 条 |
 
 ## 作者
 
