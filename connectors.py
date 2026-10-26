@@ -5,31 +5,68 @@ import aiohttp
 import logging
 import random
 import re
-import urllib.parse
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger("DeepSeekBot")
 
 # ==================== Trace.moe 搜番 ====================
-async def search_anime_by_image(session: aiohttp.ClientSession, image_url: str) -> Optional[Dict[str, Any]]:
-    """使用 Trace.moe 官方免费 API 检索动画截图出处与集数"""
-    api_url = f"https://api.trace.moe/search?cutBorders&url={urllib.parse.quote(image_url)}"
+# trace.moe 的 url= 参数是让它自己去抓图，QQ/微信的图片 CDN 基本不让它抓，
+# 群友发的截图十有八九返回 400/404。所以这里先自己把图扒下来，再以 multipart 直传。
+TRACE_MOE_API = "https://api.trace.moe/search?cutBorders"
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
+
+
+async def _download_image(session: aiohttp.ClientSession, image_url: str) -> Optional[bytes]:
+    """把群友发的图下载成字节，超过 8MB 直接放弃，别把内存喂爆。"""
     try:
-        async with session.get(api_url, timeout=12.0) as resp:
+        async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
+            if resp.status != 200:
+                logger.warning("搜番下载图片失败: HTTP %d", resp.status)
+                return None
+            declared = int(resp.headers.get("Content-Length") or 0)
+            if declared > MAX_IMAGE_BYTES:
+                logger.warning("搜番图片过大: %.1fMB", declared / 1024 / 1024)
+                return None
+            data = await resp.content.read(MAX_IMAGE_BYTES + 1)
+            if len(data) > MAX_IMAGE_BYTES:
+                return None
+            return data or None
+    except Exception as e:
+        logger.warning("搜番下载图片异常: %s", e)
+        return None
+
+
+async def search_anime_by_image(session: aiohttp.ClientSession, image_url: str) -> Optional[Dict[str, Any]]:
+    """检索动画截图出处。失败时返回 {"error": ...}，调用方据此给群友一句交代。"""
+    image_bytes = await _download_image(session, image_url)
+    if not image_bytes:
+        return {"error": "download"}
+
+    form = aiohttp.FormData()
+    form.add_field("image", image_bytes, filename="anime.jpg", content_type="image/jpeg")
+    try:
+        async with session.post(TRACE_MOE_API, data=form, timeout=aiohttp.ClientTimeout(total=25.0)) as resp:
+            if resp.status == 402:
+                logger.warning("Trace.moe 免费额度已用完")
+                return {"error": "quota"}
             if resp.status != 200:
                 logger.warning("Trace.moe 请求失败: HTTP %d", resp.status)
-                return None
+                return {"error": "http", "status": resp.status}
             data = await resp.json()
+            quota, used = data.get("quota"), data.get("quotaUsed")
+            if isinstance(quota, int) and isinstance(used, int) and used >= quota:
+                logger.warning("Trace.moe 额度告警: %d/%d", used, quota)
+
             results = data.get("result", [])
             if not results:
-                return None
-            
+                return {"error": "noresult"}
+
             # 取置信度最高的首个结果
             best = results[0]
             similarity = best.get("similarity", 0)
             if similarity < 0.80:  # 低于 80% 相似度视为可能不匹配
                 return {"uncertain": True, "similarity": similarity, "title": "未找到高确信度动画", "data": best}
-            
+
             anilist = best.get("anilist") or {}
             title_native = anilist.get("title", {}).get("native") or anilist.get("title", {}).get("romaji") or "未知动画"
             title_chinese = anilist.get("title", {}).get("chinese") or title_native
@@ -48,7 +85,7 @@ async def search_anime_by_image(session: aiohttp.ClientSession, image_url: str) 
             }
     except Exception as e:
         logger.warning("Trace.moe 搜番异常: %s", e)
-        return None
+        return {"error": "exception"}
 
 # ==================== 免 Key 网页轻量检索 ====================
 async def search_web_brief(session: aiohttp.ClientSession, query: str, limit: int = 3) -> List[Dict[str, str]]:

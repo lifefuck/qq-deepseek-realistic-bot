@@ -29,6 +29,8 @@ import web_dashboard
 import games
 import connectors
 import cross_memory
+import fun_features
+import group_stats
 import media_resolver
 from meme_manager import meme_manager
 from prompts import (SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT, GAMES_KB, needs_games_kb,
@@ -38,7 +40,7 @@ import safety_guard
 import cross_interaction
 from services import trace
 from services.messaging import (send_group_message, send_segmented_group_message,
-                              send_private_message)
+                              send_private_message, send_meme_message)
 from services.llm import (call_deepseek, call_deepseek_poke, evaluate_favor_with_ai,
                           _is_favor_worthy, update_user_memory_async)
 from handlers.admin import (handle_admin_command, handle_memory_summary_command,
@@ -53,7 +55,7 @@ import handlers.group as _h_group
 
 # 把当前模块交给服务层。python bot.py 跑起来时 __main__ 和 bot 是两个不同的模块对象，
 # 服务层自己 import bot 会读到另一份全局状态，所以只认这里注入的实例。
-for _mod in (_svc_messaging, _svc_llm, _h_admin, _h_private, _h_group):
+for _mod in (_svc_messaging, _svc_llm, _h_admin, _h_private, _h_group, fun_features):
     _mod.bind(sys.modules[__name__])
 
 # ==================== 基础配置 ====================
@@ -1442,15 +1444,39 @@ def get_bot_dashboard_status() -> Dict[str, Any]:
     }
 
 # ==================== 主连接循环 ====================
+async def _stats_keeper():
+    """统计落盘 + 每周一凌晨结算。只挂一次，扔在重连循环外面。"""
+    import datetime as _dt
+    last_mark = ""
+    while True:
+        try:
+            await asyncio.sleep(300)
+            group_stats.maybe_flush()
+            now = _dt.datetime.now()
+            mark = now.strftime("%Y-%W")
+            if now.weekday() == 0 and now.hour == 0 and mark != last_mark:
+                last_mark = mark
+                ws = current_ws
+                usable = ws if (ws is not None and not ws.closed) else None
+                await fun_features.weekly_settle_all(usable)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error("[统计守护] 异常: %s", e)
+
+
 async def main():
     logger.info("启动 QQ DeepSeek 群聊 & 私聊机器人...")
     logger.info("白名单群: %s | 机器人 QQ: %d | 模型: %s | 管理员: %d", list(ALLOWED_GROUPS), BOT_QQ, MODEL_NAME, ADMIN_QQ)
 
-    # 启动轻量现代浅色 Web 仪表盘 (监听 0.0.0.0:8088)
+    group_stats.load()
+    asyncio.create_task(_stats_keeper())
+
+    # 启动轻量现代浅色 Web 仪表盘（只绑 127.0.0.1，外网走 Cloudflare 隧道）
     try:
         await web_dashboard.start_web_server(get_bot_dashboard_status, update_config_func=update_group_config, port=8088)
         cross_memory.cross_group_mgr.start_background_flusher()
-        logger.info("🌐 Web 仪表盘已成功启动并监听: http://0.0.0.0:8088")
+        logger.info("🌐 Web 仪表盘已启动，本机监听: http://127.0.0.1:8088")
     except Exception as e:
         logger.error("Web 仪表盘启动异常: %s", e)
     
