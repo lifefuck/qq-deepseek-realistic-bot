@@ -213,12 +213,16 @@ def _format_member(uid: str, mem: dict, member: dict) -> str:
     card = (member.get("card") or "").strip()
     qq_nick = (member.get("nickname") or "").strip()
     fallback = (mem.get("nickname") or "").strip()
-    name = card or qq_nick or fallback or uid
+    name = card or qq_nick or fallback
 
-    head = name
-    if card and qq_nick and card != qq_nick:
-        head += f"（QQ昵称 {qq_nick}）"
-    head += f"  QQ {uid}"
+    # 昵称拿不到的时候老档案会存成 QQ 号，别让它在同一行里出现两遍
+    if not name or name == uid:
+        head = f"QQ {uid}"
+    else:
+        head = name
+        if card and qq_nick and card != qq_nick:
+            head += f"（QQ昵称 {qq_nick}）"
+        head += f"  QQ {uid}"
 
     role = _ROLE_LABEL.get(member.get("role"), "群员")
     title = (member.get("title") or "").strip()

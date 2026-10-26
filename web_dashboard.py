@@ -464,54 +464,6 @@ INDEX_HTML = """<!DOCTYPE html>
       .status-badges { justify-content: flex-start; }
     }
 
-    /* ==================== 夜间模式 ====================
-       上面那批硬编码浅色不逐行改，这里一次性压掉，浅色样式保持原样不动。 */
-    html[data-theme="dark"] {
-      --bg: #14161a;
-      --card-bg: #1c1f24;
-      --card-border: #2c3138;
-      --text-main: #e6e8eb;
-      --text-muted: #9aa1a9;
-      --primary: #5b9dff;
-      --primary-light: #1a2a42;
-      --success: #34d399;
-      --success-light: #16302a;
-      --warning: #fbbf24;
-      --warning-light: #332914;
-      --info: #38bdf8;
-      --info-light: #142b38;
-      --gold: #fbbf24;
-      --gold-bg: #33270e;
-      --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.45);
-      --shadow: 0 4px 8px -2px rgb(0 0 0 / 0.55);
-      color-scheme: dark;
-    }
-    html[data-theme="dark"] .badge { border-color: rgba(255, 255, 255, 0.07); }
-    html[data-theme="dark"] .badge-slate { background: #262b31; color: #a8b0b8; border-color: #363d45; }
-    html[data-theme="dark"] .controls-box { background: #22262c; border-color: #2c3138; }
-    html[data-theme="dark"] .group-stat-row { border-bottom-color: #262a30; }
-    html[data-theme="dark"] .btn-mode-user { border-color: #2c4a76; }
-    html[data-theme="dark"] .btn-mode-root { border-color: #6b5410; }
-    html[data-theme="dark"] .switch-pill { background: #2c3138; }
-    html[data-theme="dark"] .switch-pill span { color: #9aa1a9; }
-    html[data-theme="dark"] .tab-btn:hover { background: #262b31; }
-    html[data-theme="dark"] .user-card.is-master { background: #241f16; border-color: #7c5a12; }
-    html[data-theme="dark"] .user-avatar { background: #262b31; }
-    html[data-theme="dark"] .favor-bar-bg { background: #2c3138; }
-    html[data-theme="dark"] .user-tag { background: #262b31; color: #a8b0b8; }
-    html[data-theme="dark"] .log-box { background: #1a1d21; }
-    html[data-theme="dark"] .log-content { background: #0b0d10; }
-    html[data-theme="dark"] .theme-btn { background: #262b31; border-color: #363d45; color: #e6e8eb; }
-    .theme-btn {
-      padding: 4px 10px;
-      border-radius: 6px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      background: var(--card-bg);
-      border: 1px solid var(--card-border);
-      color: var(--text-muted);
-    }
   </style>
 </head>
 <body>
@@ -528,7 +480,6 @@ INDEX_HTML = """<!DOCTYPE html>
       <span class="badge badge-success" id="badgeConn">● 正在连接...</span>
       <span class="badge badge-primary" id="badgeMode">💬 模式: 加载中</span>
       <span class="badge badge-info" id="badgeSleep">☀️ 作息: 检测中</span>
-      <button class="theme-btn" id="themeBtn" onclick="toggleTheme()">🌙 夜间</button>
     </div>
   </header>
 
@@ -586,30 +537,6 @@ INDEX_HTML = """<!DOCTYPE html>
   <script>
     let currentTab = "";
     let latestData = null;
-
-    // 主题：白天浅色，19:00~07:00 自动切夜间。手动点过按钮就记住，不再跟时间走。
-    const THEME_KEY = "dash_theme";
-    function preferredTheme() {
-      const saved = localStorage.getItem(THEME_KEY);
-      if (saved === "dark" || saved === "light") return saved;
-      const hour = new Date().getHours();
-      return (hour >= 19 || hour < 7) ? "dark" : "light";
-    }
-    function applyTheme(theme) {
-      document.documentElement.dataset.theme = theme;
-      const btn = document.getElementById("themeBtn");
-      if (btn) btn.innerText = theme === "dark" ? "☀️ 白天" : "🌙 夜间";
-    }
-    function toggleTheme() {
-      const next = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
-      localStorage.setItem(THEME_KEY, next);
-      applyTheme(next);
-    }
-    applyTheme(preferredTheme());
-    // 一直开着页面跨过 19:00 / 07:00 时也跟着换
-    setInterval(() => {
-      if (!localStorage.getItem(THEME_KEY)) applyTheme(preferredTheme());
-    }, 60000);
 
     function formatRelative(secondsAgo) {
       if (!secondsAgo || secondsAgo < 0) return "从未";
