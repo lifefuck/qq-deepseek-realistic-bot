@@ -103,7 +103,7 @@ async def send_yearbook(ws, group_id: int) -> None:
         group_stats.top_users(group_id, 3, "night"),
         group_stats.top_users(group_id, 3, "chars"),
     )
-    await _send_image(ws, group_id, png, f"📊 {_group_name(group_id)} 的群年鉴，数据攒了 {totals['days']} 天")
+    await _send_image(ws, group_id, png, f"{_group_name(group_id)} 的群年鉴，数据攒了 {totals['days']} 天")
 
 
 async def send_relation_map(ws, group_id: int) -> None:
@@ -120,13 +120,13 @@ async def send_relation_map(ws, group_id: int) -> None:
     keep = {n[0] for n in nodes}
     edges = [(a, b, c) for a, b, c in pairs if a in keep and b in keep]
     png = card_render.render_relation_map(_group_name(group_id), nodes, edges)
-    await _send_image(ws, group_id, png, "🕸 谁老跟谁搭话，一眼就看出来了")
+    await _send_image(ws, group_id, png, "谁老跟谁搭话，一眼就看出来了")
 
 
 async def send_weekly_board(ws, group_id: int) -> None:
     rows = group_stats.top_users(group_id, 5, "msgs", weekly=True)
     png = card_render.render_weekly(_group_name(group_id), rows, "本周实时")
-    await _send_image(ws, group_id, png, "🏆 本周活跃榜")
+    await _send_image(ws, group_id, png, "本周活跃榜")
 
 
 async def weekly_settle_all(ws=None) -> None:
@@ -144,7 +144,7 @@ async def weekly_settle_all(ws=None) -> None:
             if rows:
                 try:
                     png = card_render.render_weekly(_group_name(gid), rows, "上周结算")
-                    await _send_image(ws, gid, png, "🏆 上周活跃榜出炉，这周重新开始算")
+                    await _send_image(ws, gid, png, "上周活跃榜出炉，这周重新开始算")
                 except Exception as e:
                     logger.warning("[周结算] 群 %d 发榜失败: %s", gid, e)
 
@@ -223,7 +223,7 @@ async def start_turing(ws, group_id: int) -> None:
     _turing[group_id] = {"options": options, "answer": answer, "votes": {}, "start": time.time()}
     lines = [f"{i + 1}. {opt}" for i, opt in enumerate(options)]
     await bot.send_group_message(ws, group_id,
-                                 "🎭 反向图灵测试：三句里有一句是真人刚说的，哪一句？\n"
+                                 "反向图灵测试：三句里有一句是真人刚说的，哪一句？\n"
                                  + "\n".join(lines) +
                                  f"\n回数字投票，{TURING_ROUND_SECONDS} 秒后揭晓",
                                  is_command_report=True)
@@ -262,7 +262,7 @@ async def reveal_turing(ws, group_id: int) -> None:
     right = [uid for uid, v in votes.items() if v == answer]
     wrong = len(votes) - len(right)
 
-    head = f"🎭 揭晓：真话是【{answer}】{options[answer - 1]}"
+    head = f"揭晓：真话是【{answer}】{options[answer - 1]}"
     if not votes:
         tail = "一个人都没投，这题白问了"
     elif right:

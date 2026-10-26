@@ -189,14 +189,14 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             anime_info = await connectors.search_anime_by_image(bot.http_session, target_img_url)
             if anime_info and not anime_info.get("error") and not anime_info.get("uncertain"):
                 rep = (
-                    f"🎬 帮你看出来啦！这是动画《{anime_info['title']}》\n"
+                    f"帮你看出来啦，这是动画《{anime_info['title']}》\n"
                     f"第 {anime_info['episode']} 集 · 画面大概在 {anime_info['time']}\n"
                     f"（匹配相似度: {anime_info['similarity']}%）"
                 )
                 await bot.send_group_message(ws, group_id, rep, at_user_id=sender_id)
                 return
             elif anime_info and anime_info.get("uncertain"):
-                await bot.send_group_message(ws, group_id, f"👀 好像是动画截图，但画面不够典型，我不太确信是不是《{anime_info.get('data', {}).get('anilist', {}).get('title', {}).get('native', '某部番')}》", at_user_id=sender_id)
+                await bot.send_group_message(ws, group_id, f"好像是动画截图，但画面不够典型，我不太确信是不是《{anime_info.get('data', {}).get('anilist', {}).get('title', {}).get('native', '某部番')}》", at_user_id=sender_id)
                 return
             elif anime_info and anime_info.get("error"):
                 # 以前这里是静默 return，群友等半天没反应，以为机器人装死
@@ -505,7 +505,7 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
     if not timeline and not user_text:
         return
         
-    # 轻量未读消息机制：群聊闲聊仅传当前发言/未读上下文，杜绝滚雪球历史堆叠，降低 90% Token 并防认错人
+    # 闲聊只传当前发言和少量未读上下文，避免历史越堆越长，也防止认错人
     # 如果是 root 模式则提供完整时间线供技术分析，否则仅传递当前群友最新发言
     channel_mode = bot.get_channel_mode(group_id)
     if is_admin and channel_mode == "root":

@@ -132,9 +132,9 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
 
         if res and res.get("status") == "ok":
             bot.group_sent_times[group_id].append(time.time())
-            logger.info("[群 %d] ✅ 消息成功送达 QQ 群: %s", group_id, msg_payload[:40])
+            logger.info("[群 %d] 消息已送达: %s", group_id, msg_payload[:40])
         else:
-            logger.warning("[群 %d] ⚠️ 发送消息可能被拦截或异常: %s | 响应: %s", group_id, msg_payload[:40], res)
+            logger.warning("[群 %d] 发送可能失败: %s | 响应: %s", group_id, msg_payload[:40], res)
             # 被动容错熔断：如果响应中明确包含“禁言”或特定错误码，立刻给该群施加 60 秒禁言保护
             res_str = str(res or "").lower()
             if any(k in res_str for k in ["禁言", "banned", "1200"]):
@@ -150,10 +150,10 @@ async def send_meme_message(ws: aiohttp.ClientWebSocketResponse, group_id: Optio
     try:
         if group_id:
             await bot.call_action(ws, "send_group_msg", {"group_id": group_id, "message": msg_payload}, timeout=4.0)
-            logger.info("[群 %d] ✅ 专属大肥鱼表情包图片已送达", group_id)
+            logger.info("[群 %d] 表情包已发送", group_id)
         elif user_id:
             await bot.call_action(ws, "send_private_msg", {"user_id": user_id, "message": msg_payload}, timeout=4.0)
-            logger.info("[私聊 %d] ✅ 专属大肥鱼表情包图片已送达", user_id)
+            logger.info("[私聊 %d] 表情包已发送", user_id)
     except Exception as e:
         logger.warning("发送表情包失败: %s", e)
 
@@ -176,7 +176,7 @@ async def send_forward_message(ws: aiohttp.ClientWebSocketResponse, messages: li
     try:
         res = await bot.call_action(ws, action, params, timeout=6.0)
         if res and res.get("status") == "ok":
-            logger.info("[%s] ✅ 合并转发已送达（%d 条）", group_id or user_id, len(messages))
+            logger.info("[%s] 合并转发已发送（%d 条）", group_id or user_id, len(messages))
             return True
         logger.warning("[%s] 合并转发失败，响应: %s", group_id or user_id, res)
         return False
@@ -295,7 +295,7 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
         
     res = await bot.call_action(ws, "send_private_msg", {"user_id": user_id, "message": clean_text}, timeout=3.0)
     if res and res.get("status") == "ok":
-        logger.info("[私聊 %d] ✅ 私信成功送达: %s", user_id, clean_text[:40])
+        logger.info("[私聊 %d] 私信已发送: %s", user_id, clean_text[:40])
     else:
-        logger.warning("[私聊 %d] ⚠️ 私信发送可能异常: %s | 响应: %s", user_id, clean_text[:40], res)
+        logger.warning("[私聊 %d] 私信发送可能失败: %s | 响应: %s", user_id, clean_text[:40], res)
 
