@@ -30,7 +30,6 @@ import games
 import connectors
 import cross_memory
 import fun_features
-import group_stats
 import media_resolver
 from meme_manager import meme_manager
 from prompts import (SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT, GAMES_KB, needs_games_kb,
@@ -581,7 +580,7 @@ DEFAULT_GROUP_CONFIG = {
     "enable_search": True,      # 是否开启联网热点检索 (鸭鸭搜/B站)
     "enable_bilibili_push": False, # 是否开启定时热门视频推送 (默认关)
     "enable_yunzai": True,      # 是否开启云崽游戏生态 (原神/星铁/米游社)
-    "enable_fun": True          # 年鉴/关系网/图灵等群玩法，AI 自主决定何时发起
+    "enable_fun": True          # 被 @ 且带图时接一回合斗图
 }
 DEFAULT_PRIVATE_CONFIG = {
     "mode": "user"
@@ -1434,33 +1433,50 @@ def get_bot_dashboard_status() -> Dict[str, Any]:
     }
 
 # ==================== 主连接循环 ====================
-async def _stats_keeper():
-    """统计落盘 + 每周一凌晨结算。只挂一次，扔在重连循环外面。"""
-    import datetime as _dt
+def weekly_favor_decay() -> int:
+    """一周没露面的群友，好感从 50 以上回落 1 点。返回回落人次。"""
+    cutoff = time.time() - 7 * 86400
+    n = 0
+    for scope in user_memories.values():
+        for uid_str, mem in scope.items():
+            if not isinstance(mem, dict):
+                continue
+            if uid_str.isdigit() and int(uid_str) in (ADMIN_QQ, BOT_QQ):
+                continue
+            favor = int(mem.get("favor", 50))
+            if favor > 50 and mem.get("updated_at", 0) < cutoff:
+                mem["favor"] = favor - 1
+                mem["updated_at"] = time.time()
+                n += 1
+    if n:
+        save_user_memories()
+    return n
+
+
+async def _favor_keeper():
+    """每周一凌晨跑一次好感衰减。只挂一次，扔在重连循环外面。"""
     last_mark = ""
     while True:
         try:
             await asyncio.sleep(300)
-            group_stats.maybe_flush()
-            now = _dt.datetime.now()
+            now = datetime.datetime.now()
             mark = now.strftime("%Y-%W")
             if now.weekday() == 0 and now.hour == 0 and mark != last_mark:
                 last_mark = mark
-                ws = current_ws
-                usable = ws if (ws is not None and not ws.closed) else None
-                await fun_features.weekly_settle_all(usable)
+                n = weekly_favor_decay()
+                if n:
+                    logger.info("[好感] 一周没露面，%d 人回落 1 点", n)
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error("[统计守护] 异常: %s", e)
+            logger.error("[好感守护] 异常: %s", e)
 
 
 async def main():
     logger.info("启动 QQ DeepSeek 群聊 & 私聊机器人...")
     logger.info("白名单群: %s | 机器人 QQ: %d | 模型: %s | 管理员: %d", list(ALLOWED_GROUPS), BOT_QQ, MODEL_NAME, ADMIN_QQ)
 
-    group_stats.load()
-    asyncio.create_task(_stats_keeper())
+    asyncio.create_task(_favor_keeper())
 
     # 启动轻量现代浅色 Web 仪表盘（只绑 127.0.0.1，外网走 Cloudflare 隧道）
     try:

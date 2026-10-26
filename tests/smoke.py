@@ -15,7 +15,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bot
 import fun_features
-import group_stats
 import meme_catalog
 import prompts
 import safety_guard
@@ -107,61 +106,16 @@ async def main():
     status = bot.get_bot_dashboard_status()
     check("仪表盘状态", isinstance(status, dict) and "groups" in status)
 
-    # 8. 群统计与玩法：年鉴/关系网/周榜要真能出图发出去
+    # 8. 斗图：被 @ 且带图时接管，同一群 30 秒只反一次
     GID = 999999999
-    group_stats._stats.pop(str(GID), None)
-    for i in range(60):
-        group_stats.record_message(GID, 1000 + (i % 7), f"群友{i % 7}", "这是一句测试发言内容", hour=(2 if i % 9 == 0 else 21))
-    group_stats.record_pair(GID, 1000, 1001)
-    group_stats.record_pair(GID, 1000, 1001)
-    top = group_stats.top_users(GID, 3)
-    check("统计能排榜", bool(top) and top[0][2] > 0, str(top[:2]))
-
     calls.clear()
-    await fun_features.send_yearbook(FakeWS(), GID)
-    await fun_features.send_relation_map(FakeWS(), GID)
-    await fun_features.send_weekly_board(FakeWS(), GID)
+    fun_features._last_battle.pop(GID, None)
+    took = await fun_features.meme_battle(FakeWS(), GID, 1000, "这张图笑死")
     imgs = sum(1 for a, p in calls if isinstance(p.get("message"), list))
-    check("三张卡片都能出图", imgs >= 3, f"imgs={imgs}")
+    check("斗图能接一回合", took and imgs >= 1, f"took={took} imgs={imgs}")
+    check("斗图不连着刷", not await fun_features.meme_battle(FakeWS(), GID, 1000, "再来一张"))
 
-    # 9. 图灵投票：数字进得去，非数字不抢
-    # 揭晓会给猜对的人加好感并落盘，测试期间把这步挡掉，别把假群友写进真实记忆库
-    _real_save = bot.save_user_memories
-    bot.save_user_memories = lambda *a, **k: None
-    fun_features._turing[GID] = {"options": ["真话在这", "假话一", "假话二"], "answer": 1,
-                                 "votes": {}, "start": 0}
-    check("图灵票号识别", fun_features.record_turing_vote(GID, 1000, " 1 "))
-    check("图灵非数字放行", not fun_features.record_turing_vote(GID, 1001, "我猜第二个"))
-    calls.clear()
-    await fun_features.reveal_turing(FakeWS(), GID)
-    bot.save_user_memories = _real_save
-    check("图灵能揭晓", any("揭晓" in str(p.get("message")) for _a, p in calls) and GID not in fun_features._turing)
-    bot.user_memories.pop(str(GID), None)
-    group_stats._stats.pop(str(GID), None)
-
-    # 10. 指令路由：群里发 /年鉴 要真的走到玩法那层，不能被云崽前缀或管理员指令截走
-    check("年鉴不被云崽吞", not bot.is_game_or_yunzai_command("/年鉴"))
-    check("图灵不被云崽吞", not bot.is_game_or_yunzai_command("/图灵"))
-
-    import handlers.group as hgroup
-    gid = 999999998
-    bot.ALLOWED_GROUPS.add(gid)
-    group_stats._stats.pop(str(gid), None)
-    for i in range(60):
-        group_stats.record_message(gid, 1000, "测试群友", "测试发言内容够长了", hour=21)
-    calls.clear()
-    await hgroup.handle_group_message(FakeWS(), {
-        "group_id": gid, "user_id": 1000,
-        "sender": {"nickname": "测试群友"},
-        "raw_message": "/年鉴",
-        "message": [{"type": "text", "data": {"text": "/年鉴"}}],
-    })
-    imgs = sum(1 for a, p in calls if isinstance(p.get("message"), list))
-    check("群里发 /年鉴 会出图", imgs >= 1, f"imgs={imgs}")
-    bot.ALLOWED_GROUPS.discard(gid)
-    group_stats._stats.pop(str(gid), None)
-
-    # 11. 作息区间与 /off 总闸
+    # 9. 作息区间与 /off 总闸
     check("23 点算睡觉", bot.in_sleep_window(23))
     check("凌晨 3 点算睡觉", bot.in_sleep_window(3))
     check("早上 6:59 还算", bot.in_sleep_window(6))
@@ -187,7 +141,7 @@ async def main():
     bot.save_group_configs = _real_save_cfg
     bot.group_configs.pop(str(gid), None)
 
-    # 12. /memary：合并转发成一条折叠记录，节点里要有 QQ 号、身份、头衔
+    # 10. /memary：合并转发成一条折叠记录，节点里要有 QQ 号、身份、头衔
     calls.clear()
     admin_mod = __import__("handlers.admin", fromlist=["_MEMORY_CACHE", "_MEMBER_CACHE"])
     admin_mod._MEMORY_CACHE.clear()
