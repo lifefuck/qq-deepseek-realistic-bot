@@ -40,7 +40,7 @@ import safety_guard
 import cross_interaction
 from services import trace
 from services.messaging import (send_group_message, send_segmented_group_message,
-                              send_private_message, send_meme_message,
+                              send_private_message, send_meme_message, thin_emoji,
                               send_forward_message, build_forward_nodes)
 from services.llm import (call_deepseek, call_deepseek_poke, evaluate_favor_with_ai,
                           _is_favor_worthy, update_user_memory_async)
