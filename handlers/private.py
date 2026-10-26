@@ -60,7 +60,7 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
 
     # 管理员指令拦截
     if (
-        norm_lower.startswith(("/new", "/stop", "/root", "/user"))
+        norm_lower.startswith(("/new", "/stop", "/root", "/user", "/on", "/off"))
         or norm_lower in ("stop", "new", "闭嘴", "停", "暂停")
     ):
         target_cmd = norm_cmd

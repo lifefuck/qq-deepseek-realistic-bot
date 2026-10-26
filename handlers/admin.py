@@ -4,6 +4,7 @@
 状态都在 bot 里，这里只做解析和分发。
 """
 
+import asyncio
 import time
 from typing import Optional
 
@@ -24,7 +25,29 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
     """处理管理员快捷指令并汇报结果（大小写不敏感，秒级汇报）"""
     cmd = cmd.strip()
     cmd_lower = cmd.lower()
-    
+
+    # 0. /off /on - 一键关停或恢复本群全部功能
+    if cmd_lower in ("/off", "/on", "/off ", "/on "):
+        if is_private or not group_id:
+            await bot.send_private_message(ws, bot.ADMIN_QQ, "这个指令得在群里发，私聊没有群配置")
+            return True
+        turn_on = cmd_lower.startswith("/on")
+        cfg = bot.get_group_config(group_id)
+        # enable_sleep 语义是"启用作息"，不是"启用功能"，关功能时反而要把它打开
+        for key in list(cfg.keys()):
+            if key.startswith("enable_") and key != "enable_sleep":
+                cfg[key] = turn_on
+        cfg["enable_sleep"] = True
+        cfg["muted"] = not turn_on
+        bot.save_group_configs()
+        if turn_on:
+            reply = "全开了，群里该说说该闹闹"
+        else:
+            reply = "全关了，从现在起群里我就当没听见，发 /on 才回来"
+        await bot.send_group_message(ws, group_id, reply, is_command_report=True)
+        return True
+
+
     # 1. /new - 重置上下文 (支持 /new all 重置所有群与私聊)
     if cmd_lower.startswith("/new"):
         args = cmd.split()
@@ -143,36 +166,61 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
     return False
 
 
+_MEMORY_CACHE = {}
+_MEMORY_CACHE_TTL = 20.0
+_MEMORY_PER_PAGE = 12
+
+
+def _favor_tier(favor: int) -> str:
+    if favor >= 80:
+        return "恋慕"
+    if favor >= 65:
+        return "亲近"
+    if favor >= 40:
+        return "普通"
+    return "炸毛"
+
+
 async def handle_memory_summary_command(ws: aiohttp.ClientWebSocketResponse, group_id: Optional[int] = None, user_id: Optional[int] = None):
     """公开指令: /memory 或 /memary 生成当前群友记忆库与好感度总结（按群隔离）"""
     gid_key = str(group_id) if group_id else "private"
-    current_scope = bot.user_memories.get(gid_key, {})
-    if not current_scope:
-        report = "当前群聊暂无群友记忆记录" if group_id else "私聊暂无记忆记录"
+
+    # 20 秒内重复发同一个指令直接复用上一次的排版结果，省掉重复拼接
+    cached = _MEMORY_CACHE.get(gid_key)
+    if cached and time.time() - cached[0] < _MEMORY_CACHE_TTL:
+        pages = cached[1]
     else:
-        title = f"本群群友记忆档案（共 {len(current_scope)} 位）：" if group_id else f"私聊记忆档案（共 {len(current_scope)} 位）："
-        lines = [title]
-        for uid, info in current_scope.items():
-            nick = info.get("nickname", uid)
-            favor = info.get("favor", 50)
-            notes = "、".join(info.get("notes", [])) if info.get("notes") else "无特殊印象"
-            # Galgame 好感度评级
-            admin_suffix = " (主人)" if uid == str(bot.ADMIN_QQ) else ""
-            if favor >= 80:
-                status = "💖恋慕/宠溺"
-            elif favor >= 65:
-                status = "😊亲近/喜欢"
-            elif favor >= 40:
-                status = "😐普通群友"
-            else:
-                status = "💢炸毛/嫌弃"
-            lines.append(f"• {nick} (QQ {uid}){admin_suffix}: 好感度 {favor}/100 [{status}] | 印象: {notes}")
-        report = "\n".join(lines)
-        
+        scope = bot.user_memories.get(gid_key, {})
+        if not scope:
+            report = "当前群聊暂无群友记忆记录" if group_id else "私聊暂无记忆记录"
+            pages = [report]
+        else:
+            # 好感高的排前面，主人固定第一
+            rows = sorted(scope.items(), key=lambda kv: (-int(kv[1].get("favor", 50)), kv[0]))
+            rows.sort(key=lambda kv: 0 if kv[0] == str(bot.ADMIN_QQ) else 1)
+            title = (f"群友记忆 · 共 {len(scope)} 人"
+                     if group_id else f"私聊记忆 · 共 {len(scope)} 人")
+            pages = []
+            for start in range(0, len(rows), _MEMORY_PER_PAGE):
+                chunk = rows[start:start + _MEMORY_PER_PAGE]
+                lines = [title] if start == 0 else [f"{title}（{start + 1}-{start + len(chunk)}）"]
+                for uid, info in chunk:
+                    nick = info.get("nickname") or uid
+                    favor = int(info.get("favor", 50))
+                    notes = "、".join(info.get("notes", [])) if info.get("notes") else "无印象"
+                    mark = "★" if uid == str(bot.ADMIN_QQ) else ""
+                    lines.append(f"{mark}{nick} {favor} {_favor_tier(favor)}｜{notes}")
+                pages.append("\n".join(lines))
+        _MEMORY_CACHE[gid_key] = (time.time(), pages, None)
+
     if group_id:
-        await bot.send_group_message(ws, group_id, report, is_command_report=True)
+        # 分页连发：第一页立刻出去，剩下的补在后面，别让群友盯着空白等一个大长条
+        for i, page in enumerate(pages):
+            if i:
+                await asyncio.sleep(0.25)
+            await bot.send_group_message(ws, group_id, page, is_command_report=True)
     elif user_id:
-        await bot.send_private_message(ws, user_id, report, is_command_report=True)
+        await bot.send_private_message(ws, user_id, "\n".join(pages), is_command_report=True)
 
 
 async def generate_agent_command_reply(action_type: str, detail: str = "", is_private: bool = False, group_id: Optional[int] = None) -> str:

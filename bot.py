@@ -85,8 +85,8 @@ FOLLOW_UP_WINDOW = 300.0        # 持续对话追问窗口为 5 分钟 (300 秒)
 FOLLOW_UP_MAX_COUNT = 5         # 追问窗口内最多免 @ 回答 5 次，有新的 @ 则重置配额
 MAX_OUTPUT_TOKENS = 200         # 限制单次生成长度，防长篇大论
 
-# 拟真作息睡眠参数 (01:00 ~ 07:00 CST 为入睡期)
-SLEEP_START_HOUR = 1
+# 拟真作息睡眠参数 (23:00 ~ 07:00 CST 为入睡期)
+SLEEP_START_HOUR = 23
 SLEEP_END_HOUR = 7
 sleep_override_until: float = 0.0          # 主人专属叫醒生效截止时间戳
 user_sleep_reply_cd: Dict[tuple, float] = collections.defaultdict(float)  # 限制半夜对单个群友每 3 分钟最多回一句梦话
@@ -567,14 +567,16 @@ running_tasks: Set[asyncio.Task] = set()
 GROUP_CONFIGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "group_configs.json")
 DEFAULT_GROUP_CONFIG = {
     "mode": "user",            # "user" (拟真闲聊) 或 "root" (技术老搭档)
+    "muted": False,             # /off 一键静音的总闸：群友说什么都不回，管理员指令照旧
     "enable_interject": True,   # 是否允许主动插话
     "interject_prob": 0.35,     # 主动插话基准概率 (0.0 ~ 1.0)
-    "enable_sleep": True,       # 是否启用 01:00~07:00 拟真作息
+    "enable_sleep": True,       # 是否启用 23:00~07:00 拟真作息
     "enable_poke": True,        # 是否开启戳一戳互动与回戳
     "enable_games": True,       # 是否开启数字炸弹/掷骰子等文字游戏
     "enable_search": True,      # 是否开启联网热点检索 (鸭鸭搜/B站)
     "enable_bilibili_push": False, # 是否开启定时热门视频推送 (默认关)
-    "enable_yunzai": True       # 是否开启云崽游戏生态 (原神/星铁/米游社)
+    "enable_yunzai": True,      # 是否开启云崽游戏生态 (原神/星铁/米游社)
+    "enable_fun": True          # 年鉴/关系网/图灵等群玩法，AI 自主决定何时发起
 }
 DEFAULT_PRIVATE_CONFIG = {
     "mode": "user"
@@ -943,8 +945,15 @@ def sanitize_text(text: str) -> str:
         return ""
     return text.encode("utf-8", "replace").decode("utf-8", "ignore")
 
+def in_sleep_window(hour: int) -> bool:
+    """给定时点（CST 小时）是否落在休眠区间。跨午夜时区间被零点切开，不能直接比大小。"""
+    if SLEEP_START_HOUR <= SLEEP_END_HOUR:
+        return SLEEP_START_HOUR <= hour < SLEEP_END_HOUR
+    return hour >= SLEEP_START_HOUR or hour < SLEEP_END_HOUR
+
+
 def is_bot_sleeping(group_id: Optional[int] = None) -> bool:
-    """判断当前是否为夜间入睡期 (01:00 ~ 07:00 CST)，主人叫醒期除外，按群检查是否开启作息"""
+    """判断当前是否为夜间入睡期 (23:00 ~ 07:00 CST)，主人叫醒期除外，按群检查是否开启作息"""
     global sleep_override_until
     now = time.time()
     if now < sleep_override_until:
@@ -955,7 +964,7 @@ def is_bot_sleeping(group_id: Optional[int] = None) -> bool:
             return False
     # 获取中国标准时间 CST (UTC+8) 小时
     cst_hour = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).hour
-    return SLEEP_START_HOUR <= cst_hour < SLEEP_END_HOUR
+    return in_sleep_window(cst_hour)
 
 def check_user_fatigue(group_id: int, user_id: int) -> tuple[bool, bool]:
     """
