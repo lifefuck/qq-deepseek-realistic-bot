@@ -805,11 +805,11 @@ async def expand_forward_messages(ws: aiohttp.ClientWebSocketResponse, text: str
     return text.replace(m.group(0), expanded_text)
 
 def clean_cq_codes(text: str) -> str:
-    """去除表情、图片等大段 CQ 码，保留纯文本与卡片语义"""
+    """去除表情、图片、文件等大段 CQ 码，保留纯文本与卡片语义"""
     # 先做卡片语义提取
     text = parse_card_content(text)
-    # 再剥离纯媒体类 CQ 码
-    text = re.sub(r"\[CQ:(image|record|video)[^\]]*\]", "", text)
+    # 再剥离纯媒体与文件类 CQ 码（包含 file, image, record, video, face, poke 等）
+    text = re.sub(r"\[CQ:(image|record|video|file|audio)[^\]]*\]", "", text)
     text = re.sub(r"\[CQ:(face|poke)[^\]]*\]", "", text)
     return text.strip()
 
@@ -1971,15 +1971,15 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             return
 
         # 2. 增减某人好感度: 给 123456 加 10 点好感度 / 扣除 123456 20 好感度 / 把 123456 好感度 +5 / 扣 123456 好感 10
-        m_delta = re.search(r"(?:把|给|针对|对)?\s*(?:用户|群友)?\s*(\d{5,11})\s*(?:的)?\s*(?:好感度|好感|favor)?\s*(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(\d+)", clean_body, re.IGNORECASE)
+        m_delta = re.search(r"(?:把|给|针对|对)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)\s*(?:的)?\s*(?:好感度|好感|favor)?\s*(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(\d+)", clean_body, re.IGNORECASE)
         if not m_delta:
-            m_delta = re.search(r"(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(?:用户|群友)?\s*(\d{5,11})\s*(?:的)?\s*(?:好感度|好感|favor)?\s*(\d+)", clean_body, re.IGNORECASE)
+            m_delta = re.search(r"(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(?:用户|群友)?\s*(\b\d{5,11}\b)\s*(?:的)?\s*(?:好感度|好感|favor)?\s*(\d+)", clean_body, re.IGNORECASE)
             if m_delta:
                 op_sign = m_delta.group(1)
                 target_qq = int(m_delta.group(2))
                 delta_val = int(m_delta.group(3))
             else:
-                m_delta = re.search(r"(?:好感度|好感|favor)?\s*(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*(\d{5,11})", clean_body, re.IGNORECASE)
+                m_delta = re.search(r"(?:好感度|好感|favor)?\s*(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)", clean_body, re.IGNORECASE)
                 if m_delta:
                     op_sign = m_delta.group(1)
                     delta_val = int(m_delta.group(2))
@@ -2005,9 +2005,9 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
 
         # 3. 绝对值修改某人好感度: 改 123456 的好感度为 80 / 把 123456 好感度调至 0 / 设为 100 / 3650199442 好感度 80 / 调成 0 / 改为 0
         # 兼容正序与倒序: "把298152965好感度调至0" 或 "把好感度调至0 298152965"
-        m_favor = re.search(r"(?:把|将|改|设置)?\s*(?:用户|群友)?\s*(\d{5,11})\s*(?:的)?\s*(?:好感度|favor)?\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)", clean_body, re.IGNORECASE)
+        m_favor = re.search(r"(?:把|将|改|设置)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)\s*(?:的)?\s*(?:好感度|favor)?\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)", clean_body, re.IGNORECASE)
         if not m_favor:
-            m_favor = re.search(r"(?:好感度|favor)\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*(\d{5,11})", clean_body, re.IGNORECASE)
+            m_favor = re.search(r"(?:好感度|favor)\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)", clean_body, re.IGNORECASE)
             if m_favor:
                 # 倒序形式: group(1)是数值, group(2)是QQ
                 new_favor = max(0, min(100, int(m_favor.group(1))))
@@ -2449,15 +2449,15 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
             return
 
         # 2. 增减某人好感度: 给 123456 加 10 点好感度 / 扣除 123456 20 好感度 / 把 123456 好感度 +5 / 扣 123456 好感 10
-        m_delta = re.search(r"(?:把|给|针对|对)?\s*(?:用户|群友)?\s*(\d{5,11})\s*(?:的)?\s*(?:好感度|好感|favor)?\s*(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(\d+)", clean_body, re.IGNORECASE)
+        m_delta = re.search(r"(?:把|给|针对|对)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)\s*(?:的)?\s*(?:好感度|好感|favor)?\s*(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(\d+)", clean_body, re.IGNORECASE)
         if not m_delta:
-            m_delta = re.search(r"(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(?:用户|群友)?\s*(\d{5,11})\s*(?:的)?\s*(?:好感度|好感|favor)?\s*(\d+)", clean_body, re.IGNORECASE)
+            m_delta = re.search(r"(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(?:用户|群友)?\s*(\b\d{5,11}\b)\s*(?:的)?\s*(?:好感度|好感|favor)?\s*(\d+)", clean_body, re.IGNORECASE)
             if m_delta:
                 op_sign = m_delta.group(1)
                 target_qq = int(m_delta.group(2))
                 delta_val = int(m_delta.group(3))
             else:
-                m_delta = re.search(r"(?:好感度|好感|favor)?\s*(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*(\d{5,11})", clean_body, re.IGNORECASE)
+                m_delta = re.search(r"(?:好感度|好感|favor)?\s*(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)", clean_body, re.IGNORECASE)
                 if m_delta:
                     op_sign = m_delta.group(1)
                     delta_val = int(m_delta.group(2))
@@ -2482,13 +2482,13 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
             return
 
         # 3. 绝对值修改某人好感度
-        m_favor = re.search(r"(?:把|将|改|设置)?\s*(?:用户|群友)?\s*(\d{5,11})\s*(?:的)?\s*(?:好感度|favor)?\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)", clean_body, re.IGNORECASE)
+        m_favor = re.search(r"(?:把|将|改|设置)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)\s*(?:的)?\s*(?:好感度|favor)?\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)", clean_body, re.IGNORECASE)
         if not m_favor:
-            m_favor = re.search(r"(?:好感度|favor)\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*(\d{5,11})", clean_body, re.IGNORECASE)
+            m_favor = re.search(r"(?:好感度|favor)\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)", clean_body, re.IGNORECASE)
             if m_favor:
                 new_favor = max(0, min(100, int(m_favor.group(1))))
                 target_qq = int(m_favor.group(2))
-                mem = get_or_create_user_memory(target_qq, group_id=group_id)
+                mem = get_or_create_user_memory(target_qq, group_id=None)
                 mem["favor"] = new_favor
                 mem["updated_at"] = time.time()
                 save_user_memories()
@@ -2498,7 +2498,7 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         if m_favor:
             target_qq = int(m_favor.group(1))
             new_favor = max(0, min(100, int(m_favor.group(2))))
-            mem = get_or_create_user_memory(target_qq, group_id=group_id)
+            mem = get_or_create_user_memory(target_qq, group_id=None)
             mem["favor"] = new_favor
             mem["updated_at"] = time.time()
             save_user_memories()
