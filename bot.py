@@ -35,7 +35,6 @@ from prompts import (SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT, GAMES_KB, needs_games_kb
 import meme_catalog
 import safety_guard
 import cross_interaction
-import vision_resolver
 
 # ==================== 基础配置 ====================
 # 连接信息全部走环境变量，仓库里只留占位符
@@ -786,44 +785,6 @@ def update_group_config(group_id: Optional[int], key: str, value: Any) -> bool:
 
 load_group_configs()
 ADMIN_MODE: str = "user"  # 兼容旧引用
-
-# 图片摘要缓存：同一张图只调一次视觉模型
-_vision_cache: Dict[str, str] = {}
-_VISION_CACHE_MAX = 80
-
-async def get_image_note(session: aiohttp.ClientSession, image_url: str) -> str:
-    """取一张图的摘要，命中缓存直接返回。
-
-    以前是每张群图都起一个后台任务，摘要生成完写进一个不存在的变量
-    （group_timeline），NameError 被 except 吞掉，钱花了上下文里什么都没有。
-    现在改成：只有机器人真要接话时，才现取最近那张图的摘要。
-    """
-    if not image_url:
-        return ""
-    if image_url in _vision_cache:
-        return _vision_cache[image_url]
-    summary = await vision_resolver.transcribe_image_summary(session, SILICONFLOW_API_KEY, image_url)
-    if not summary:
-        return ""
-    if len(_vision_cache) >= _VISION_CACHE_MAX:
-        _vision_cache.pop(next(iter(_vision_cache)))
-    _vision_cache[image_url] = summary
-    logger.info("视觉摘要: %s", summary)
-    return summary
-
-async def recent_image_note(group_id: int, max_age: float = 120.0) -> str:
-    """最近两分钟内有图就带一句图注，没有就返回空串"""
-    if not http_session or not group_recent_images.get(group_id):
-        return ""
-    now_ts = time.time()
-    for url, ts, nick in reversed(group_recent_images[group_id]):
-        if now_ts - ts > max_age:
-            break
-        summary = await get_image_note(http_session, url)
-        if summary:
-            return f"[{nick} 刚发了张图：{summary}]"
-        break
-    return ""
 
 # ==================== 大肥鱼专属表情包系统 ====================
 MEME_PACK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "meme-pack", "memes")
@@ -1973,15 +1934,6 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in timeline])
     else:
         dialogue_text = user_text or (timeline[-1]['content'] if timeline else "")
-
-    # 最近两分钟有图就现取一句图注，让模型知道对方刚发了什么
-    try:
-        image_note = await recent_image_note(group_id)
-    except Exception as e:
-        logger.debug("取图注失败: %s", e)
-        image_note = ""
-    if image_note:
-        dialogue_text = f"{image_note}\n{dialogue_text}"
     
     logger.info("[群 %d] 触发轻量会话分析 (is_at=%s, is_admin=%s), 发言内容: %s", group_id, is_at, is_admin, dialogue_text[:40])
     
