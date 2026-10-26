@@ -183,12 +183,12 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     # 经过反模板闸削平套路，避免句式坍塌
     channel_mode = bot.get_channel_mode(group_id)
     if not is_command_report and channel_mode != "root":
-        text = bot.de_template(text)
+        text = bot.de_template(text, group_id)
     # [MEME:xx] 是给选图用的，正文不能带出去，也不能被切段切开
     text, meme_tag = meme_catalog.extract_tag(text)
     if not text and not meme_tag:
         return ""
-    bot.recent_bot_replies.append(text)
+    bot.recent_bot_replies[group_id].append(text)
     bot.group_last_bot_reply_time[group_id] = time.time()
 
     if is_command_report or len(text) > 120 or channel_mode == "root":
@@ -202,7 +202,7 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         if now - last_warn > 30.0:
             bot.group_rate_limit_warned[group_id] = now
             logger.warning("[群 %d] 60s 内已发 %d 条，触发风控红线冷静期", group_id, bot.GROUP_MAX_MESSAGES_PER_WINDOW)
-            await send_group_message(ws, group_id, "别排队艾特我啦，让本鲸宝喘口气缓一缓", is_command_report=False)
+            await send_group_message(ws, group_id, "别排队艾特我啦，缓口气再说", is_command_report=False)
         return ""
         
     # 安全护栏过滤
@@ -247,9 +247,11 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
     """向 NapCat 发送私聊消息并捕获发送状态"""
     if "[PASS]" in text:
         return
+    # 私聊没有群号，用 -1 当独立槽位，别和任何群混在一起
+    private_key = -1
     if not is_command_report and bot.get_channel_mode(None) != "root":
-        text = bot.de_template(text)
-    bot.recent_bot_replies.append(text)
+        text = bot.de_template(text, private_key)
+    bot.recent_bot_replies[private_key].append(text)
 
     clean_text = bot.strip_markdown(text).strip()
     clean_text = bot.obfuscate_urls_for_qq(clean_text)

@@ -133,6 +133,11 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
     # 随消息变化的上下文，统一挂在 user 消息末尾
     dynamic_context = ""
     if not is_root_work:
+        # 本群最近说过的话回喂给模型，光靠代码削句子治不了「换个说法还是同一个梗」
+        if group_id:
+            repeat_hint = bot.get_anti_repeat_hint(group_id)
+            if repeat_hint:
+                dynamic_context += f"\n{repeat_hint}\n"
         memes_context = bot.meme_manager.get_prompt_snippet(timeline_text)
         if memes_context:
             dynamic_context += f"\n{memes_context}\n"
