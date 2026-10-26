@@ -31,16 +31,25 @@ logger = logging.getLogger("qqbot.messaging")
 _EMOJI_RE = re.compile("[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D]+")
 
 
+def _tidy(text: str) -> str:
+    """摘完表情后收拾残留空格，别留下「说了 句话」这种断口"""
+    text = re.sub(r"[ \t]{2,}", " ", text).strip()
+    return re.sub(r"\s+([，。！？、])", r"\1", text)
+
+
 def thin_emoji(text: str, keep_ratio: float = 0.35) -> str:
     """表情抽稀：模型看到"可以带表情"就爱每条都甩，光靠 prompt 压不住。
-    这里按概率只放行一部分，其余把表情摘掉，整体才是「偶尔」而不是标配。"""
-    if random.random() < keep_ratio:
+    这里按概率只放行一部分，放行的那条也只留一个，整体才是「偶尔」而不是标配。"""
+    matches = list(_EMOJI_RE.finditer(text))
+    if not matches:
         return text
-    stripped = _EMOJI_RE.sub("", text)
-    stripped = re.sub(r"[ \t]{2,}", " ", stripped).strip()
-    stripped = re.sub(r"\s+([，。！？、])", r"\1", stripped)
-    # 整条都是表情的话，摘完就空了，那就留着，总比发个空消息强
-    return stripped or text
+    if random.random() >= keep_ratio:
+        cleaned = _tidy(_EMOJI_RE.sub("", text))
+        # 整条都是表情的话，摘完就空了，那就留着，总比发个空消息强
+        return cleaned or text
+    first = matches[0]
+    rest = _EMOJI_RE.sub("", text[first.end():])
+    return _tidy(text[:first.start()] + first.group() + rest)
 
 
 def split_reply_segments(text: str) -> list[str]:

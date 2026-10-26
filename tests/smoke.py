@@ -98,6 +98,8 @@ async def main():
     check("句中表情摘完不留空格", bot.thin_emoji("显卡没用 🙄 认命吧", keep_ratio=0) == "显卡没用 认命吧")
     check("纯表情不摘成空消息", bot.thin_emoji("😅", keep_ratio=0) == "😅")
     check("表情该留时留着", bot.thin_emoji("行 👉", keep_ratio=1) == "行 👉")
+    check("放行也只留一个", bot.thin_emoji("笑死 😂 这人 🤣", keep_ratio=1) == "笑死 😂 这人")
+    check("组合表情能整体识别", bot.thin_emoji("晕了 😵‍💫", keep_ratio=0) == "晕了")
 
     # 7. 仪表盘状态能取
     status = bot.get_bot_dashboard_status()
