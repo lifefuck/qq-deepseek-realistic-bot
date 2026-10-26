@@ -54,7 +54,7 @@ class CrossGroupTopicManager:
         self.is_dirty = True
 
     def get_recent_topics_prompt(self, exclude_group_id: Optional[int] = None, limit: int = 4) -> str:
-        """获取近期其他群/公共话题摘要，用于增强大模型认知"""
+        """取其他群的近期话题，给模型当背景，不直接当台词"""
         now = time.time()
         candidates = []
         for t in reversed(self.topics):
