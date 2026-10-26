@@ -141,12 +141,25 @@ def _pick_file(items: List[dict]) -> Optional[str]:
     return chosen
 
 
+# 桶里图太少或者全被体积过滤掉时的备选，别让「干饭」这种只有一个桶直接发不出图
+FALLBACK = {
+    "干饭": ("卖萌", "得意"),
+    "心动": ("卖萌",),
+    "委屈": ("卖萌", "无奈"),
+    "愤怒": ("嘲讽",),
+    "震惊": ("困惑", "卖萌"),
+}
+
 def pick_b64(tag: str = "", text: str = "") -> Optional[str]:
     """按情绪标签优先、文本关键词兜底挑一张图，返回 base64；挑不到返回 None"""
-    items = _candidates_for_tag(tag) if tag else []
-    if not items:
-        items = _candidates_for_text(text)
-    path = _pick_file(items)
+    path = None
+    if tag:
+        for candidate in (tag,) + FALLBACK.get(tag, ()):
+            path = _pick_file(_candidates_for_tag(candidate))
+            if path:
+                break
+    if not path:
+        path = _pick_file(_candidates_for_text(text))
     if not path:
         return None
     try:

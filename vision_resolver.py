@@ -14,9 +14,10 @@ from typing import Optional
 
 logger = logging.getLogger("DeepSeekBot")
 
-# 支持使用 SiliconFlow 上的轻量视觉模型（如 Pro/Qwen/Qwen2-VL-7B-Instruct 等）
+# SiliconFlow 上的轻量视觉模型。Qwen2-VL 系列已经下架（返回 400 Model does not exist），
+# 换到 Qwen3-VL-8B，调用方式和返回结构一致
 VISION_API_URL = "https://api.siliconflow.cn/v1/chat/completions"
-VISION_MODEL = "Qwen/Qwen2-VL-7B-Instruct"
+VISION_MODEL = "Qwen/Qwen3-VL-8B-Instruct"
 
 
 async def transcribe_image_summary(session: aiohttp.ClientSession, api_key: str, image_url: str, timeout: float = 6.0) -> Optional[str]:
@@ -61,7 +62,9 @@ async def transcribe_image_summary(session: aiohttp.ClientSession, api_key: str,
                         logger.info("视觉转录成功: %s -> %s", image_url[:45], summary)
                         return summary
             else:
-                logger.debug("视觉端点响应异常状态码 %d", resp.status)
+                # 模型下架、图片 URL 失效都会走到这，别只打 debug，不然坏了很久都不知道
+                body = await resp.text()
+                logger.warning("视觉端点 %d: %s", resp.status, body[:160])
     except asyncio.TimeoutError:
         logger.debug("视觉转录超时 (%s s)，优雅降级跳过", timeout)
     except Exception as e:

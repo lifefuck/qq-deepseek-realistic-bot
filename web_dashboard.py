@@ -4,15 +4,19 @@
 """
 import collections
 import datetime
-import hashlib
 import html
-import json
 import logging
-import secrets
 import time
 import base64
+import collections
+import datetime
+import hashlib
 import hmac
+import html
+import logging
 import os
+import secrets
+import time
 from typing import Callable, Deque, Dict, Any, Optional
 from aiohttp import web
 
@@ -465,10 +469,10 @@ INDEX_HTML = """<!DOCTYPE html>
 
   <header>
     <div class="header-left">
-      <img class="bot-avatar" src="https://dummyimage.com/100x100/2563eb/ffffff?text=FISH" alt="Bot Avatar" onerror="this.src='https://dummyimage.com/100x100/2563eb/ffffff?text=FISH'">
+      <img class="bot-avatar" src="https://q1.qlogo.cn/g?b=qq&nk=3778339604&s=100" alt="Bot Avatar" onerror="this.src='https://dummyimage.com/100x100/2563eb/ffffff?text=FISH'">
       <div class="title-box">
         <h1>🐟 大肥鱼 AI 控制台</h1>
-        <p>基座: DeepSeek-V3 · 实体已就绪 · 双 Bot 协同中</p>
+        <p>基座: DeepSeek-V3 · 实体 QQ: 3778339604 · 双 Bot 协同中</p>
       </div>
     </div>
     <div class="status-badges" id="headerBadges">
@@ -483,7 +487,7 @@ INDEX_HTML = """<!DOCTYPE html>
     <div class="card">
       <div class="card-title">白名单群聊数量</div>
       <div class="card-value" id="valGroupCount">4 个群</div>
-      <div class="card-sub" id="valGroupSub">多群已载入</div>
+      <div class="card-sub" id="valGroupSub">978074744 / 1071994647 / 1002347079 / 432810752</div>
     </div>
     <div class="card">
       <div class="card-title">已建立群友档案</div>
@@ -530,7 +534,7 @@ INDEX_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
-    let currentTab = "";
+    let currentTab = "978074744";
     let latestData = null;
 
     function formatRelative(secondsAgo) {
@@ -1265,6 +1269,7 @@ async def session_auth_middleware(request: web.Request, handler):
                 if verify_password(q_key, salt, expected_hash):
                     record_login_attempt(client_ip, True)
                     token = create_session()
+                    # 302 重定向到洁净根路径，抹除 URL 上的明文密钥与历史记录
                     redirect_resp = web.HTTPFound("/")
                     set_safe_cookie(redirect_resp, token)
                     return redirect_resp
@@ -1275,6 +1280,7 @@ async def session_auth_middleware(request: web.Request, handler):
     # 后台管理 API 严格校验会话有效性
     if check_authenticated(request):
         response = await handler(request)
+        # 若来自 Cloudflare Access 云端认证通过但本地无 Session Cookie，自动无感补发
         cf_email = request.headers.get("Cf-Access-Authenticated-User-Email")
         if cf_email and isinstance(response, web.Response) and not request.cookies.get("dashboard_session"):
             token = create_session()
@@ -1288,7 +1294,7 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
     """构建 aiohttp web 实例，支持加固鉴权与配置热写入"""
     app = web.Application(middlewares=[session_auth_middleware])
 
-    # 挂载构建后的静态资源目录（如果存在）
+    # 挂载构建后的静态资源目录
     assets_dir = os.path.join(DIST_DIR, "assets")
     if os.path.exists(assets_dir):
         app.router.add_static("/assets", assets_dir)
@@ -1380,6 +1386,7 @@ async def start_web_server(get_status_func: Callable[[], Dict[str, Any]], update
     app = await create_web_app(get_status_func, update_config_func)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", port)
+    # 只监听本机，外网走 Cloudflare 隧道进来；没必要把面板暴露在整个局域网
+    site = web.TCPSite(runner, "127.0.0.1", port)
     await site.start()
     return runner
