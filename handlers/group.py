@@ -503,11 +503,11 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in timeline])
     elif is_admin:
         # 主人追问/呼叫时只喂最近几句：单独一个「乐乐」递过去，模型只能当寒暄敷衍
-        recent_lines = timeline[-8:] if timeline else []
+        recent_lines = list(timeline)[-8:] if timeline else []
         dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in recent_lines]) or (user_text or "")
     else:
         # 群友直接找机器人时也给几行上下文，免得它把一句「乐乐」当成初次见面打招呼
-        recent_lines = timeline[-6:] if timeline else []
+        recent_lines = list(timeline)[-6:] if timeline else []
         dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in recent_lines]) or (user_text or "")
     
     bot.logger.info("[群 %d] 触发轻量会话分析 (is_at=%s, is_follow_up=%s, is_admin=%s), 发言内容: %s", group_id, is_at, is_follow_up, is_admin, dialogue_text[:40])
