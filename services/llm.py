@@ -49,7 +49,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             notes_str = "、".join(mem.get("notes", [])) if mem.get("notes") else "初次接触"
             user_mem_prompt = (
                 f"【当前交谈群友信息】：昵称: {mem.get('nickname')}, 好感度: {mem.get('favor')}/100\n"
-                f"【长期印象（只是你对他的背景认知，不是他这一轮说过的话，绝对不能拿来当对话内容回应）】：{notes_str}\n"
+                f"【你对他的背景认知（只影响你跟他说话松不松，不要变成台词，比如「你又来挑我刺」「你又叫我大肥鱼」这种指涉他没做过的事，一句都别说）】：{notes_str}\n"
             )
 
     # 注入群内焦点互动关系（仅群聊生效）

@@ -54,32 +54,21 @@ async def main():
     check("tag 缺右括号", meme_catalog.extract_tag("离谱[MEME:嘲讽")[1] == "")
     check("tag 无标签", meme_catalog.extract_tag("普通一句") == ("普通一句", ""))
 
-    # 2. 口头禅冷却与括号动作
+    # 2. 反模板闸：只挡原样复读，风格不管
     bot.recent_bot_replies.clear()
     _g = 123456789
-    bot.recent_bot_replies[_g].extend(["来口大白饭", "大白饭真香", "今天写代码"])
-    out = bot.de_template("这也太离谱了（嚼嚼大白饭）", _g)
-    check("括号动作被清掉", "大白饭" not in out and "（" not in out, out)
-
-    # 2.5 人设自称与整句复读
-    bot.recent_bot_replies.clear()
-    check("自称换成我", bot._strip_self_ref("本鲸宝要去喝水") == "我要去喝水")
-    check("不出现我我", "我我" not in bot._strip_self_ref("这是我大肥鱼本鱼的手笔"))
     same = "吵死啦！本大肥鱼也是需要休息的，等会"
-    first = bot.de_template(same, _g)
-    check("第一次照原样发", first == same)
-    bot.recent_bot_replies[_g].append(first)
-    second = bot.de_template(same, _g)
-    check("复读时去掉自称", "本大肥鱼" not in second, second)
-    bot.recent_bot_replies[_g].append(second)
-    third = bot.de_template(same, _g)
-    check("第三次再撞就削半句", third != second and len(third) < len(second), third)
-    bot.recent_bot_replies[_g].extend(["本鲸宝真累", "本大肥鱼要睡了"])
-    check("回喂提示带禁自称", "别再自称" in bot.get_anti_repeat_hint(_g))
+    check("第一次照原样发", bot.de_template(same, _g) == same)
+    bot.recent_bot_replies[_g].append(same)
+    shorter = bot.de_template(same, _g)
+    check("复读时削短", len(shorter) < len(same) and bot._skeleton(shorter) in bot._skeleton(same), shorter)
+    check("回喂提示是原话", same in bot.get_anti_repeat_hint(_g))
+    check("提示里不写词表规则", "不许" not in bot.get_anti_repeat_hint(_g))
+    check("不同的话不误伤", bot.de_template("今天天气不错", _g) == "今天天气不错")
     bot.recent_bot_replies.clear()
 
-    # 2.6 提示词里「只回应真实发生的事」不能丢，这是防臆想的核心约束
-    check("人设有防臆想条款", "只回应真实发生的事" in bot.SYSTEM_PROMPT)
+    # 2.6 提示词里「只对眼前这条消息做反应」不能丢，这是防臆想的核心
+    check("人设有防臆想条款", "只对眼前这条消息做反应" in bot.SYSTEM_PROMPT)
     check("大肥鱼人设保留", "大肥鱼" in bot.SYSTEM_PROMPT)
 
     check("水聊跳过", not bot._is_favor_worthy("哈哈哈"))
