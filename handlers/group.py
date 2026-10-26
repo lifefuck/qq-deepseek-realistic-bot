@@ -45,7 +45,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 每条消息一个短 id，后续日志带上，排查时能串成一条线
     trace.begin(f"g{group_id}-{sender_id}")
         
-    # 前置短路检查：如果机器人在该群处于禁言期（单人禁言或全员禁言），直接静默拦截，绝对不浪费 1 个 Token
+    # 前置短路检查：如果机器人在该群处于禁言期（单人禁言或全员禁言），直接返回，不消耗 token
     if await bot.check_bot_banned_realtime(ws, group_id):
         bot.logger.debug("[群 %d] 机器人处于禁言保护期，忽略用户 %s 的消息，省下大模型 Token", group_id, sender_id)
         return

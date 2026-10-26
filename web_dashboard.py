@@ -498,7 +498,7 @@ INDEX_HTML = """<!DOCTYPE html>
     <div class="card">
       <div class="card-title">免 @ 追问配额机制</div>
       <div class="card-value">5分钟 / 5次</div>
-      <div class="card-sub">新 @ 立即重置配额 · 智能抗死缠烂打</div>
+      <div class="card-sub">新 @ 立即重置配额 · 连续追问窗口</div>
     </div>
     <div class="card">
       <div class="card-title">服务运行时间</div>
@@ -1118,7 +1118,7 @@ def get_auth_credentials() -> tuple[str, str, str]:
                 if len(parts) == 3:
                     return parts[0].strip(), parts[1].strip(), parts[2].strip()
                 elif len(parts) == 2:
-                    # 检测到旧明文密码，自动无缝升级持久化为 PBKDF2 加盐哈希
+                    # 旧明文密码会自动升级为 PBKDF2 加盐哈希
                     user, plain_pwd = parts[0].strip(), parts[1].strip()
                     salt, h = hash_password(plain_pwd)
                     with open(AUTH_FILE, "w", encoding="utf-8") as wf:

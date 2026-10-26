@@ -53,7 +53,7 @@ def thin_emoji(text: str, keep_ratio: float = 0.35) -> str:
 
 
 def split_reply_segments(text: str) -> list[str]:
-    """智能正则切分回复，生成像真人在 QQ 连续打字发出的 1~3 条短消息"""
+    """按标点切成 1~3 条短消息，像真人连续打字"""
     clean = bot.strip_markdown(text).strip()
     clean = bot.remove_trailing_period(clean)
     if not clean:
@@ -203,7 +203,7 @@ def build_forward_nodes(entries: list, title: str = "", bot_qq: int = 0, bot_nic
 
 
 async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None) -> str:
-    """分段拟真发送：闲聊时智能切分 1~2 条连续发送，root 模式整块发送。
+    """分段发送：闲聊时切成 1~2 条连续发出，root 模式整块发送。
 
     返回实际发出去的正文（已削平、已剥标签），调用方拿它写回上下文，
     别再把没削过的原始回复存进去。

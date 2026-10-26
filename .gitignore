@@ -17,7 +17,7 @@ data/*.json
 *.json.tmp
 napcat_qr.png
 dist/
-meme-pack/.git/
+meme-pack/
 
 # 前端依赖，克隆后自己装
 web_ui/node_modules/

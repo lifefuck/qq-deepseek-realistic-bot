@@ -144,7 +144,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                     snippets_str = " | ".join([f"{r['title']}: {r['snippet']}" for r in search_res])
                     web_search_context = f"\n【实时联网搜索参考（仅供知识辅助，依然保持自身人设）】：{snippets_str}\n"
 
-    # System Prompt 保持绝对静态：热梗、面板指令这些随消息变的内容全部走 user 末尾，
+    # System Prompt 保持不变：热梗、面板指令这些随消息变的内容全部走 user 末尾，
     # 这样每次请求的前缀一致，服务端不用反复重算开头那一段
     system_content = bot.sanitize_text(bot.ROOT_SYSTEM_PROMPT if is_root_work else bot.SYSTEM_PROMPT)
 
@@ -162,7 +162,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         # 面板指令两千多字符，只有真在问用法时才带，平时一个字都不发
         if bot.needs_games_kb(timeline_text):
             dynamic_context += f"\n【云崽指令清单（群友在问用法，按这个答）】：\n{bot.GAMES_KB}\n"
-    # 群文件上下文增强（当群友询问群文件时，仅拉取文件列表标题与元信息，绝对不读文件正文）
+    # 群文件上下文增强（当群友询问群文件时，仅拉取文件列表标题与元信息，不读文件正文）
     group_files_context = ""
     if group_id and bot.current_ws and any(kw in timeline_text for kw in ("群文件", "文件列表", "群里有没有", "群里发过", "发群文件", "找文件")):
         files_summary = await bot.get_group_files_brief(bot.current_ws, group_id)
