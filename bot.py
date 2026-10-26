@@ -1113,6 +1113,12 @@ def check_user_fatigue(group_id: int, user_id: int) -> tuple[bool, bool]:
         return True, True
     return False, False
 
+# 这几个词一旦连续出现，模型就会当成万能接话料，需要冷却
+_TIC_WORDS = ("大白饭", "碳基生物")
+
+# 括号里的纯动作，模型无视禁令时由代码兜底
+_ACTION_PAREN_RE = re.compile(r"[（(](?:嚼|甩|鼓|吨|摸|翻|趴|叹|挠|跺|叉腰|擦汗|扶额)[^（）()]{0,8}[）)]")
+
 def de_template(reply: str) -> str:
     """
     反模板套路削平闸门 (参考 Estrella Bot anti-template 设计)
@@ -1150,6 +1156,27 @@ def de_template(reply: str) -> str:
             if len(trimmed) >= 2:
                 logger.info("[反模板闸] 削平连续口头禅起手: %r -> %r", text, trimmed)
                 text = trimmed
+
+    # 3. 口头禅冷却：最近三条回复里已经出现过两次的词，这条不再往外抛
+    for tic in _TIC_WORDS:
+        if tic not in text:
+            continue
+        if sum(1 for r in recent_bot_replies if tic in r) < 2:
+            continue
+        new = re.sub(rf"[（(][^（）()]*{tic}[^（）()]*[）)]", "", text).strip()
+        if tic in new:
+            kept = [seg for seg in re.split(r"[，,。！？\n]", new) if seg.strip() and tic not in seg]
+            new = "，".join(kept) if kept and len("，".join(kept)) >= 4 else new.replace(tic, "饭")
+        new = new.strip()
+        if new and new != text:
+            logger.info("[反模板闸] 口头禅冷却(%s): %r -> %r", tic, text, new)
+            text = new
+
+    # 4. 括号动作兜底清理
+    cleaned = _ACTION_PAREN_RE.sub("", text).strip()
+    if cleaned and cleaned != text:
+        logger.info("[反模板闸] 清掉括号动作: %r -> %r", text, cleaned)
+        text = cleaned
 
     return text
 
