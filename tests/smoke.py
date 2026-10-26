@@ -112,6 +112,28 @@ async def main():
     bot.user_memories.pop(str(GID), None)
     group_stats._stats.pop(str(GID), None)
 
+    # 10. 指令路由：群里发 /年鉴 要真的走到玩法那层，不能被云崽前缀或管理员指令截走
+    check("年鉴不被云崽吞", not bot.is_game_or_yunzai_command("/年鉴"))
+    check("图灵不被云崽吞", not bot.is_game_or_yunzai_command("/图灵"))
+
+    import handlers.group as hgroup
+    gid = 999999998
+    bot.ALLOWED_GROUPS.add(gid)
+    group_stats._stats.pop(str(gid), None)
+    for i in range(60):
+        group_stats.record_message(gid, 1000, "测试群友", "测试发言内容够长了", hour=21)
+    calls.clear()
+    await hgroup.handle_group_message(FakeWS(), {
+        "group_id": gid, "user_id": 1000,
+        "sender": {"nickname": "测试群友"},
+        "raw_message": "/年鉴",
+        "message": [{"type": "text", "data": {"text": "/年鉴"}}],
+    })
+    imgs = sum(1 for a, p in calls if isinstance(p.get("message"), list))
+    check("群里发 /年鉴 会出图", imgs >= 1, f"imgs={imgs}")
+    bot.ALLOWED_GROUPS.discard(gid)
+    group_stats._stats.pop(str(gid), None)
+
     print()
     if FAILED:
         print("失败项:", ", ".join(FAILED))
