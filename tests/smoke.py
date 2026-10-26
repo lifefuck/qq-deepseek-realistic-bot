@@ -219,8 +219,10 @@ async def main():
 
     # 仓库链接必须原样发出去，不能再被插汉字
     u = "https://github.com/lifefuck/qq-deepseek-realistic-bot"
-    check("github 链接不被混淆", bot.obfuscate_urls_for_qq(u) == u)
-    check("其他域名照旧混淆", bot.obfuscate_urls_for_qq("https://example.com/a") != "https://example.com/a")
+    ob = bot.obfuscate_urls_for_qq(u)
+    check("链接插删字且能还原", ob.split("（")[0].replace("删", "") == u and "删" in ob)
+    check("链接带去除提示", "去掉" in ob)
+    check("其他域名同样处理", "删" in bot.obfuscate_urls_for_qq("https://example.com/a"))
     # 模型自己加的括号旁白不能发出去
     check("纯括号旁白被丢弃", safety_guard.strip_internal_monologue("（保持简洁自然，不用特意打招呼或回忆过往）") == "")
     check("正常括号内容保留", safety_guard.strip_internal_monologue("（笑）行吧") != "")

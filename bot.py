@@ -1221,13 +1221,12 @@ def remove_trailing_period(text: str) -> str:
     return text
 
 # ==================== 外链防风控混淆器 ====================
-_OBFUSCATE_CHARS = ("中", "的", "了", "啊", "呀", "呢", "哦", "嘛", "啦", "哈")
-_OBFUSCATE_SKIP_HOSTS = ("github.com", "githubusercontent.com", "gitee.com", "gitcode.com")
+_OBFUSCATE_CHAR = "删"
 _OBFUSCATE_HOST_RE = re.compile(r"(https?://)([^/\s?#（）【】《》，。；：、！？]+)", re.IGNORECASE)
 _CN_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
 
 def obfuscate_urls_for_qq(text: str) -> str:
-    """在每个外链域名内部随机插一个汉字，打破 QQ 外链探测，100% 避开外链风控吞消息"""
+    """往域名里插两个「删」字，断开 QQ 外链探测，同时让人一眼知道要去掉哪个字"""
     if not text or "://" not in text:
         return text
 
@@ -1235,18 +1234,21 @@ def obfuscate_urls_for_qq(text: str) -> str:
         proto = m.group(1)
         host = m.group(2)
         if _CN_CHAR_RE.search(host):
-            return m.group(0)  # 已经混淆或包含中文，幂等跳过
-        # 代码托管站是白名单：QQ 不吞，插字反而让地址没法直接点
-        if any(host == h or host.endswith("." + h) for h in _OBFUSCATE_SKIP_HOSTS):
-            return m.group(0)
-        ch = random.choice(_OBFUSCATE_CHARS)
-        if host.startswith("www.") and len(host) > 5:
-            pos = random.randint(1, 4)
-        else:
-            pos = random.randint(1, max(1, len(host) - 1))
-        return f"{proto}{host[:pos]}{ch}{host[pos:]}"
+            return m.group(0)  # 已经插过字，幂等跳过
+        # 域名太短插两个会碎，短的就插一个
+        count = 2 if len(host) >= 8 else 1
+        # 别插在点号旁边，不然会变成 ub.删com 这种断法
+        slots = [i for i in range(1, len(host)) if host[i] != "." and host[i - 1] != "."]
+        if len(slots) >= count:
+            picks = {slots[round((k + 1) * len(slots) / (count + 1)) - 1] for k in range(count)}
+            for pos in sorted(picks, reverse=True):
+                host = host[:pos] + _OBFUSCATE_CHAR + host[pos:]
+        return proto + host
 
-    return _OBFUSCATE_HOST_RE.sub(_replace, text)
+    result = _OBFUSCATE_HOST_RE.sub(_replace, text)
+    if result != text and "「删」" not in result:
+        result += "（链接里的「删」去掉再点）"
+    return result
 
 # 群消息发送频率滑动窗口限制（QQ 群官方/NapCat 风控：单群 1 分钟最多 10 条）
 # 为确保绝对安全且留出管理与紧急指令配额，单群限制为每 60 秒最多 8 条，超出的自动排队或延时，避免被风控 1200 拦截
