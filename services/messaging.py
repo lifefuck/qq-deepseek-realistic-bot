@@ -130,6 +130,50 @@ async def send_meme_message(ws: aiohttp.ClientWebSocketResponse, group_id: Optio
         logger.warning("发送表情包失败: %s", e)
 
 
+async def send_forward_message(ws: aiohttp.ClientWebSocketResponse, messages: list, group_id: Optional[int] = None, user_id: Optional[int] = None) -> bool:
+    """发合并转发（聊天记录折叠）。
+
+    messages 是 node 列表，每个 node 形如
+    {"type": "node", "data": {"user_id": "123", "nickname": "小明", "content": "一句话"}}。
+    群和私聊用的是两个不同的 action，别混着发。
+    """
+    if not messages:
+        return False
+    if group_id:
+        action, params = "send_group_forward_msg", {"group_id": group_id, "messages": messages}
+    elif user_id:
+        action, params = "send_private_forward_msg", {"user_id": user_id, "messages": messages}
+    else:
+        return False
+    try:
+        res = await bot.call_action(ws, action, params, timeout=6.0)
+        if res and res.get("status") == "ok":
+            logger.info("[%s] ✅ 合并转发已送达（%d 条）", group_id or user_id, len(messages))
+            return True
+        logger.warning("[%s] 合并转发失败，响应: %s", group_id or user_id, res)
+        return False
+    except Exception as e:
+        logger.warning("合并转发异常: %s", e)
+        return False
+
+
+def build_forward_nodes(entries: list, title: str = "", bot_qq: int = 0, bot_nick: str = "小鲸鱼") -> list:
+    """把 (QQ, 昵称, 正文) 列表拼成 node 列表。
+
+    节点带真实 QQ，折叠里才会显示对应头像，看着就是一段聊天记录；
+    全挂机器人自己的号，点开一水儿同一个头像，很假。
+    """
+    nodes = []
+    if title:
+        nodes.append({"type": "node", "data": {
+            "user_id": str(bot_qq), "nickname": bot_nick, "content": title}})
+    for item in entries:
+        uid, nick, body = (item if len(item) == 3 else (bot_qq, item[0], item[1]))
+        nodes.append({"type": "node", "data": {
+            "user_id": str(uid or bot_qq), "nickname": nick or bot_nick, "content": body}})
+    return nodes
+
+
 async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None) -> str:
     """分段拟真发送：闲聊时智能切分 1~2 条连续发送，root 模式整块发送。
 
