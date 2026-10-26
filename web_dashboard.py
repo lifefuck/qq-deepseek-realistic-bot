@@ -4,8 +4,11 @@
 """
 import collections
 import datetime
+import hashlib
 import html
+import json
 import logging
+import secrets
 import time
 import base64
 import hmac
@@ -1064,94 +1067,273 @@ LOGIN_HTML = """<!DOCTYPE html>
 </html>
 """
 
+# 会话与防爆破安全存储
 AUTH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dashboard_auth")
+SESSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dashboard_sessions.json")
+SESSION_LIFETIME = 30 * 86400          # 30 天持久化免密免验证
 
-def get_auth_credentials() -> tuple[str, str]:
-    """获取仪表盘认证凭据，优先从环境变量读取，其次读 .dashboard_auth 本地文件"""
+def load_sessions() -> Dict[str, float]:
+    """从磁盘加载持久化会话，杜绝服务重启/重载丢会话"""
+    if os.path.exists(SESSION_FILE):
+        try:
+            with open(SESSION_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                now = time.time()
+                return {k: v for k, v in data.items() if v > now}
+        except Exception:
+            pass
+    return {}
+
+def save_sessions():
+    """将会话持久化保存至磁盘"""
+    try:
+        now = time.time()
+        valid = {k: v for k, v in ACTIVE_SESSIONS.items() if v > now}
+        with open(SESSION_FILE, "w", encoding="utf-8") as f:
+            json.dump(valid, f)
+    except Exception:
+        pass
+
+ACTIVE_SESSIONS: Dict[str, float] = load_sessions()
+LOGIN_FAILURES: Dict[str, list[float]] = collections.defaultdict(list)  # ip -> fail timestamps
+LOCKED_IPS: Dict[str, float] = {}      # ip -> unlock_timestamp
+
+def hash_password(password: str, salt: Optional[str] = None) -> tuple[str, str]:
+    """使用 PBKDF2-HMAC-SHA256 进行密码加盐散列，防彩虹表破解"""
+    if not salt:
+        salt = secrets.token_hex(16)
+    key = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt.encode("utf-8"), 100000)
+    return salt, key.hex()
+
+def verify_password(password: str, salt: str, expected_hash: str) -> bool:
+    """常量时间哈希校验，抵御时序侧信道攻击"""
+    _, calc_hash = hash_password(password, salt)
+    return hmac.compare_digest(calc_hash, expected_hash)
+
+def get_auth_credentials() -> tuple[str, str, str]:
+    """
+    读取并维护认证凭据（user, salt, hash）。
+    若检测到旧版明文格式，自动就地升级为加盐散列持久化。
+    """
     env_auth = os.environ.get("DASHBOARD_AUTH")
     if env_auth and ":" in env_auth:
-        u, p = env_auth.split(":", 1)
-        return u.strip(), p.strip()
+        parts = env_auth.split(":")
+        if len(parts) == 3:
+            return parts[0].strip(), parts[1].strip(), parts[2].strip()
+        elif len(parts) == 2:
+            salt, h = hash_password(parts[1].strip())
+            return parts[0].strip(), salt, h
+
     if os.path.exists(AUTH_FILE):
         try:
             with open(AUTH_FILE, "r", encoding="utf-8") as f:
                 line = f.readline().strip()
-                if ":" in line:
-                    u, p = line.split(":", 1)
-                    return u.strip(), p.strip()
+                parts = line.split(":")
+                if len(parts) == 3:
+                    return parts[0].strip(), parts[1].strip(), parts[2].strip()
+                elif len(parts) == 2:
+                    # 检测到旧明文密码，自动无缝升级持久化为 PBKDF2 加盐哈希
+                    user, plain_pwd = parts[0].strip(), parts[1].strip()
+                    salt, h = hash_password(plain_pwd)
+                    with open(AUTH_FILE, "w", encoding="utf-8") as wf:
+                        wf.write(f"{user}:{salt}:{h}\n")
+                    return user, salt, h
         except Exception:
             pass
-    return "admin", "admin"
+
+    # 默认兜底
+    salt, h = hash_password("admin")
+    return "admin", salt, h
+
+def get_client_ip(request: web.Request) -> str:
+    """提取真实客户端 IP，支持 Cloudflare Tunnel 与反向代理链"""
+    cf_ip = request.headers.get("CF-Connecting-IP")
+    if cf_ip:
+        return cf_ip.strip()
+    x_forwarded = request.headers.get("X-Forwarded-For")
+    if x_forwarded:
+        return x_forwarded.split(",")[0].strip()
+    return request.remote or "unknown"
+
+def check_rate_limit(ip: str) -> Optional[int]:
+    """检查 IP 是否正处于密码爆破封禁期，若封禁返回剩余锁定秒数"""
+    now = time.time()
+    if ip in LOCKED_IPS:
+        remaining = int(LOCKED_IPS[ip] - now)
+        if remaining > 0:
+            return remaining
+        else:
+            del LOCKED_IPS[ip]
+            LOGIN_FAILURES[ip] = []
+    return None
+
+def record_login_attempt(ip: str, success: bool):
+    """记录登录结果，60 秒内连续失败 5 次则锁定该 IP 15 分钟"""
+    now = time.time()
+    if success:
+        LOGIN_FAILURES.pop(ip, None)
+        LOCKED_IPS.pop(ip, None)
+        return
+
+    recent = [t for t in LOGIN_FAILURES[ip] if now - t < 60]
+    recent.append(now)
+    LOGIN_FAILURES[ip] = recent
+    if len(recent) >= 5:
+        LOCKED_IPS[ip] = now + 900  # 封禁 15 分钟
+
+def create_session() -> str:
+    """生成高熵随机会话令牌并登记内存与磁盘"""
+    token = secrets.token_urlsafe(32)
+    ACTIVE_SESSIONS[token] = time.time() + SESSION_LIFETIME
+    save_sessions()
+    return token
+
+def validate_session(token: Optional[str]) -> bool:
+    """校验随机会话有效性并自动滑动续期"""
+    if not token or token not in ACTIVE_SESSIONS:
+        return False
+    now = time.time()
+    if now > ACTIVE_SESSIONS[token]:
+        del ACTIVE_SESSIONS[token]
+        save_sessions()
+        return False
+    # 滑动续期
+    ACTIVE_SESSIONS[token] = now + SESSION_LIFETIME
+    return True
+
+def revoke_session(token: Optional[str]):
+    """立即销毁并废弃会话"""
+    if token and token in ACTIVE_SESSIONS:
+        del ACTIVE_SESSIONS[token]
+        save_sessions()
+
+def set_safe_cookie(resp: web.Response, session_token: str):
+    """下发具备 HttpOnly 保护的随机会话 Cookie，杜绝 XSS 读取与密码暴露"""
+    resp.set_cookie(
+        "dashboard_session",
+        session_token,
+        max_age=SESSION_LIFETIME,
+        path="/",
+        httponly=True,  # 强制禁止客户端 JavaScript 访问，防凭据窃取
+        samesite="Lax"
+    )
 
 def check_authenticated(request: web.Request) -> bool:
-    """多通道鉴权：支持 URL Key / Cookie Session / HTTP Basic Header"""
-    valid_user, valid_pass = get_auth_credentials()
-    
-    # 1. 检查 URL 参数 ?key=... 或 ?token=...
-    q_key = request.query.get("key") or request.query.get("token")
-    if q_key and hmac.compare_digest(q_key, valid_pass):
+    """多通道严格鉴权：支持 Cloudflare Zero Trust 云端直通 / 服务端随机 Session / HTTP Basic"""
+    # 0. 检查 Cloudflare Zero Trust (Access) 认证放行标识
+    cf_email = request.headers.get("Cf-Access-Authenticated-User-Email")
+    if cf_email and cf_email.strip():
         return True
 
-    # 2. 检查 Cookie (30天持久会话)
+    # 1. 检查客户端 HttpOnly Cookie 随机会话
     cookie_token = request.cookies.get("dashboard_session")
-    if cookie_token and hmac.compare_digest(cookie_token, valid_pass):
+    if validate_session(cookie_token):
         return True
 
-    # 3. 检查 HTTP Basic Header (兼容脚本/命令行)
+    # 2. 检查 HTTP Basic Header (供自动化脚本与 API 调试)
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Basic "):
         try:
             raw_creds = base64.b64decode(auth_header[6:]).decode("utf-8")
             if ":" in raw_creds:
                 u, p = raw_creds.split(":", 1)
-                if hmac.compare_digest(u, valid_user) and hmac.compare_digest(p, valid_pass):
+                valid_user, salt, expected_hash = get_auth_credentials()
+                if hmac.compare_digest(u, valid_user) and verify_password(p, salt, expected_hash):
                     return True
         except Exception:
             pass
 
     return False
 
+DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
+
 @web.middleware
 async def session_auth_middleware(request: web.Request, handler):
-    """现代化无感会话拦截器，彻底解决原生弹窗死循环问题"""
-    # 登录接口必须放行
-    if request.path == "/api/login":
+    """现代化安全无感会话拦截器"""
+    # 静态前端资源与登录/注销接口直接放行
+    if request.path.startswith("/assets/") or request.path in ("/api/login", "/api/logout"):
         return await handler(request)
 
+    # 访问根页面：若是 URL 带 ?key= 显式直登，校验后自动 302 净化地址栏并种 Cookie
+    if request.path == "/" and request.method in ("GET", "HEAD"):
+        q_key = request.query.get("key") or request.query.get("token")
+        if q_key:
+            client_ip = get_client_ip(request)
+            remaining_ban = check_rate_limit(client_ip)
+            if not remaining_ban:
+                _, salt, expected_hash = get_auth_credentials()
+                if verify_password(q_key, salt, expected_hash):
+                    record_login_attempt(client_ip, True)
+                    token = create_session()
+                    redirect_resp = web.HTTPFound("/")
+                    set_safe_cookie(redirect_resp, token)
+                    return redirect_resp
+                else:
+                    record_login_attempt(client_ip, False)
+        return await handler(request)
+
+    # 后台管理 API 严格校验会话有效性
     if check_authenticated(request):
         response = await handler(request)
-        # 如果是带 ?key= 访问，顺便帮用户种上 Cookie，下次无需输入
-        q_key = request.query.get("key") or request.query.get("token")
-        if q_key and isinstance(response, web.Response):
-            response.set_cookie("dashboard_session", q_key, max_age=2592000, path="/", samesite="Lax")
+        cf_email = request.headers.get("Cf-Access-Authenticated-User-Email")
+        if cf_email and isinstance(response, web.Response) and not request.cookies.get("dashboard_session"):
+            token = create_session()
+            set_safe_cookie(response, token)
         return response
 
-    # 未认证情况：
-    # 访问页面，直接渲染整洁漂亮的卡片登录表单
-    if request.path == "/" and request.method == "GET":
-        return web.Response(text=LOGIN_HTML, content_type="text/html", charset="utf-8")
-
-    # 访问后台 API 轮询，返回 JSON 401（绝不发 WWW-Authenticate 头，避免浏览器弹原生框）
-    return web.json_response({"error": "unauthorized", "message": "请先登录控制台"}, status=401)
+    # 未认证的 API 轮询直接返回 401 JSON，严禁弹出浏览器底层密码弹窗
+    return web.json_response({"error": "unauthorized", "message": "控制台已锁定，请先完成身份验证"}, status=401)
 
 async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_config_func: Optional[Callable[[Optional[int], str, Any], bool]] = None) -> web.Application:
-    """构建 aiohttp web 实例，支持查询与独立群配置写入"""
+    """构建 aiohttp web 实例，支持加固鉴权与配置热写入"""
     app = web.Application(middlewares=[session_auth_middleware])
 
+    # 挂载构建后的静态资源目录（如果存在）
+    assets_dir = os.path.join(DIST_DIR, "assets")
+    if os.path.exists(assets_dir):
+        app.router.add_static("/assets", assets_dir)
+
     async def handle_login(request: web.Request):
+        client_ip = get_client_ip(request)
+
+        # 检查是否处于爆破封禁期
+        ban_seconds = check_rate_limit(client_ip)
+        if ban_seconds:
+            return web.json_response(
+                {"error": f"尝试过于频繁，IP 已被锁定，请等待 {ban_seconds} 秒后再试"},
+                status=429
+            )
+
         try:
             body = await request.json()
             pwd = body.get("password", "").strip()
-            _, valid_pass = get_auth_credentials()
-            if pwd and hmac.compare_digest(pwd, valid_pass):
+            _, salt, expected_hash = get_auth_credentials()
+
+            if pwd and verify_password(pwd, salt, expected_hash):
+                record_login_attempt(client_ip, True)
+                token = create_session()
                 resp = web.json_response({"status": "ok"})
-                resp.set_cookie("dashboard_session", valid_pass, max_age=2592000, path="/", samesite="Lax")
+                set_safe_cookie(resp, token)
                 return resp
-            return web.json_response({"error": "密码错误"}, status=403)
+
+            record_login_attempt(client_ip, False)
+            return web.json_response({"error": "密钥错误，请重新输入"}, status=403)
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
 
+    async def handle_logout(request: web.Request):
+        cookie_token = request.cookies.get("dashboard_session")
+        revoke_session(cookie_token)
+        resp = web.json_response({"status": "ok"})
+        resp.del_cookie("dashboard_session", path="/")
+        return resp
+
     async def handle_index(request: web.Request):
+        dist_index = os.path.join(DIST_DIR, "index.html")
+        if os.path.exists(dist_index):
+            with open(dist_index, "r", encoding="utf-8") as f:
+                content = f.read()
+            return web.Response(text=content, content_type="text/html", charset="utf-8")
         return web.Response(text=INDEX_HTML, content_type="text/html", charset="utf-8")
 
     async def handle_status(request: web.Request):
@@ -1188,6 +1370,7 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
 
     app.router.add_get("/", handle_index)
     app.router.add_post("/api/login", handle_login)
+    app.router.add_post("/api/logout", handle_logout)
     app.router.add_get("/api/status", handle_status)
     app.router.add_post("/api/group/config", handle_update_config)
     return app
