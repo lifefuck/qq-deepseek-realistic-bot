@@ -27,6 +27,21 @@ import safety_guard
 
 logger = logging.getLogger("qqbot.messaging")
 
+# 黄脸、手势、杂项符号 + 变体选择符/零宽连接符
+_EMOJI_RE = re.compile("[\U0001F300-\U0001FAFF\u2600-\u27BF\u2B00-\u2BFF\uFE0F\u200D]+")
+
+
+def thin_emoji(text: str, keep_ratio: float = 0.35) -> str:
+    """表情抽稀：模型看到"可以带表情"就爱每条都甩，光靠 prompt 压不住。
+    这里按概率只放行一部分，其余把表情摘掉，整体才是「偶尔」而不是标配。"""
+    if random.random() < keep_ratio:
+        return text
+    stripped = _EMOJI_RE.sub("", text)
+    stripped = re.sub(r"[ \t]{2,}", " ", stripped).strip()
+    stripped = re.sub(r"\s+([，。！？、])", r"\1", stripped)
+    # 整条都是表情的话，摘完就空了，那就留着，总比发个空消息强
+    return stripped or text
+
 
 def split_reply_segments(text: str) -> list[str]:
     """智能正则切分回复，生成像真人在 QQ 连续打字发出的 1~3 条短消息"""
@@ -66,6 +81,10 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
     clean_text = bot.obfuscate_urls_for_qq(clean_text)
     # 过滤末尾句号
     clean_text = bot.remove_trailing_period(clean_text)
+    # 普通聊天里的表情抽稀，指令汇报/卡片不掺和
+    if not is_command_report:
+        clean_text = thin_emoji(clean_text)
+
     # 普通聊天强控 200 字防水群；管理汇报与 memory 概览解除字数硬截断限制（放宽至 2000 字）
     max_len = 2000 if is_command_report else 200
     if len(clean_text) > max_len:
@@ -257,6 +276,8 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
     clean_text = bot.obfuscate_urls_for_qq(clean_text)
     # 过滤末尾句号
     clean_text = bot.remove_trailing_period(clean_text)
+    if not is_command_report:
+        clean_text = thin_emoji(clean_text)
     max_len = 2000 if is_command_report else 200
     if len(clean_text) > max_len:
         clean_text = clean_text[:max_len - 3] + "..."

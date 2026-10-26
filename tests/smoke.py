@@ -93,6 +93,12 @@ async def main():
     quip = await bot.call_deepseek_poke("测试", is_admin=False, group_id=123456789)
     check("戳一戳走本地", bool(quip) and bot.token_tracker.data["total"]["requests"] == before)
 
+    # 6.5 表情抽稀：该摘的时候必须摘干净，不能留下双空格或断句
+    check("表情能摘掉", bot.thin_emoji("在啊 咋了 😅", keep_ratio=0) == "在啊 咋了")
+    check("句中表情摘完不留空格", bot.thin_emoji("显卡没用 🙄 认命吧", keep_ratio=0) == "显卡没用 认命吧")
+    check("纯表情不摘成空消息", bot.thin_emoji("😅", keep_ratio=0) == "😅")
+    check("表情该留时留着", bot.thin_emoji("行 👉", keep_ratio=1) == "行 👉")
+
     # 7. 仪表盘状态能取
     status = bot.get_bot_dashboard_status()
     check("仪表盘状态", isinstance(status, dict) and "groups" in status)
