@@ -16,6 +16,7 @@ import random
 import re
 import safety_guard
 import time
+from services import trace
 
 # 由 bot.py 在启动时注入自己。直接 import bot 在 `python bot.py` 下会拿到
 # 另一个模块实例（__main__ 与 bot 各一份），全局状态就分裂了。
@@ -38,6 +39,9 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     
     if group_id not in bot.ALLOWED_GROUPS or sender_id == bot.BOT_QQ:
         return
+
+    # 每条消息一个短 id，后续日志带上，排查时能串成一条线
+    trace.begin(f"g{group_id}-{sender_id}")
         
     # 前置短路检查：如果机器人在该群处于禁言期（单人禁言或全员禁言），直接静默拦截，绝对不浪费 1 个 Token
     if await bot.check_bot_banned_realtime(ws, group_id):

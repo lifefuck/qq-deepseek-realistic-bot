@@ -2,25 +2,104 @@
 短链展开与多媒体内容语义解析模块
 支持: 抖音 (v.douyin.com)、小红书 (xhslink.com)、B站短链 (b23.tv)
 自动 302 跟随重定向展开、提取视频标题、作者与无水印媒体信息。
+
+群友可以直接往群里贴链接，所以这些地址都是用户可控的。
+所有请求先过公网校验：内网、回环、链路本地一律拒绝；重定向一跳一跳重新校验，
+否则公网域名 302 到 10.x 就能绕过第一道检查。
 """
 import aiohttp
+import asyncio
+import ipaddress
+import json
 import logging
 import re
-from typing import Any, Dict, Optional
+import socket
+from typing import Any, Dict, Optional, Tuple
+from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger("DeepSeekBot")
 
 USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
 
+MAX_REDIRECTS = 3
+
+
+def _is_public_ip(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+    except ValueError:
+        return False
+    return not (
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+    )
+
+
+def _scheme_and_host(url: str) -> Tuple[str, str]:
+    parsed = urlparse(url)
+    return parsed.scheme, (parsed.hostname or "").lower()
+
+
+async def _is_public_url(url: str) -> bool:
+    """主机名要解析成真实 IP 再判断，只看字符串挡不住 DNS 指向内网。"""
+    try:
+        scheme, host = _scheme_and_host(url)
+    except ValueError:
+        return False
+    if scheme not in ("http", "https") or not host:
+        return False
+    if host == "localhost":
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return _is_public_ip(host)          # 主机名本身就是 IP，不用查 DNS
+    except ValueError:
+        pass
+    try:
+        infos = await asyncio.to_thread(socket.getaddrinfo, host, None)
+        return bool(infos) and all(_is_public_ip(info[4][0]) for info in infos)
+    except Exception:
+        return False
+
+
+async def safe_fetch(
+    session: aiohttp.ClientSession,
+    url: str,
+    *,
+    timeout: float = 6.0,
+    max_hops: int = MAX_REDIRECTS,
+) -> Optional[Tuple[str, str]]:
+    """抓公网页面，返回 (最终地址, 正文)。不安全或抓不到都返回 None。"""
+    current = url
+    for _ in range(max_hops + 1):
+        if not await _is_public_url(current):
+            logger.warning("拒绝请求非公网地址: %s", current)
+            return None
+        try:
+            async with session.get(
+                current, headers={"User-Agent": USER_AGENT},
+                timeout=timeout, allow_redirects=False
+            ) as resp:
+                if resp.status in (301, 302, 303, 307, 308):
+                    location = resp.headers.get("Location")
+                    if not location:
+                        return None
+                    current = urljoin(current, location)
+                    continue
+                if resp.status != 200:
+                    return None
+                return str(resp.url), await resp.text(errors="ignore")
+        except Exception as e:
+            logger.debug("抓取失败 %s: %s", current, e)
+            return None
+    return None
+
+
 async def resolve_short_url(session: aiohttp.ClientSession, short_url: str) -> str:
     """跟随 HTTP 重定向展开真实落地页 URL"""
-    try:
-        headers = {"User-Agent": USER_AGENT}
-        async with session.get(short_url, headers=headers, allow_redirects=True, timeout=6.0) as resp:
-            return str(resp.url)
-    except Exception as e:
-        logger.debug("展开短链失败: %s (%s)", short_url, e)
-        return short_url
+    fetched = await safe_fetch(session, short_url)
+    return fetched[0] if fetched else short_url
+
 
 async def parse_media_content(session: aiohttp.ClientSession, text: str) -> Optional[Dict[str, Any]]:
     """检测并解析文本中的主流短视频/图文分享卡片"""
@@ -32,61 +111,54 @@ async def parse_media_content(session: aiohttp.ClientSession, text: str) -> Opti
         if m_bv:
             bvid = m_bv.group(1)
             # 请求 B 站官方接口获取视频详细标题与简介
-            try:
-                api = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
-                async with session.get(api, timeout=5.0) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        vdata = data.get("data", {})
-                        title = vdata.get("title", "")
-                        desc = vdata.get("desc", "")
-                        up = vdata.get("owner", {}).get("name", "")
-                        return {
-                            "type": "bilibili",
-                            "title": title,
-                            "author": up,
-                            "summary": f"[B站视频] 《{title}》- UP主: {up}\n简介: {desc[:80]}"
-                        }
-            except Exception:
-                pass
+            fetched = await safe_fetch(
+                session, f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}", timeout=5.0
+            )
+            if fetched:
+                try:
+                    vdata = json.loads(fetched[1]).get("data", {})
+                except (json.JSONDecodeError, AttributeError):
+                    vdata = {}
+                title = vdata.get("title", "")
+                desc = vdata.get("desc", "")
+                up = vdata.get("owner", {}).get("name", "")
+                return {
+                    "type": "bilibili",
+                    "title": title,
+                    "author": up,
+                    "summary": f"[B站视频] 《{title}》- UP主: {up}\n简介: {desc[:80]}"
+                }
 
     # 2. 检测抖音分享口令 / 短链 v.douyin.com
     m_douyin = re.search(r"https?://v\.douyin\.com/[a-zA-Z0-9_-]+/?", text)
     if m_douyin:
         real_url = await resolve_short_url(session, m_douyin.group(0))
-        # 尝试请求 HTML 抽取 og:title
-        try:
-            async with session.get(real_url, headers={"User-Agent": USER_AGENT}, timeout=6.0) as r:
-                if r.status == 200:
-                    html = await r.text()
-                    m_title = re.search(r'<title>([^<]+)</title>', html)
-                    m_desc = re.search(r'<meta\s+name="description"\s+content="([^"]*)"', html)
-                    title = m_title.group(1).replace(" - 抖音", "").strip() if m_title else ""
-                    desc = m_desc.group(1).strip() if m_desc else ""
-                    return {
-                        "type": "douyin",
-                        "title": title,
-                        "summary": f"[抖音作品] 文案: {title or desc[:100]}"
-                    }
-        except Exception:
-            pass
+        fetched = await safe_fetch(session, real_url)
+        if fetched:
+            html = fetched[1]
+            m_title = re.search(r'<title>([^<]+)</title>', html)
+            m_desc = re.search(r'<meta\s+name="description"\s+content="([^"]*)"', html)
+            title = m_title.group(1).replace(" - 抖音", "").strip() if m_title else ""
+            desc = m_desc.group(1).strip() if m_desc else ""
+            return {
+                "type": "douyin",
+                "title": title,
+                "summary": f"[抖音作品] 文案: {title or desc[:100]}"
+            }
 
     # 3. 检测小红书短链 xhslink.com
     m_xhs = re.search(r"https?://xhslink\.com/[a-zA-Z0-9/_-]+", text)
     if m_xhs:
         real_url = await resolve_short_url(session, m_xhs.group(0))
-        try:
-            async with session.get(real_url, headers={"User-Agent": USER_AGENT}, timeout=6.0) as r:
-                if r.status == 200:
-                    html = await r.text()
-                    m_title = re.search(r'<title>([^<]+)</title>', html)
-                    title = m_title.group(1).replace(" - 小红书", "").strip() if m_title else ""
-                    return {
-                        "type": "xiaohongshu",
-                        "title": title,
-                        "summary": f"[小红书笔记] 标题: {title[:80]}"
-                    }
-        except Exception:
-            pass
+        fetched = await safe_fetch(session, real_url)
+        if fetched:
+            html = fetched[1]
+            m_title = re.search(r'<title>([^<]+)</title>', html)
+            title = m_title.group(1).replace(" - 小红书", "").strip() if m_title else ""
+            return {
+                "type": "xiaohongshu",
+                "title": title,
+                "summary": f"[小红书笔记] 标题: {title[:80]}"
+            }
 
     return None
