@@ -1,0 +1,222 @@
+# -*- coding: utf-8 -*-
+"""管理指令：/root、/new、记忆清理、自然语言指挥。
+
+状态都在 bot 里，这里只做解析和分发。
+"""
+
+import time
+from typing import Optional
+
+import aiohttp
+from meme_manager import meme_manager
+
+# 由 bot.py 在启动时注入自己。直接 import bot 在 `python bot.py` 下会拿到
+# 另一个模块实例（__main__ 与 bot 各一份），全局状态就分裂了。
+bot = None
+
+
+def bind(host):
+    global bot
+    bot = host
+
+
+async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is_private: bool, group_id: Optional[int] = None) -> bool:
+    """处理管理员快捷指令并汇报结果（大小写不敏感，秒级汇报）"""
+    cmd = cmd.strip()
+    cmd_lower = cmd.lower()
+    
+    # 1. /new - 重置上下文 (支持 /new all 重置所有群与私聊)
+    if cmd_lower.startswith("/new"):
+        args = cmd.split()
+        if len(args) > 1 and args[1].lower() in ["all", "所有", "全部"]:
+            bot.group_timelines.clear()
+            bot.admin_private_timeline.clear()
+            bot.group_history_pool.clear()
+            bot.admin_private_history.clear()
+            bot.user_follow_up_state.clear()
+            bot.group_silence_until.clear()
+            reply_text = "已重置所有群与私聊的上下文、历史记录及追问状态"
+            if is_private:
+                await bot.send_private_message(ws, bot.ADMIN_QQ, reply_text)
+            else:
+                await bot.send_group_message(ws, group_id, reply_text)
+            return True
+        if is_private:
+            bot.admin_private_timeline.clear()
+            bot.admin_private_history.clear()
+            reply_text = "已清空私聊上下文与历史池"
+            await bot.send_private_message(ws, bot.ADMIN_QQ, reply_text)
+        else:
+            bot.group_timelines[group_id].clear()
+            bot.group_history_pool[group_id].clear()
+            # 清空该群追问状态并解除静音
+            for k in list(bot.user_follow_up_state.keys()):
+                if k[0] == group_id:
+                    bot.user_follow_up_state.pop(k, None)
+            bot.group_silence_until.pop(group_id, None)
+            reply_text = f"已重置本群 ({group_id}) 上下文与发言历史池"
+            await bot.send_group_message(ws, group_id, reply_text)
+        return True
+
+    # 2. /stop - 一键紧急刹车中止所有思考与排队任务并开启静默
+    elif cmd_lower.startswith("/stop"):
+        stopped_count = 0
+        # 1. 取消所有群的防抖任务
+        for gid, task in list(bot.group_debounce_tasks.items()):
+            if task and not task.done():
+                task.cancel()
+                stopped_count += 1
+        # 2. 取消所有运行中的大模型思考/生成请求
+        for task in list(bot.running_tasks):
+            if not task.done():
+                task.cancel()
+                stopped_count += 1
+                
+        # 3. 清理追问窗口并开启静默保护，杜绝刚叫停又自动插话
+        if group_id:
+            for k in list(bot.user_follow_up_state.keys()):
+                if k[0] == group_id:
+                    bot.user_follow_up_state.pop(k, None)
+            bot.group_silence_until[group_id] = time.time() + 600.0  # 10 分钟静默期
+            bot.group_msg_count_since_bot[group_id] = 0
+            reply_text = f"已一键急刹车，中止了 {stopped_count} 个任务，并开启本群静默（不再主动插话）" if stopped_count > 0 else "当前无进行中任务，已清空追问并开启本群静默，保持安静"
+        else:
+            bot.user_follow_up_state.clear()
+            for gid in bot.ALLOWED_GROUPS:
+                bot.group_silence_until[gid] = time.time() + 600.0
+            reply_text = f"已一键急刹车，中止了 {stopped_count} 个任务，并开启全局群静默" if stopped_count > 0 else "当前无进行中任务，已清空追问并开启全局群静默"
+
+        if is_private:
+            await bot.send_private_message(ws, bot.ADMIN_QQ, reply_text)
+        else:
+            await bot.send_group_message(ws, group_id, reply_text)
+        return True
+
+    # 3. /root - 切换到工作模式 (支持按群独立切换)
+    elif cmd_lower.startswith("/root"):
+        target_gid = None
+        parts = cmd.split()
+        if len(parts) > 1 and parts[1].isdigit():
+            target_gid = int(parts[1])
+        elif not is_private:
+            target_gid = group_id
+
+        bot.update_group_config(target_gid, "mode", "root")
+        desc = f"群 {target_gid} 已切换至 root 技术伙伴模式" if target_gid else "私聊已切换至 root 技术伙伴模式"
+        reply_text = await generate_agent_command_reply("切换工作模式", desc, is_private=is_private, group_id=target_gid)
+        if is_private:
+            await bot.send_private_message(ws, bot.ADMIN_QQ, reply_text)
+        else:
+            await bot.send_group_message(ws, group_id, reply_text)
+        return True
+
+    # 4. /user - 切换回肥鱼娱乐模式 (支持按群独立切换)
+    elif cmd_lower.startswith("/user"):
+        target_gid = None
+        parts = cmd.split()
+        if len(parts) > 1 and parts[1].isdigit():
+            target_gid = int(parts[1])
+        elif not is_private:
+            target_gid = group_id
+
+        bot.update_group_config(target_gid, "mode", "user")
+        desc = f"群 {target_gid} 已切回日常大肥鱼人设" if target_gid else "私聊已切回日常大肥鱼人设"
+        reply_text = await generate_agent_command_reply("切换娱乐模式", desc, is_private=is_private, group_id=target_gid)
+        if is_private:
+            await bot.send_private_message(ws, bot.ADMIN_QQ, reply_text)
+        else:
+            await bot.send_group_message(ws, group_id, reply_text)
+        return True
+
+    # 5. /memes 或 /reload_memes - 手动重载与刷新网络热梗轮换池
+    elif cmd_lower.startswith("/reload_memes") or cmd_lower.startswith("/memes"):
+        meme_manager.load_pool(force=True)
+        count = len(meme_manager.current_pool)
+        total = len(meme_manager.all_memes)
+        reply_text = f"热梗词库已重新洗牌刷新，当前轮换池: {count} 条，总词库: {total} 条"
+        if is_private:
+            await bot.send_private_message(ws, bot.ADMIN_QQ, reply_text)
+        else:
+            await bot.send_group_message(ws, group_id, reply_text)
+        return True
+
+    return False
+
+
+async def handle_memory_summary_command(ws: aiohttp.ClientWebSocketResponse, group_id: Optional[int] = None, user_id: Optional[int] = None):
+    """公开指令: /memory 或 /memary 生成当前群友记忆库与好感度总结（按群隔离）"""
+    gid_key = str(group_id) if group_id else "private"
+    current_scope = bot.user_memories.get(gid_key, {})
+    if not current_scope:
+        report = "当前群聊暂无群友记忆记录" if group_id else "私聊暂无记忆记录"
+    else:
+        title = f"本群群友记忆档案（共 {len(current_scope)} 位）：" if group_id else f"私聊记忆档案（共 {len(current_scope)} 位）："
+        lines = [title]
+        for uid, info in current_scope.items():
+            nick = info.get("nickname", uid)
+            favor = info.get("favor", 50)
+            notes = "、".join(info.get("notes", [])) if info.get("notes") else "无特殊印象"
+            # Galgame 好感度评级
+            admin_suffix = " (主人)" if uid == str(bot.ADMIN_QQ) else ""
+            if favor >= 80:
+                status = "💖恋慕/宠溺"
+            elif favor >= 65:
+                status = "😊亲近/喜欢"
+            elif favor >= 40:
+                status = "😐普通群友"
+            else:
+                status = "💢炸毛/嫌弃"
+            lines.append(f"• {nick} (QQ {uid}){admin_suffix}: 好感度 {favor}/100 [{status}] | 印象: {notes}")
+        report = "\n".join(lines)
+        
+    if group_id:
+        await bot.send_group_message(ws, group_id, report, is_command_report=True)
+    elif user_id:
+        await bot.send_private_message(ws, user_id, report, is_command_report=True)
+
+
+async def generate_agent_command_reply(action_type: str, detail: str = "", is_private: bool = False, group_id: Optional[int] = None) -> str:
+    """由大模型根据当前情境临场随机生成拟真执行反馈，杜绝死板模板读条感"""
+    headers = {
+        "Authorization": f"Bearer {bot.SILICONFLOW_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    
+    channel_mode = bot.get_channel_mode(None)
+    if channel_mode == "root":
+        prompt = (
+            f"主人（开发者 life）下达了管理指令：{action_type}，细节：{detail}。\n"
+            f"当前是 root 工作模式，请用专业、干练、利落的工程师口吻临场给出 1 句简明执行确认（10~25字以内，拒绝废话，绝不用句号）："
+        )
+    else:
+        prompt = (
+            f"主人（life）在{'私聊' if is_private else '群里'}下达了管理指令：{action_type}，执行结果细节：{detail}。\n"
+            f"请以大肥鱼/小鲸鱼随性、生动的口吻临场随机给出一句回复（每次措辞自拟，拒绝死板模板，可俏皮、可利落，1 句，15~30字以内，绝不用句号）："
+        )
+
+    payload = {
+        "model": bot.MODEL_NAME,
+        "messages": [
+            {"role": "system", "content": bot.ROOT_SYSTEM_PROMPT if bot.get_channel_mode(group_id if not is_private else None) == "root" else bot.SYSTEM_PROMPT},
+            {"role": "user", "content": prompt}
+        ],
+        "max_tokens": 50,
+        "temperature": 0.85
+    }
+
+    try:
+        if bot.http_session is None or bot.http_session.closed:
+            bot.http_session = aiohttp.ClientSession()
+        async with bot.http_session.post(bot.SILICONFLOW_API_URL, headers=headers, json=payload, timeout=8) as resp:
+            if resp.status == 200:
+                data = await resp.json()
+                if "usage" in data:
+                    bot.token_tracker.record_usage(data["usage"], bot.MODEL_NAME, group_id=group_id)
+                reply = data["choices"][0]["message"]["content"].strip()
+                return bot.remove_trailing_period(reply)
+    except Exception as e:
+        bot.logger.debug("临场生成指令反馈异常: %s", e)
+    
+    # 极简保底（防止网络超时卡壳）
+    return f"已完成 {action_type} ({detail})" if detail else f"已搞定 {action_type}"
+
