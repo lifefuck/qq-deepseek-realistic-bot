@@ -101,7 +101,11 @@ group_last_msg_time: Dict[int, float] = collections.defaultdict(float)        # 
 group_last_bot_reply_time: Dict[int, float] = collections.defaultdict(float)  # 机器人在该群上次说话时间
 
 # 反模板套路削平队列 (记录最近发出的 6 条回复)
-recent_bot_replies: Deque[str] = collections.defaultdict(lambda: collections.deque(maxlen=6))[0]
+# 每个群各自记一份最近发言，跨群混在一起会让 A 群看到 B 群说过的话
+recent_bot_replies: Dict[int, Deque[str]] = collections.defaultdict(lambda: collections.deque(maxlen=8))
+
+# 自称「本大肥鱼/本鲸宝」这类，属于人设词空转，盯的是它
+_SELF_REF_RE = re.compile(r"本(?:大)?(?:肥)?(?:鱼|鲸宝|鲸鱼|鲸)|我(?:大)?(?:肥鱼|鲸宝)|大肥鱼本(?:鱼|人)")
 
 BOT_KEYWORDS = {
     "大肥鱼", "肥鱼", "小鲸鱼", "鲸鱼", "鲸宝", "deepseek", "v3", "r1", 
@@ -997,19 +1001,69 @@ _TIC_WORDS = ("大白饭", "碳基生物", "硅基")
 # 括号里的纯动作，模型无视禁令时由代码兜底
 _ACTION_PAREN_RE = re.compile(r"[（(](?:嚼|甩|鼓|吨|摸|翻|趴|叹|挠|跺|叉腰|擦汗|扶额)[^（）()]{0,8}[）)]")
 
-def de_template(reply: str) -> str:
+def _skeleton(text: str) -> str:
+    """把一句话削到只剩骨架：去标点、去语气词、去空白，用来判重。"""
+    return re.sub(r"[\s，。！？、,.!?~～…—\-\"“”'‘’()（）\[\]【】]", "", text)
+
+
+def get_anti_repeat_hint(group_id: int = 0) -> str:
+    """把本群最近说过的几句和自称频率喂回模型，让它自己换说法。
+
+    纯靠代码削句子只能削掉形状，说法还是那一套；把这几个负样本摆在它面前，
+    它才会真的换一种表达。
+    """
+    recent = [r for r in recent_bot_replies.get(group_id, ()) if r][-4:]
+    parts = []
+    if recent:
+        quoted = "\n".join(f"- {r}" for r in recent)
+        parts.append(f"【你刚在群里说过这些话，别换汤不换药地重复】：\n{quoted}")
+    if sum(1 for r in recent_bot_replies.get(group_id, ()) if _SELF_REF_RE.search(r)) >= 2:
+        parts.append("【这条千万别再自称本大肥鱼/本鲸宝/本鲸鱼，用「我」正常说话】")
+    return "\n".join(parts)
+
+
+def _strip_self_ref(text: str) -> str:
+    """把「本大肥鱼/我大肥鱼/本鲸宝」换成「我」，顺手收拾替换后粘连出来的「我我」。"""
+    out = _SELF_REF_RE.sub("我", text)
+    out = re.sub(r"我{2,}", "我", out)
+    return re.sub(r"^[，,]\s*", "", out.strip())
+
+
+def de_template(reply: str, group_id: int = 0) -> str:
     """
     反模板套路削平闸门 (参考 Estrella Bot anti-template 设计)
     连续出现破折号抖机灵（——...）或相同词起手时，削平形状保留原话，拒绝句式坍塌
     """
-    global recent_bot_replies
+    history = recent_bot_replies[group_id]
     text = reply.strip()
     if not text:
         return reply
 
+    # 0. 与最近说过的话骨架相同 —— 整句复读，直接把多余的自我称呼去掉，再不行就削半句
+    skel = _skeleton(text)
+    if skel and any(_skeleton(r) == skel for r in history):
+        stripped = _strip_self_ref(text)
+        if stripped and stripped != text:
+            logger.info("[反模板闸] 复读+自称: %r -> %r", text, stripped)
+            text = stripped
+        else:
+            segs = [s for s in re.split(r"[，,。！？]", text) if s.strip()]
+            if len(segs) > 1:
+                text = "，".join(segs[:1])
+                logger.info("[反模板闸] 整句复读，削到半句: %r", text)
+
+    # 0.5 自称密度：最近几条里已经念了三遍「本鲸宝」之类，这条一律换回「我」
+    if _SELF_REF_RE.search(text):
+        ref_count = sum(1 for r in history if _SELF_REF_RE.search(r))
+        if ref_count >= 2:
+            new = _strip_self_ref(text)
+            if new and new != text:
+                logger.info("[反模板闸] 自称冷却: %r -> %r", text, new)
+                text = new
+
     # 1. 削平破折号抖机灵 (如连续多句以 "——..." 结尾)
     if "——" in text or "—" in text:
-        dash_count = sum(1 for r in recent_bot_replies if "——" in r or "—" in r)
+        dash_count = sum(1 for r in history if "——" in r or "—" in r)
         if dash_count >= 2:
             m = re.search(r"[—]{1,2}[^，。！？\n]{2,15}$", text)
             if m:
@@ -1024,7 +1078,7 @@ def de_template(reply: str) -> str:
         op2 = clean_op[:2]
         op3 = clean_op[:3]
         match_count = 0
-        for r in recent_bot_replies:
+        for r in history:
             clean_r = re.sub(r"^[~～!！?？\s,，。]+", "", r)
             if clean_r.startswith(op3) or (len(op2) == 2 and clean_r.startswith(op2)):
                 match_count += 1
@@ -1039,7 +1093,7 @@ def de_template(reply: str) -> str:
     for tic in _TIC_WORDS:
         if tic not in text:
             continue
-        if sum(1 for r in recent_bot_replies if tic in r) < 2:
+        if sum(1 for r in history if tic in r) < 2:
             continue
         new = re.sub(rf"[（(][^（）()]*{tic}[^（）()]*[）)]", "", text).strip()
         if tic in new:

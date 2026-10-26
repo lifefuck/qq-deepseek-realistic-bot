@@ -56,9 +56,27 @@ async def main():
 
     # 2. 口头禅冷却与括号动作
     bot.recent_bot_replies.clear()
-    bot.recent_bot_replies.extend(["来口大白饭", "大白饭真香", "今天写代码"])
-    out = bot.de_template("这也太离谱了（嚼嚼大白饭）")
+    _g = 123456789
+    bot.recent_bot_replies[_g].extend(["来口大白饭", "大白饭真香", "今天写代码"])
+    out = bot.de_template("这也太离谱了（嚼嚼大白饭）", _g)
     check("括号动作被清掉", "大白饭" not in out and "（" not in out, out)
+
+    # 2.5 人设自称与整句复读
+    bot.recent_bot_replies.clear()
+    check("自称换成我", bot._strip_self_ref("本鲸宝要去喝水") == "我要去喝水")
+    check("不出现我我", "我我" not in bot._strip_self_ref("这是我大肥鱼本鱼的手笔"))
+    same = "吵死啦！本大肥鱼也是需要休息的，等会"
+    first = bot.de_template(same, _g)
+    check("第一次照原样发", first == same)
+    bot.recent_bot_replies[_g].append(first)
+    second = bot.de_template(same, _g)
+    check("复读时去掉自称", "本大肥鱼" not in second, second)
+    bot.recent_bot_replies[_g].append(second)
+    third = bot.de_template(same, _g)
+    check("第三次再撞就削半句", third != second and len(third) < len(second), third)
+    bot.recent_bot_replies[_g].extend(["本鲸宝真累", "本大肥鱼要睡了"])
+    check("回喂提示带禁自称", "别再自称" in bot.get_anti_repeat_hint(_g))
+    bot.recent_bot_replies.clear()
 
     # 3. 好感度噪音过滤
     check("水聊跳过", not bot._is_favor_worthy("哈哈哈"))
