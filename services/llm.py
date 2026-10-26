@@ -30,7 +30,7 @@ def bind(host):
 
 logger = logging.getLogger("qqbot.llm")
 
-async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False, is_private: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, sender_nick: str = "", group_id: Optional[int] = None, is_follow_up: bool = False) -> Optional[str]:
+async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False, is_private: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, sender_nick: str = "", group_id: Optional[int] = None, is_follow_up: bool = False, latest_line: str = "") -> Optional[str]:
     """请求 SiliconFlow DeepSeek-V3 模型"""
     headers = {
         "Authorization": f"Bearer {bot.SILICONFLOW_API_KEY}",
@@ -38,6 +38,9 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
     }
     
     identity_note = f"（补充认知：你在 QQ 上的名字/昵称叫「小鲸鱼」或「鲸宝」，你的 QQ 号是 {bot.BOT_QQ}，你叫 life bot fish 是因为部署账号的昵称，那也是你！严禁把自己的名字当成别人或山寨货）\n"
+    # 调用方没单独递当前这句时，退化成时间线最后一行，避免提示词里出现一对空引号
+    if not latest_line and timeline_text.strip():
+        latest_line = timeline_text.strip().splitlines()[-1].strip()
 
     # 群友记忆与好感度上下文注入
     user_mem_prompt = ""
@@ -85,14 +88,14 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             user_prompt = (
                 f"{identity_note}"
                 f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
-                f"【主人「{sender_nick}」(QQ {bot.ADMIN_QQ}) 在群里发了最后这句】：\n"
-                f"当前是 /root 工作模式，你是主人的技术老搭档兼秘书。直接回他最后这句的内容，别打招呼、别寒暄，像熟人开黑一样干脆利落接话（1~2句，绝不用句号）："
+                f"【主人「{sender_nick}」(QQ {bot.ADMIN_QQ}) 这句话】：「{latest_line}」\n"
+                f"当前是 /root 工作模式，你是主人的技术老搭档兼秘书。直接对着这句话办事或接话，像熟人开黑一样干脆利落（1~2句，绝不用句号）："
             )
         else:
             follow_up_note = (
-                f"这是主人接着上一句继续说的，不是新开一轮打招呼，直接顺着话头答：\n"
+                f"他这是接着你们正在聊的事往下说，不是新开一轮。\n"
                 if is_follow_up else
-                f"直接回他这句的内容，别打招呼：\n"
+                f"他是在跟你说这句话本身，不是在报个到。\n"
             )
             user_prompt = (
                 f"{identity_note}"
@@ -101,14 +104,16 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 f"【注意识别对话者身份】：当前是你的专属主人兼创造者 life (QQ {bot.ADMIN_QQ}) 在群里跟你说话。\n"
                 f"（清楚知道对方是你的主人 life，态度自然真实、俏皮亲近，听主人的话，绝不搞错称呼）\n"
                 f"{follow_up_note}"
-                f"严禁输出「主人今天怎么有空」「想rua小鲸鱼还是想听冷笑话」这类打招呼/寒暄套话，也别说上一轮自己说过的意思（20~35 字，绝不用句号）："
+                f"【主人说的这句】：「{latest_line}」\n"
+                f"对这句话本身作反应，别把注意力放在「他来找我了」上；看不懂他想说啥就直接问他这句什么意思，"
+                f"别另起话题、也别再讲一遍你上一轮说过的话（20~35 字，绝不用句号）："
             )
     elif is_at or is_mention:
         user_prompt = (
             f"{identity_note}"
             f"群友「{sender_nick}」发来消息：\n{timeline_text}\n\n"
             f"{user_mem_prompt}"
-            f"请以大肥鱼口吻极简回复（默认1句，最多2句，绝不用句号，别写小作文）："
+            f"顺着群里正在聊的事接他的话，别把他当成刚认识的人重新打招呼（默认1句，最多2句，绝不用句号，别写小作文）："
         )
     else:
         user_prompt = (

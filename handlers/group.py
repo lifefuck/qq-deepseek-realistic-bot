@@ -506,7 +506,9 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         recent_lines = timeline[-8:] if timeline else []
         dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in recent_lines]) or (user_text or "")
     else:
-        dialogue_text = user_text or (timeline[-1]['content'] if timeline else "")
+        # 群友直接找机器人时也给几行上下文，免得它把一句「乐乐」当成初次见面打招呼
+        recent_lines = timeline[-6:] if timeline else []
+        dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in recent_lines]) or (user_text or "")
     
     bot.logger.info("[群 %d] 触发轻量会话分析 (is_at=%s, is_follow_up=%s, is_admin=%s), 发言内容: %s", group_id, is_at, is_follow_up, is_admin, dialogue_text[:40])
     
@@ -515,7 +517,7 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         bot.running_tasks.add(current_task)
         
     try:
-        reply = await bot.call_deepseek(dialogue_text, is_at=is_at, is_admin=is_admin, is_private=False, is_mention=is_mention, target_uid=target_uid, sender_nick=sender_nick, group_id=group_id, is_follow_up=is_follow_up)
+        reply = await bot.call_deepseek(dialogue_text, is_at=is_at, is_admin=is_admin, is_private=False, is_mention=is_mention, target_uid=target_uid, sender_nick=sender_nick, group_id=group_id, is_follow_up=is_follow_up, latest_line=user_text)
     finally:
         if current_task:
             bot.running_tasks.discard(current_task)
