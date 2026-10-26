@@ -1251,7 +1251,7 @@ def obfuscate_urls_for_qq(text: str) -> str:
     return result
 
 # 群消息发送频率滑动窗口限制（QQ 群官方/NapCat 风控：单群 1 分钟最多 10 条）
-# 为确保绝对安全且留出管理与紧急指令配额，单群限制为每 60 秒最多 8 条，超出的自动排队或延时，避免被风控 1200 拦截
+# 为留出管理和紧急指令的余量，单群限制为每 60 秒最多 8 条，超出的自动排队或延时，避免被风控 1200 拦截
 group_sent_times: Dict[int, list[float]] = collections.defaultdict(list)
 group_send_locks: Dict[int, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
 
