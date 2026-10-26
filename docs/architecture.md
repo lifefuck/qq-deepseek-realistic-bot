@@ -4,6 +4,20 @@
 
 入口 `bot.py`，提示词在 `prompts.py`，表情包索引在 `meme_catalog.py`。
 
+## 代码结构
+
+| 位置 | 干什么 |
+| :--- | :--- |
+| `bot.py` | 启动、配置、全局状态（各群时间线、冷却表、任务集合）、消息分发 |
+| `handlers/group.py` | 群消息流水线：过滤、触发判定、调模型、发送 |
+| `handlers/private.py` | 管理员私聊 |
+| `handlers/admin.py` | `/root`、`/new`、记忆清理、自然语言指挥 |
+| `services/llm.py` | 调 DeepSeek、戳一戳、好感度判定 |
+| `services/messaging.py` | 切段、限频、剥标签、配表情包 |
+| `tests/smoke.py` | 假 WebSocket 的冒烟测试，改动后重启前跑一遍 |
+
+全局状态只留在 `bot.py` 一份。服务层不自己 `import bot`——`python bot.py` 跑起来时 `__main__` 和 `bot` 是两个不同的模块对象，各导各的会分裂出两套状态，所以由 `bot.py` 启动时把当前模块注入给它们（`bind()`）。
+
 ## 一条消息进来之后
 
 1. 校验群在白名单里，跳过自己发的消息。
