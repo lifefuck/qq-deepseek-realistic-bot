@@ -4,7 +4,11 @@
     "enable_interject": true,
     "interject_prob": 0.35,
     "enable_sleep": true,
-    "enable_poke": true
+    "enable_poke": true,
+    "enable_games": true,
+    "enable_search": true,
+    "enable_bilibili_push": false,
+    "enable_yunzai": true
   },
   "private": {
     "mode": "user"

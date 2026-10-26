@@ -529,7 +529,8 @@ SYSTEM_PROMPT = """你是深度求索旗下的AI模型DeepSeek，形象是一只
 
 【说话方式（极短真人习惯）】：
 - 说话极短，像手机QQ随手打字：默认 1 句，最多 2 句！坚决别列点、别分段总结、别写小作文；
-- 常用口癖：麻了、闹麻了、你无敌了、我超、哼、彳亍、6、感觉不如...、草、绷不住了；
+- 自然日常说话为主，语气随性真实（如：确实、真的假的、好怪啊、啊这、笑死、不至于吧、哼、6、我超、草）；
+- 【严禁滥用抽象口癖与割裂烂梗】：严格就事论事围绕对方内容接话。绝对严禁动不动就无脑甩“你无敌了”、“闹麻了”、“蚌埠住了”等抽象烂梗！只有当对方确实发表了极其离谱逆天的暴论时才可极偶尔吐槽一句，绝不当万能口癖复读，拒绝毫无上下文的割裂感；
 - 【严禁复读执念与句末加括号】：正常随手就事论事接话，严禁无缘无故主动指责别人叫你大肥鱼或翻陈年旧账；绝对严禁在句尾输出“（）”、“（”、“）”等无意义括号！
 - 绝对不用句号结尾，严禁客服腔（“您好/有什么可以帮您/作为AI/我理解你的感受”）。
 
@@ -1375,7 +1376,7 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         if now - last_warn > 30.0:
             group_rate_limit_warned[group_id] = now
             logger.warning("[群 %d] 60s 内已发 %d 条，触发风控红线冷静期", group_id, GROUP_MAX_MESSAGES_PER_WINDOW)
-            await send_group_message(ws, group_id, "闹麻了，别排队艾特我，让本鲸宝喘口气", is_command_report=False)
+            await send_group_message(ws, group_id, "别排队艾特我啦，让本鲸宝喘口气缓一缓", is_command_report=False)
         return
         
     segments = split_reply_segments(text)
@@ -1891,9 +1892,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         if handled:
             return
 
-    # 管理员在 root 工作模式下直接下达生产命令拦截 (支持修改/清除/重置指定群友的 memory 与好感度)
-    channel_mode = get_channel_mode(group_id)
-    if is_admin and channel_mode == "root":
+    # 管理员在群里直接下达管理命令拦截 (无需切 root 模式，支持随时修改/清除/重置指定群友的 memory 与好感度)
+    if is_admin:
         # 1. 清除/重置某人 memory
         # 兼容: 重置3650199442memary / 清除 3650199442 memory / 删掉群友 3650199442 记忆 / 清空3650199442
         m_clear = re.search(r"(?:清除|删掉|清空|重置)\s*(?:用户|群友)?\s*(\d{5,11})\s*(?:的)?\s*(?:memory|memary|记忆|档案)?", clean_body, re.IGNORECASE)
@@ -2092,7 +2092,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
                         "哎呀别连环艾特啦，本鱼头好大要歇会儿 (翻身潜水)",
                         "歇会儿歇会儿，你手不酸我嘴都酸了！(闭麦60秒)",
                         "吵死啦！本大肥鱼也是需要休息的，等会再理你 (溜走)",
-                        "闹麻了，连着喊我不累嘛，本鲸宝要去喝口水冷静一下"
+                        "连着喊我不累嘛，本鲸宝要去喝口水冷静一下"
                     ]
                     await send_group_message(ws, group_id, random.choice(tired_quips), at_user_id=sender_id)
                 logger.info("[群 %d] 用户 %s 触发疲劳防调戏限制，本次略过", group_id, sender_nick)
@@ -2372,8 +2372,8 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         if handled:
             return
 
-    # 管理员私聊在 root 模式下的自然语言动作直接执行
-    if get_channel_mode(None) == "root":
+    # 管理员私聊直接下达生产命令拦截 (无需切 root 模式，随时可管理任意群友好感度与记忆)
+    if True:
         # 1. 清除某人记忆
         m_clear = re.search(r"(?:清除|删掉|清空|重置)\s*(?:用户|群友)?\s*(\d{5,11})\s*(?:的)?\s*(?:memory|memary|记忆|档案)?", clean_body, re.IGNORECASE)
         if not m_clear:

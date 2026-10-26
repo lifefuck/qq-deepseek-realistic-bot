@@ -527,7 +527,7 @@ INDEX_HTML = """<!DOCTYPE html>
   </div>
 
   <script>
-    let currentTab = "978074744";
+    let currentTab = "";
     let latestData = null;
 
     function formatRelative(secondsAgo) {
