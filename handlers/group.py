@@ -445,7 +445,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         if task and not task.done():
             task.cancel()
 
-        asyncio.create_task(process_group_trigger(ws, group_id, is_at=True, sender_nick=sender_display, is_admin=is_admin, target_uid=sender_id, user_text=clean_body))
+        asyncio.create_task(process_group_trigger(ws, group_id, is_at=is_at or is_reply_to_bot, sender_nick=sender_display, is_admin=is_admin, target_uid=sender_id, user_text=clean_body, is_follow_up=is_follow_up))
         return
         
     # 2. 旁观模式（未直接找机器人）：严格门控过滤，绝不乱插嘴
@@ -490,7 +490,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     bot.group_debounce_tasks[group_id] = asyncio.create_task(debounced_step(group_id, sender_display, is_mention_bot, sender_id, clean_body))
 
 
-async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = ""):
+async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False):
     """汇总群时间线向模型发起决策"""
     timeline = bot.group_timelines[group_id]
     if not timeline and not user_text:
@@ -501,17 +501,21 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
     channel_mode = bot.get_channel_mode(group_id)
     if is_admin and channel_mode == "root":
         dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in timeline])
+    elif is_admin:
+        # 主人追问/呼叫时只喂最近几句：单独一个「乐乐」递过去，模型只能当寒暄敷衍
+        recent_lines = timeline[-8:] if timeline else []
+        dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in recent_lines]) or (user_text or "")
     else:
         dialogue_text = user_text or (timeline[-1]['content'] if timeline else "")
     
-    bot.logger.info("[群 %d] 触发轻量会话分析 (is_at=%s, is_admin=%s), 发言内容: %s", group_id, is_at, is_admin, dialogue_text[:40])
+    bot.logger.info("[群 %d] 触发轻量会话分析 (is_at=%s, is_follow_up=%s, is_admin=%s), 发言内容: %s", group_id, is_at, is_follow_up, is_admin, dialogue_text[:40])
     
     current_task = asyncio.current_task()
     if current_task:
         bot.running_tasks.add(current_task)
         
     try:
-        reply = await bot.call_deepseek(dialogue_text, is_at=is_at, is_admin=is_admin, is_private=False, is_mention=is_mention, target_uid=target_uid, sender_nick=sender_nick, group_id=group_id)
+        reply = await bot.call_deepseek(dialogue_text, is_at=is_at, is_admin=is_admin, is_private=False, is_mention=is_mention, target_uid=target_uid, sender_nick=sender_nick, group_id=group_id, is_follow_up=is_follow_up)
     finally:
         if current_task:
             bot.running_tasks.discard(current_task)

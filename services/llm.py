@@ -30,7 +30,7 @@ def bind(host):
 
 logger = logging.getLogger("qqbot.llm")
 
-async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False, is_private: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, sender_nick: str = "", group_id: Optional[int] = None) -> Optional[str]:
+async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False, is_private: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, sender_nick: str = "", group_id: Optional[int] = None, is_follow_up: bool = False) -> Optional[str]:
     """请求 SiliconFlow DeepSeek-V3 模型"""
     headers = {
         "Authorization": f"Bearer {bot.SILICONFLOW_API_KEY}",
@@ -85,17 +85,23 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             user_prompt = (
                 f"{identity_note}"
                 f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
-                f"【主人「{sender_nick}」(QQ {bot.ADMIN_QQ}) 在群里找你】：\n"
-                f"当前是 /root 工作模式，你是主人的技术老搭档兼秘书。懂主人的大白话与口语意图，像熟人开黑一样干脆利落接话（1~2句，绝不用句号）："
+                f"【主人「{sender_nick}」(QQ {bot.ADMIN_QQ}) 在群里发了最后这句】：\n"
+                f"当前是 /root 工作模式，你是主人的技术老搭档兼秘书。直接回他最后这句的内容，别打招呼、别寒暄，像熟人开黑一样干脆利落接话（1~2句，绝不用句号）："
             )
         else:
+            follow_up_note = (
+                f"这是主人接着上一句继续说的，不是新开一轮打招呼，直接顺着话头答：\n"
+                if is_follow_up else
+                f"直接回他这句的内容，别打招呼：\n"
+            )
             user_prompt = (
                 f"{identity_note}"
                 f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
                 f"{user_mem_prompt}"
-                f"【注意识别对话者身份】：当前是你的专属主人兼创造者 life (QQ {bot.ADMIN_QQ}) 在群里呼叫你！\n"
+                f"【注意识别对话者身份】：当前是你的专属主人兼创造者 life (QQ {bot.ADMIN_QQ}) 在群里跟你说话。\n"
                 f"（清楚知道对方是你的主人 life，态度自然真实、俏皮亲近，听主人的话，绝不搞错称呼）\n"
-                f"请结合当前对主人的极高好感度自然回复（20~35 字，绝不用句号）："
+                f"{follow_up_note}"
+                f"严禁输出「主人今天怎么有空」「想rua小鲸鱼还是想听冷笑话」这类打招呼/寒暄套话，也别说上一轮自己说过的意思（20~35 字，绝不用句号）："
             )
     elif is_at or is_mention:
         user_prompt = (
