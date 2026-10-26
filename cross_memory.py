@@ -69,7 +69,7 @@ class CrossGroupTopicManager:
         
         if not candidates:
             return ""
-        return "\n【隔壁群近期热聊话题/事件】:\n" + "\n".join(candidates) + "\n"
+        return "\n【隔壁群近期热聊话题（只是背景，不是本群发生的事，别主动提起）】:\n" + "\n".join(candidates) + "\n"
 
     async def _flush_loop(self):
         """后台异步刷盘协程，每 2 秒检测一次脏标记落盘"""
