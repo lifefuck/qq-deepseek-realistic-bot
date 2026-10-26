@@ -667,11 +667,11 @@ INDEX_HTML = """<!DOCTYPE html>
           badgeSleep.innerText = "⚡ 主人专属唤醒中 (30分钟)";
         } else {
           badgeSleep.className = "badge badge-slate";
-          badgeSleep.innerText = "🌙 拟真睡眠中 (01:00~07:00)";
+          badgeSleep.innerText = "🌙 拟真睡眠中 (23:00~07:00)";
         }
       } else {
         badgeSleep.className = "badge badge-success";
-        badgeSleep.innerText = "☀️ 白天精神满满";
+        badgeSleep.innerText = "☀️ 清醒中";
       }
     }
 
@@ -740,9 +740,7 @@ INDEX_HTML = """<!DOCTYPE html>
         const isInterjectOn = cfg.enable_interject !== false;
         const isSleepOn = cfg.enable_sleep !== false;
         const isPokeOn = cfg.enable_poke !== false;
-        const isGamesOn = cfg.enable_games !== false;
-        const isSearchOn = cfg.enable_search !== false;
-        const isYunzaiOn = cfg.enable_yunzai !== false;
+        const isMuted = !!cfg.muted;
         const probPct = Math.round((cfg.interject_prob || 0.35) * 100);
 
         let badgeClass = "badge-slate";
@@ -785,7 +783,7 @@ INDEX_HTML = """<!DOCTYPE html>
               </div>
 
               <div class="control-row">
-                <span class="control-label">01:00~07:00 睡眠作息</span>
+                <span class="control-label">23:00~07:00 睡眠作息</span>
                 <div class="switch-pill ${isSleepOn ? 'active-on' : 'active-off'}"
                   onclick="setGroupConfig('${g.group_id}', 'enable_sleep', ${!isSleepOn})">
                   <span class="opt-on">入睡</span>
@@ -803,31 +801,14 @@ INDEX_HTML = """<!DOCTYPE html>
               </div>
 
               <div class="control-row">
-                <span class="control-label">多人文字群游戏 (炸弹/roll)</span>
-                <div class="switch-pill ${isGamesOn ? 'active-on' : 'active-off'}"
-                  onclick="setGroupConfig('${g.group_id}', 'enable_games', ${!isGamesOn})">
-                  <span class="opt-on">开启</span>
-                  <span class="opt-off">禁用</span>
+                <span class="control-label">群功能总闸 (/off 关)</span>
+                <div class="switch-pill ${isMuted ? 'active-off' : 'active-on'}"
+                  onclick="setGroupConfig('${g.group_id}', 'muted', ${!isMuted})">
+                  <span class="opt-on">在线</span>
+                  <span class="opt-off">已停</span>
                 </div>
               </div>
 
-              <div class="control-row">
-                <span class="control-label">联网时效检索 (最新/热点)</span>
-                <div class="switch-pill ${isSearchOn ? 'active-on' : 'active-off'}"
-                  onclick="setGroupConfig('${g.group_id}', 'enable_search', ${!isSearchOn})">
-                  <span class="opt-on">开启</span>
-                  <span class="opt-off">离线</span>
-                </div>
-              </div>
-
-              <div class="control-row">
-                <span class="control-label">云崽游戏生态 (原神/星铁/米游社)</span>
-                <div class="switch-pill ${isYunzaiOn ? 'active-on' : 'active-off'}"
-                  onclick="setGroupConfig('${g.group_id}', 'enable_yunzai', ${!isYunzaiOn})">
-                  <span class="opt-on">开启</span>
-                  <span class="opt-off">禁用</span>
-                </div>
-              </div>
             </div>
 
             <!-- 统计指标 -->

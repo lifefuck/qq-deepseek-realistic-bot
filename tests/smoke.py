@@ -134,6 +134,47 @@ async def main():
     bot.ALLOWED_GROUPS.discard(gid)
     group_stats._stats.pop(str(gid), None)
 
+    # 11. 作息区间与 /off 总闸
+    check("23 点算睡觉", bot.in_sleep_window(23))
+    check("凌晨 3 点算睡觉", bot.in_sleep_window(3))
+    check("早上 6:59 还算", bot.in_sleep_window(6))
+    check("早上 7 点醒了", not bot.in_sleep_window(7))
+    check("下午不该睡", not bot.in_sleep_window(15))
+
+    gid = 999999997
+    bot.group_configs[str(gid)] = dict(bot.DEFAULT_GROUP_CONFIG)
+    # /off 会落盘配置，测试期间挡掉，别把假群号写进 group_configs.json
+    _real_save_cfg = bot.save_group_configs
+    bot.save_group_configs = lambda: None
+    calls.clear()
+    await bot.handle_admin_command(FakeWS(), "/off", is_private=False, group_id=gid)
+    cfg = bot.get_group_config(gid)
+    check("/off 关全部功能",
+          cfg["muted"] and not cfg["enable_interject"] and not cfg["enable_poke"]
+          and not cfg["enable_games"] and not cfg["enable_search"] and not cfg["enable_fun"])
+    check("/off 不把作息关掉（enable_sleep 语义是启用作息）", cfg["enable_sleep"] is True)
+
+    await bot.handle_admin_command(FakeWS(), "/on", is_private=False, group_id=gid)
+    cfg = bot.get_group_config(gid)
+    check("/on 全开", not cfg["muted"] and cfg["enable_interject"] and cfg["enable_fun"])
+    bot.save_group_configs = _real_save_cfg
+    bot.group_configs.pop(str(gid), None)
+
+    # 12. /memary 分页：46 人要拆成多条，且不能把 QQ 号甩群里
+    calls.clear()
+    admin_mod = __import__("handlers.admin", fromlist=["_MEMORY_CACHE"])
+    admin_mod._MEMORY_CACHE.clear()
+    gid = 999999996
+    bot.user_memories[str(gid)] = {
+        str(100000 + i): {"nickname": f"群友{i}", "favor": 50 + i % 40,
+                          "notes": ["爱水群"], "updated_at": 0} for i in range(30)
+    }
+    await bot.handle_memory_summary_command(FakeWS(), group_id=gid)
+    texts = [p.get("message") for a, p in calls if isinstance(p.get("message"), str)]
+    check("/memary 分页发送", len(texts) >= 2, f"条数={len(texts)}")
+    check("/memary 不再暴露 QQ 号", not any("10000" in (t or "") for t in texts))
+    bot.user_memories.pop(str(gid), None)
+
     print()
     if FAILED:
         print("失败项:", ", ".join(FAILED))

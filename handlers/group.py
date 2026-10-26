@@ -52,6 +52,10 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         
     is_admin = (sender_id == bot.ADMIN_QQ)
     now = time.time()
+
+    # /off 总闸：群里除了主人，谁说话都不理（连 @ 也不回）
+    if not is_admin and bot.get_group_config(group_id).get("muted"):
+        return
     
     # 提取纯文本与精准 @ 判定（基于 OneBot 11 规范的 QQ 号精准判定）
     # 匹配针对机器人自己的 @ CQ 码（兼容任何可选属性）
@@ -210,7 +214,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
 
     # 管理员快捷指令检测（忽略大小写，兼容全角斜杠与常用刹车词）
     if is_admin and (
-        norm_lower.startswith(("/new", "/stop", "/root", "/user"))
+        norm_lower.startswith(("/new", "/stop", "/root", "/user", "/on", "/off"))
         or norm_lower in ("stop", "new", "闭嘴", "停", "暂停")
     ):
         target_cmd = norm_cmd
@@ -460,6 +464,10 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     should_trigger, is_mention_bot = bot.should_active_interrupt(clean_body, group_id=group_id, msg_count_since=bot.group_msg_count_since_bot[group_id])
     bot.group_last_msg_time[group_id] = now
     if not should_trigger:
+        return
+
+    # 冷场时偶尔不接话，自己开一局玩法（年鉴/关系网/周榜/图灵），由 AI 决定
+    if not is_mention_bot and await fun_features.maybe_self_play(ws, group_id):
         return
         
     # 冷却时间门控：若未直接提及机器人且处于 CD 中，保持静默（若直接提及机器人或代称，CD 缩短为 3 秒；普通插话 10 秒）

@@ -281,6 +281,58 @@ async def reveal_turing(ws, group_id: int) -> None:
         bot.save_user_memories()
 
 
+# ==================== AI 自主发起玩法 ====================
+
+# 群 -> 上次自主发起时间。这玩意不能太勤，不然群里天天被年鉴糊脸
+_last_self_play: Dict[int, float] = {}
+SELF_PLAY_INTERVAL = 5400.0      # 两小时最多一次
+SELF_PLAY_CHANCE = 0.06          # 冷场接话时 6% 概率改成开个玩法
+
+
+async def maybe_self_play(ws, group_id: int) -> bool:
+    """冷场时替 AI 决定要不要自己开个玩法。返回 True 表示这次接话被玩法顶掉了。"""
+    cfg = bot.get_group_config(group_id)
+    if not cfg.get("enable_fun", True):
+        return False
+    if bot.is_bot_sleeping(group_id):
+        return False
+    now = time.time()
+    if now - _last_self_play.get(group_id, 0.0) < SELF_PLAY_INTERVAL:
+        return False
+    if random.random() > SELF_PLAY_CHANCE:
+        return False
+
+    totals = group_stats.group_totals(group_id)
+    options = []
+    if totals["msgs"] >= 300:
+        options.append("yearbook")
+    if len(group_stats.top_pairs(group_id, 6)) >= 3:
+        options.append("relation")
+    if totals["msgs"] >= 120:
+        options.append("weekly")
+    if _pick_real_line(group_id) and group_id not in _turing:
+        options.append("turing")
+    if not options:
+        return False
+
+    action = random.choice(options)
+    _last_self_play[group_id] = now
+    logger.info("[群 %d] 冷场，自己开一局玩法: %s", group_id, action)
+    try:
+        if action == "yearbook":
+            await send_yearbook(ws, group_id)
+        elif action == "relation":
+            await send_relation_map(ws, group_id)
+        elif action == "weekly":
+            await send_weekly_board(ws, group_id)
+        elif action == "turing":
+            await start_turing(ws, group_id)
+        return True
+    except Exception as e:
+        logger.warning("[群 %d] 自主玩法失败: %s", group_id, e)
+        return False
+
+
 # ==================== 命令入口 ====================
 
 _FUN_CMDS = {
