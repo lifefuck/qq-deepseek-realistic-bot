@@ -1,0 +1,70 @@
+:root {
+  --bg-color: #f6f7f9;
+  --card-bg: #ffffff;
+  --text-main: #1a1a1a;
+  --text-sub: #8c8c8c;
+  --brand-blue: #007dff;
+  --brand-blue-bg: #f0f7ff;
+  --divider-color: rgba(0, 0, 0, 0.05);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+
+body {
+  background-color: var(--bg-color);
+  color: var(--text-main);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  line-height: 1.5;
+  min-height: 100vh;
+}
+
+/* 彻底清除组件自带的多余半透明遮罩，保证文字与圆角绝不被遮挡 */
+.m-card--indication:after,
+.m-basic-component--clickable:after,
+.m-surface--clickable:after,
+.m-button:after {
+  display: none !important;
+}
+
+.m-basic-component__center,
+.m-basic-component__row,
+.m-text,
+.m-basic-component__title,
+.m-basic-component__summary {
+  position: relative;
+  z-index: 2 !important;
+  opacity: 1 !important;
+}
+
+/* 统一定制 SwitchPreference 的内边距与字体，更贴合原生系统列表 */
+.m-basic-component {
+  padding: 14px 16px !important;
+  min-height: 54px !important;
+}
+
+.m-switch {
+  box-shadow: none !important;
+}
+
+/* 滑块两端圆角与外边界对齐 */
+.m-slider {
+  border-radius: 9999px !important;
+}
+
+/* 优雅平滑滚动条 */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.12);
+  border-radius: 999px;
+}

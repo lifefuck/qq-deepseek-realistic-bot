@@ -8,4 +8,5 @@ user_memories.json
 *.json.tmp
 *.log
 .DS_Store
-__pycache__/
+.dashboard_sessions.json
+web_ui/node_modules/
