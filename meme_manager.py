@@ -105,50 +105,26 @@ class MemeManager:
 
     def get_prompt_snippet(self, user_message: str = "") -> str:
         """
-        生成用于注入 System Prompt 的网络热梗参考文本
-        包含：
-        1. 群友发言精准命中的梗及释义（置顶）
-        2. 当前 ~100 个词轮换池中的词汇
+        只返回本句命中的梗，没命中就返回空串。
+
+        以前是把 100 条带释义的轮换池整包拼进 System Prompt，实测约 3000 字符
+        （≈1500~2000 tokens），比整个 System Prompt 还长，而九成发言一个梗都不碰。
+        轮换池现在只留在内存里当候选，永不进 Prompt。
         """
         self.load_pool()
-        self.rotate_pool()
-
-        if not self.current_pool:
+        matched = self.match_user_message(user_message) if user_message else []
+        if not matched:
             return ""
 
-        # 检查命中
-        matched = self.match_user_message(user_message) if user_message else []
-        matched_names = {m["name"] for m in matched}
-
-        lines = [
-            "【网络冲浪语境与热词参考（当前轮换池约100条，自然融入、切忌生搬硬套或无脑堆砌）】:"
-        ]
-
-        if matched:
-            match_parts = []
-            for m in matched:
-                desc = m.get("desc", "")
-                if desc:
-                    match_parts.append(f"{m['name']}({desc})")
-                else:
-                    match_parts.append(m['name'])
-            lines.append(f"- 群友提到/上下文相关梗: {'; '.join(match_parts)}")
-
-        # 提取当前 100 个词（去重已命中的）
-        pool_words = []
-        for item in self.current_pool:
-            name = item["name"]
-            if name in matched_names:
-                continue
-            desc = item.get("desc")
-            if desc:
-                pool_words.append(f"{name}({desc})")
-            else:
-                pool_words.append(name)
-
-        # 拼接成紧凑的词表展示
-        lines.append(f"- 常用流行词汇池: {'、'.join(pool_words[:self.pool_size])}")
-        return "\n".join(lines)
+        parts = []
+        for m in matched[:2]:
+            desc = (m.get("desc") or "").strip()
+            # 按句读截断，别把释义切成「不按常规策」这种半截话
+            if len(desc) > 12:
+                cut = min([i for i in (desc.find("，"), desc.find("。")) if i > 4] or [12])
+                desc = desc[:cut]
+            parts.append(f"{m['name']}({desc})" if desc else m["name"])
+        return "【群友这句提到的梗】：" + "；".join(parts)
 
 
 # 单例实例
