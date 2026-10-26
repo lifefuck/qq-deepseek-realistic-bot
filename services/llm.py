@@ -71,8 +71,9 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         else:
             user_prompt = (
                 f"{identity_note}"
-                f"{user_mem_prompt}"
                 f"以下是你与专属主人「{sender_nick}」(QQ {bot.ADMIN_QQ}) 的私聊历史：\n{timeline_text}\n\n"
+                # 记忆块放时间线后面：历史是累加的公共前缀，放前面才能被缓存命中
+                f"{user_mem_prompt}"
                 f"【主人发来私信】：\n"
                 f"当前跟你说话的是你的专属主人兼创造者。请清楚认同主人身份，态度自然真实、听主人的话，结合好感度自然交流（20~40 字）："
             )
@@ -87,8 +88,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         else:
             user_prompt = (
                 f"{identity_note}"
-                f"{user_mem_prompt}"
                 f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
+                f"{user_mem_prompt}"
                 f"【注意识别对话者身份】：当前是你的专属主人兼创造者 life (QQ {bot.ADMIN_QQ}) 在群里呼叫你！\n"
                 f"（清楚知道对方是你的主人 life，态度自然真实、俏皮亲近，听主人的话，绝不搞错称呼）\n"
                 f"请结合当前对主人的极高好感度自然回复（20~35 字，绝不用句号）："
@@ -96,8 +97,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
     elif is_at or is_mention:
         user_prompt = (
             f"{identity_note}"
-            f"{user_mem_prompt}"
             f"群友「{sender_nick}」发来消息：\n{timeline_text}\n\n"
+            f"{user_mem_prompt}"
             f"请以大肥鱼口吻极简回复（默认1句，最多2句，绝不用句号，别写小作文）："
         )
     else:
@@ -179,6 +180,11 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             data = await resp.json()
             if "usage" in data:
                 bot.token_tracker.record_usage(data["usage"], bot.MODEL_NAME, group_id=group_id)
+                # 上游支持前缀缓存时会回报命中数；没有就说明这段前缀白写了
+                usage = data["usage"]
+                hit = usage.get("prompt_cache_hit_tokens", usage.get("cached_tokens"))
+                if hit is not None:
+                    logger.info("前缀缓存命中 %s / 输入 %s tokens", hit, usage.get("prompt_tokens"))
             reply = data["choices"][0]["message"]["content"].strip()
             logger.info("模型生成完成 (耗时 %.2fs): %s", elapsed, reply[:30])
             return reply

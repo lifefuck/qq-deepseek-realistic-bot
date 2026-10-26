@@ -7,6 +7,7 @@ import asyncio
 import meme_catalog
 import re
 import time
+from services import trace
 
 # 由 bot.py 在启动时注入自己。直接 import bot 在 `python bot.py` 下会拿到
 # 另一个模块实例（__main__ 与 bot 各一份），全局状态就分裂了。
@@ -25,6 +26,9 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
     
     if sender_id != bot.ADMIN_QQ:
         return
+
+    # 私聊同样打 rid，和群聊一个格式，日志里好区分来源
+    trace.begin(f"p{sender_id}")
         
     reply_prefix = await bot.extract_reply_context(ws, event, raw_message)
     raw_message = await bot.expand_forward_messages(ws, raw_message)

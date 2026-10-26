@@ -36,6 +36,7 @@ from prompts import (SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT, GAMES_KB, needs_games_kb
 import meme_catalog
 import safety_guard
 import cross_interaction
+from services import trace
 from services.messaging import (send_group_message, send_segmented_group_message,
                               send_private_message)
 from services.llm import (call_deepseek, call_deepseek_poke, evaluate_favor_with_ai,
@@ -105,13 +106,14 @@ BOT_KEYWORDS = {
     "笨蛋", "傻子", "傻鱼", "小鱼", "死鱼", "咸鱼"
 }
 
-# 日志格式
+# 日志格式：rid 放在最前面，一眼能把一条消息的全程串起来
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
+    format="%(asctime)s [%(levelname)s] [%(rid)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S"
 )
 logger = logging.getLogger("DeepSeekBot")
+trace.install()
 web_dashboard.setup_log_capture(logger)
 BOT_START_TIME = time.time()
 
