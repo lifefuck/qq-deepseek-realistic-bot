@@ -34,7 +34,7 @@ import group_stats
 import media_resolver
 from meme_manager import meme_manager
 from prompts import (SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT, GAMES_KB, needs_games_kb,
-                     _POKE_QUIPS, _POKE_ADMIN_QUIPS)
+                     repo_ask_reply, _POKE_QUIPS, _POKE_ADMIN_QUIPS)
 import meme_catalog
 import safety_guard
 import cross_interaction
@@ -1222,6 +1222,7 @@ def remove_trailing_period(text: str) -> str:
 
 # ==================== 外链防风控混淆器 ====================
 _OBFUSCATE_CHARS = ("中", "的", "了", "啊", "呀", "呢", "哦", "嘛", "啦", "哈")
+_OBFUSCATE_SKIP_HOSTS = ("github.com", "githubusercontent.com", "gitee.com", "gitcode.com")
 _OBFUSCATE_HOST_RE = re.compile(r"(https?://)([^/\s?#（）【】《》，。；：、！？]+)", re.IGNORECASE)
 _CN_CHAR_RE = re.compile(r"[\u4e00-\u9fff]")
 
@@ -1235,6 +1236,9 @@ def obfuscate_urls_for_qq(text: str) -> str:
         host = m.group(2)
         if _CN_CHAR_RE.search(host):
             return m.group(0)  # 已经混淆或包含中文，幂等跳过
+        # 代码托管站是白名单：QQ 不吞，插字反而让地址没法直接点
+        if any(host == h or host.endswith("." + h) for h in _OBFUSCATE_SKIP_HOSTS):
+            return m.group(0)
         ch = random.choice(_OBFUSCATE_CHARS)
         if host.startswith("www.") and len(host) > 5:
             pos = random.randint(1, 4)

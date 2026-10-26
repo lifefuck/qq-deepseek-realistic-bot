@@ -125,6 +125,15 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         bot.logger.debug("[群 %d] 识别为游戏指令: %r，主动转交云崽处理，跳过 AI 回复", group_id, clean_body)
         return
 
+    # 问项目出处/源码/部署：直接甩仓库，不走模型，省得绕圈子或者漏链接
+    repo_reply = bot.repo_ask_reply(clean_body)
+    if repo_reply:
+        bot.logger.info("[群 %d] 命中仓库问答，直接回地址", group_id)
+        await bot.send_segmented_group_message(
+            ws, group_id, repo_reply, at_user_id=sender_id if is_at else None
+        )
+        return
+
     # 4. 安全护栏：拦截提示词注入/越狱指令，以傲娇拟真口吻反讽
     is_injected, snarky_reply = safety_guard.check_prompt_injection(clean_body)
     if is_injected and snarky_reply:

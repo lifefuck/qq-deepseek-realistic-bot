@@ -18,6 +18,7 @@ import fun_features
 import group_stats
 import meme_catalog
 import prompts
+import safety_guard
 
 FAILED = []
 
@@ -207,6 +208,22 @@ async def main():
     check("节点带头衔", "摸鱼冠军" in body)
     check("群名片与QQ昵称不同时都显示", "群名片0（QQ昵称 QQ昵称0）" in body)
     bot.user_memories.pop(str(gid), None)
+
+    # 仓库地址唤醒：问项目就甩链接，闲聊和别的仓库不能误伤
+    repo = lambda t: prompts.repo_ask_reply(t) or ""
+    check("问源码直接给地址", "github.com/lifefuck/qq-deepseek-realistic-bot" in repo("这个bot源码在哪"))
+    check("问部署给地址", "github.com/lifefuck" in repo("怎么部署"))
+    check("闲聊不抢话", prompts.repo_ask_reply("今天吃啥") is None)
+    check("别的仓库不误伤", prompts.repo_ask_reply("我们公司仓库地址迁移了，明天开会讨论") is None)
+    check("知识库不再提已停用功能", "答案之书" not in prompts.GAMES_KB and "摸摸头" not in prompts.GAMES_KB)
+
+    # 仓库链接必须原样发出去，不能再被插汉字
+    u = "https://github.com/lifefuck/qq-deepseek-realistic-bot"
+    check("github 链接不被混淆", bot.obfuscate_urls_for_qq(u) == u)
+    check("其他域名照旧混淆", bot.obfuscate_urls_for_qq("https://example.com/a") != "https://example.com/a")
+    # 模型自己加的括号旁白不能发出去
+    check("纯括号旁白被丢弃", safety_guard.strip_internal_monologue("（保持简洁自然，不用特意打招呼或回忆过往）") == "")
+    check("正常括号内容保留", safety_guard.strip_internal_monologue("（笑）行吧") != "")
 
     print()
     if FAILED:
