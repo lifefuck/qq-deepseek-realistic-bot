@@ -37,6 +37,13 @@ async def main():
 
     async def fake_action(ws, action, params, timeout=2.0):
         calls.append((action, params))
+        if action == "get_group_member_list":
+            # 给 /memary 用的假成员资料：一个群主带头衔，一个没名片
+            return {"status": "ok", "retcode": 0, "data": [
+                {"user_id": 100000, "nickname": "QQ昵称0", "card": "群名片0",
+                 "title": "摸鱼冠军", "role": "owner"},
+                {"user_id": 100001, "nickname": "QQ昵称1", "card": "", "title": "", "role": "member"},
+            ]}
         return {"status": "ok", "retcode": 0}
 
     bot.call_action = fake_action
@@ -160,19 +167,26 @@ async def main():
     bot.save_group_configs = _real_save_cfg
     bot.group_configs.pop(str(gid), None)
 
-    # 12. /memary 分页：46 人要拆成多条，且不能把 QQ 号甩群里
+    # 12. /memary：合并转发成一条折叠记录，节点里要有 QQ 号、身份、头衔
     calls.clear()
-    admin_mod = __import__("handlers.admin", fromlist=["_MEMORY_CACHE"])
+    admin_mod = __import__("handlers.admin", fromlist=["_MEMORY_CACHE", "_MEMBER_CACHE"])
     admin_mod._MEMORY_CACHE.clear()
+    admin_mod._MEMBER_CACHE.clear()
     gid = 999999996
     bot.user_memories[str(gid)] = {
         str(100000 + i): {"nickname": f"群友{i}", "favor": 50 + i % 40,
                           "notes": ["爱水群"], "updated_at": 0} for i in range(30)
     }
     await bot.handle_memory_summary_command(FakeWS(), group_id=gid)
-    texts = [p.get("message") for a, p in calls if isinstance(p.get("message"), str)]
-    check("/memary 分页发送", len(texts) >= 2, f"条数={len(texts)}")
-    check("/memary 不再暴露 QQ 号", not any("10000" in (t or "") for t in texts))
+    fwd = [p for a, p in calls if a == "send_group_forward_msg"]
+    check("/memary 走合并转发", len(fwd) == 1, f"forward 次数={len(fwd)}")
+    nodes = fwd[0]["messages"] if fwd else []
+    body = "\n".join(n["data"]["content"] for n in nodes)
+    check("节点数是标题+30人", len(nodes) == 31, f"节点={len(nodes)}")
+    check("节点带 QQ 号", "QQ 100000" in body)
+    check("节点带群身份", "群主" in body and "群员" in body)
+    check("节点带头衔", "摸鱼冠军" in body)
+    check("群名片与QQ昵称不同时都显示", "群名片0（QQ昵称 QQ昵称0）" in body)
     bot.user_memories.pop(str(gid), None)
 
     print()
