@@ -787,21 +787,43 @@ def update_group_config(group_id: Optional[int], key: str, value: Any) -> bool:
 load_group_configs()
 ADMIN_MODE: str = "user"  # 兼容旧引用
 
-async def resolve_image_and_record(session: aiohttp.ClientSession, group_id: int, sender_nick: str, image_url: str):
-    """后台异步提取图片要点，并记录至群聊近期上下文"""
-    try:
-        summary = await vision_resolver.transcribe_image_summary(session, SILICONFLOW_API_KEY, image_url)
+# 图片摘要缓存：同一张图只调一次视觉模型
+_vision_cache: Dict[str, str] = {}
+_VISION_CACHE_MAX = 80
+
+async def get_image_note(session: aiohttp.ClientSession, image_url: str) -> str:
+    """取一张图的摘要，命中缓存直接返回。
+
+    以前是每张群图都起一个后台任务，摘要生成完写进一个不存在的变量
+    （group_timeline），NameError 被 except 吞掉，钱花了上下文里什么都没有。
+    现在改成：只有机器人真要接话时，才现取最近那张图的摘要。
+    """
+    if not image_url:
+        return ""
+    if image_url in _vision_cache:
+        return _vision_cache[image_url]
+    summary = await vision_resolver.transcribe_image_summary(session, SILICONFLOW_API_KEY, image_url)
+    if not summary:
+        return ""
+    if len(_vision_cache) >= _VISION_CACHE_MAX:
+        _vision_cache.pop(next(iter(_vision_cache)))
+    _vision_cache[image_url] = summary
+    logger.info("视觉摘要: %s", summary)
+    return summary
+
+async def recent_image_note(group_id: int, max_age: float = 120.0) -> str:
+    """最近两分钟内有图就带一句图注，没有就返回空串"""
+    if not http_session or not group_recent_images.get(group_id):
+        return ""
+    now_ts = time.time()
+    for url, ts, nick in reversed(group_recent_images[group_id]):
+        if now_ts - ts > max_age:
+            break
+        summary = await get_image_note(http_session, url)
         if summary:
-            # 存入群近期语义时间线
-            group_timeline[group_id].append({
-                "role": "user",
-                "content": f"[{sender_nick} 发送了一张图片/表情包: {summary}]",
-                "time": time.time(),
-                "sender_nick": sender_nick
-            })
-            logger.info("[群 %d] 视觉识别梗概已存入上下文: %s", group_id, summary)
-    except Exception as e:
-        logger.debug("视觉后台提取异常: %s", e)
+            return f"[{nick} 刚发了张图：{summary}]"
+        break
+    return ""
 
 # ==================== 大肥鱼专属表情包系统 ====================
 MEME_PACK_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "meme-pack", "memes")
@@ -1114,7 +1136,7 @@ def check_user_fatigue(group_id: int, user_id: int) -> tuple[bool, bool]:
     return False, False
 
 # 这几个词一旦连续出现，模型就会当成万能接话料，需要冷却
-_TIC_WORDS = ("大白饭", "碳基生物")
+_TIC_WORDS = ("大白饭", "碳基生物", "硅基")
 
 # 括号里的纯动作，模型无视禁令时由代码兜底
 _ACTION_PAREN_RE = re.compile(r"[（(](?:嚼|甩|鼓|吨|摸|翻|趴|叹|挠|跺|叉腰|擦汗|扶额)[^（）()]{0,8}[）)]")
@@ -1644,8 +1666,12 @@ def split_reply_segments(text: str) -> list[str]:
         return parts[:3]
     return [clean]
 
-async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None):
-    """分段拟真发送：闲聊时智能切分 1~2 条连续发送，root 模式整块发送"""
+async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None) -> str:
+    """分段拟真发送：闲聊时智能切分 1~2 条连续发送，root 模式整块发送。
+
+    返回实际发出去的正文（已削平、已剥标签），调用方拿它写回上下文，
+    别再把没削过的原始回复存进去。
+    """
     # 经过反模板闸削平套路，避免句式坍塌
     channel_mode = get_channel_mode(group_id)
     if not is_command_report and channel_mode != "root":
@@ -1653,13 +1679,13 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     # [MEME:xx] 是给选图用的，正文不能带出去，也不能被切段切开
     text, meme_tag = meme_catalog.extract_tag(text)
     if not text and not meme_tag:
-        return
+        return ""
     recent_bot_replies.append(text)
     group_last_bot_reply_time[group_id] = time.time()
 
     if is_command_report or len(text) > 120 or channel_mode == "root":
         await send_group_message(ws, group_id, text, is_command_report=is_command_report, at_user_id=at_user_id)
-        return
+        return text
         
     # 单群限频检查（防腾讯风控）
     if not check_and_record_group_rate_limit(group_id):
@@ -1669,13 +1695,13 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
             group_rate_limit_warned[group_id] = now
             logger.warning("[群 %d] 60s 内已发 %d 条，触发风控红线冷静期", group_id, GROUP_MAX_MESSAGES_PER_WINDOW)
             await send_group_message(ws, group_id, "别排队艾特我啦，让本鲸宝喘口气缓一缓", is_command_report=False)
-        return
+        return ""
         
     # 安全护栏过滤
     is_safe, text = safety_guard.sanitize_outgoing_text(text)
     text = safety_guard.strip_internal_monologue(text)
     if not text:
-        return
+        return ""
 
     segments = split_reply_segments(text)
     # 25% 概率或强烈情绪时触发表情包
@@ -1705,6 +1731,8 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     if final_pic_b64:
         await asyncio.sleep(0.5)
         await send_meme_message(ws, group_id=group_id, b64_data=final_pic_b64)
+
+    return text
 
 async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int, text: str, is_command_report: bool = False):
     """向 NapCat 发送私聊消息并捕获发送状态"""
@@ -1945,6 +1973,15 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in timeline])
     else:
         dialogue_text = user_text or (timeline[-1]['content'] if timeline else "")
+
+    # 最近两分钟有图就现取一句图注，让模型知道对方刚发了什么
+    try:
+        image_note = await recent_image_note(group_id)
+    except Exception as e:
+        logger.debug("取图注失败: %s", e)
+        image_note = ""
+    if image_note:
+        dialogue_text = f"{image_note}\n{dialogue_text}"
     
     logger.info("[群 %d] 触发轻量会话分析 (is_at=%s, is_admin=%s), 发言内容: %s", group_id, is_at, is_admin, dialogue_text[:40])
     
@@ -1990,11 +2027,10 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
     await asyncio.sleep(1.0)
     # 当群友主动艾特机器人呼叫时，回复必须带上 [CQ:at] 艾特该群友；若为主动旁观插话则自然接话不强行艾特
     at_target = target_uid if is_at else None
-    await send_segmented_group_message(ws, group_id, reply, is_command_report=(is_admin and get_channel_mode(group_id) == "root"), at_user_id=at_target)
+    sent_text = await send_segmented_group_message(ws, group_id, reply, is_command_report=(is_admin and get_channel_mode(group_id) == "root"), at_user_id=at_target)
 
-    # 将机器人自己的回复也写入当前群的时间线与长历史池，让对话上下文完整，防止机器人自言自语或遗忘自己说过的话
-    # 存进上下文的必须是纯正文，[MEME:xx] 这种内部标记不能回灌给模型
-    clean_reply_record = remove_trailing_period(strip_markdown(meme_catalog.extract_tag(reply)[0])).strip()
+    # 写回上下文的是实际发出去的那句：削平过、标签剥过，跟群里看到的一致
+    clean_reply_record = remove_trailing_period(strip_markdown(sent_text or "")).strip()
     if clean_reply_record:
         bot_record = {
             "sender": "小鲸鱼",
@@ -2055,9 +2091,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         for u in m_imgs:
             u_clean = u.replace("&amp;", "&")
             group_recent_images[group_id].append((u_clean, time.time(), sender_nick))
-            # 异步看图提炼画面梗概，融入聊天上下文
-            if http_session:
-                asyncio.create_task(resolve_image_and_record(http_session, group_id, sender_nick, u_clean))
+            # 只记下来源，等机器人真要接话时再取摘要，不为每张图白调一次视觉模型
 
     # 记录群友艾特或交互到关系网
     m_ats = re.findall(r'\[CQ:at,[^\]]*qq=(\d+)[^\]]*\]', raw_message)
