@@ -78,7 +78,10 @@ async def main():
     check("回喂提示带禁自称", "别再自称" in bot.get_anti_repeat_hint(_g))
     bot.recent_bot_replies.clear()
 
-    # 3. 好感度噪音过滤
+    # 2.6 提示词里「只回应真实发生的事」不能丢，这是防臆想的核心约束
+    check("人设有防臆想条款", "只回应真实发生的事" in bot.SYSTEM_PROMPT)
+    check("大肥鱼人设保留", "大肥鱼" in bot.SYSTEM_PROMPT)
+
     check("水聊跳过", not bot._is_favor_worthy("哈哈哈"))
     check("短句跳过", not bot._is_favor_worthy("在吗"))
     check("正常发言打分", bot._is_favor_worthy("你这大肥鱼今天挺活跃"))

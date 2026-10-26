@@ -61,6 +61,6 @@ def get_group_relations_summary(group_id: int, current_user_id: Optional[int] = 
     for (u1, u2), cnt in sorted_pairs:
         n1 = nick_map.get(u1, str(u1))
         n2 = nick_map.get(u2, str(u2))
-        snippets.append(f"「{n1}」与「{n2}」刚刚互动频繁({cnt}次)")
+        snippets.append(f"「{n1}」与「{n2}」最近互动较多({cnt}次)")
 
     return "【群内当前焦点关系】：\n- " + "；".join(snippets) + "\n"

@@ -47,7 +47,10 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             user_mem_prompt = f"【当前交谈者身份】：专属主人兼创造者 life（QQ {bot.ADMIN_QQ}），拥有绝对最高权限与天然极高好感度。\n"
         else:
             notes_str = "、".join(mem.get("notes", [])) if mem.get("notes") else "初次接触"
-            user_mem_prompt = f"【当前交谈群友信息】：昵称: {mem.get('nickname')}, 好感度: {mem.get('favor')}/100, 历史印象: {notes_str}\n"
+            user_mem_prompt = (
+                f"【当前交谈群友信息】：昵称: {mem.get('nickname')}, 好感度: {mem.get('favor')}/100\n"
+                f"【长期印象（只是你对他的背景认知，不是他这一轮说过的话，绝对不能拿来当对话内容回应）】：{notes_str}\n"
+            )
 
     # 注入群内焦点互动关系（仅群聊生效）
     if group_id and not is_private:
