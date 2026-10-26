@@ -1068,7 +1068,7 @@ def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int =
         return False, False
 
     lower = text.lower()
-    # 1. 明确提到机器人、模型、AI或相关代称梗词（100% 触发）
+    # 1. 明确提到机器人、模型、AI 或相关代称梗词，命中即触发
     if any(kw in lower for kw in BOT_KEYWORDS):
         return True, True
     
@@ -1236,7 +1236,7 @@ def obfuscate_urls_for_qq(text: str) -> str:
         if _CN_CHAR_RE.search(host):
             return m.group(0)  # 已经插过字，幂等跳过
         # 域名太短插两个会碎，短的就插一个
-        count = 2 if len(host) >= 8 else 1
+        count = 3 if len(host) >= 8 else 2
         # 别插在点号旁边，不然会变成 ub.删com 这种断法
         slots = [i for i in range(1, len(host)) if host[i] != "." and host[i - 1] != "."]
         if len(slots) >= count:
@@ -1466,7 +1466,7 @@ async def main():
     try:
         await web_dashboard.start_web_server(get_bot_dashboard_status, update_config_func=update_group_config, port=8088)
         cross_memory.cross_group_mgr.start_background_flusher()
-        logger.info("🌐 Web 仪表盘已启动，本机监听: http://127.0.0.1:8088")
+        logger.info("Web 仪表盘已启动，本机监听: http://127.0.0.1:8088")
     except Exception as e:
         logger.error("Web 仪表盘启动异常: %s", e)
     
@@ -1477,7 +1477,7 @@ async def main():
                 async with session.ws_connect(NAPCAT_WS_URL) as ws:
                     global current_ws
                     current_ws = ws
-                    logger.info("✅ 成功连接到 NapCat WebSocket！开始监听消息事件。")
+                    logger.info("已连接到 NapCat WebSocket，开始监听消息。")
                     # 异步刷新各群名称
                     async def refresh_group_names():
                         try:

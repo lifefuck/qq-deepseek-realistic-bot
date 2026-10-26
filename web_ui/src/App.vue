@@ -255,7 +255,7 @@ onMounted(() => {
     <div v-else-if="!isAuthenticated" class="auth-wrap">
       <div class="auth-card">
         <div class="auth-top">
-          <div class="lock-icon">🔒</div>
+          <div class="lock-icon"></div>
           <h2 class="auth-title">大肥鱼控制台</h2>
           <p class="auth-desc">输入访问密钥解锁管理权限</p>
         </div>
@@ -288,7 +288,7 @@ onMounted(() => {
             运行 {{ formatUptime(status?.bot.uptime || 0) }}
           </span>
           <span v-if="status?.bot.is_sleeping" class="sleep-badge">
-            🌙 休眠中
+            休眠中
           </span>
         </div>
 

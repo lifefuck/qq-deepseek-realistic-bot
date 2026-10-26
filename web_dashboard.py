@@ -472,14 +472,14 @@ INDEX_HTML = """<!DOCTYPE html>
     <div class="header-left">
       <img class="bot-avatar" src="https://q1.qlogo.cn/g?b=qq&nk=__BOT_QQ__&s=100" alt="Bot Avatar" onerror="this.src='https://dummyimage.com/100x100/2563eb/ffffff?text=FISH'">
       <div class="title-box">
-        <h1>🐟 大肥鱼 AI 控制台</h1>
+        <h1>大肥鱼 AI 控制台</h1>
         <p>基座: DeepSeek-V3 · 实体 QQ: __BOT_QQ__ · 双 Bot 协同中</p>
       </div>
     </div>
     <div class="status-badges" id="headerBadges">
       <span class="badge badge-success" id="badgeConn">● 正在连接...</span>
-      <span class="badge badge-primary" id="badgeMode">💬 模式: 加载中</span>
-      <span class="badge badge-info" id="badgeSleep">☀️ 作息: 检测中</span>
+      <span class="badge badge-primary" id="badgeMode">模式: 加载中</span>
+      <span class="badge badge-info" id="badgeSleep">作息: 检测中</span>
     </div>
   </header>
 
@@ -508,13 +508,13 @@ INDEX_HTML = """<!DOCTYPE html>
   </div>
 
   <!-- 群聊冷热场雷达 -->
-  <div class="section-title">📡 群聊活跃度与冷热场插话雷达</div>
+  <div class="section-title">群聊活跃度与冷热场插话</div>
   <div class="group-grid" id="groupGrid">
     <!-- 动态填入群卡片 -->
   </div>
 
   <!-- 群友档案与好感度排行榜 -->
-  <div class="section-title">💖 群友个性化记忆与好感度档案</div>
+  <div class="section-title">群友记忆与好感度</div>
   <div class="tabs" id="groupTabs">
     <!-- 动态填入选项卡 -->
   </div>
@@ -523,7 +523,7 @@ INDEX_HTML = """<!DOCTYPE html>
   </div>
 
   <!-- 实时运行日志 -->
-  <div class="section-title">📜 实时交互日志流</div>
+  <div class="section-title">实时交互日志</div>
   <div class="log-box">
     <div class="log-header">
       <span style="font-size: 13px; color: var(--text-muted);">自动同步最近 50 条后台交互与反模板削平动作</span>
@@ -581,24 +581,24 @@ INDEX_HTML = """<!DOCTYPE html>
       const badgeMode = document.getElementById('badgeMode');
       if (data.bot.admin_mode === 'root') {
         badgeMode.className = "badge badge-warning";
-        badgeMode.innerText = "🛠️ 技术伙伴模式 (/root)";
+        badgeMode.innerText = "技术伙伴模式 (/root)";
       } else {
         badgeMode.className = "badge badge-primary";
-        badgeMode.innerText = "💬 闲聊陪伴模式 (/user)";
+        badgeMode.innerText = "闲聊模式 (/user)";
       }
 
       const badgeSleep = document.getElementById('badgeSleep');
       if (data.bot.is_sleeping) {
         if (data.bot.sleep_override) {
           badgeSleep.className = "badge badge-warning";
-          badgeSleep.innerText = "⚡ 主人专属唤醒中 (30分钟)";
+          badgeSleep.innerText = "主人唤醒中 (30分钟)";
         } else {
           badgeSleep.className = "badge badge-slate";
-          badgeSleep.innerText = "🌙 拟真睡眠中 (23:00~07:00)";
+          badgeSleep.innerText = "休眠中 (23:00~07:00)";
         }
       } else {
         badgeSleep.className = "badge badge-success";
-        badgeSleep.innerText = "☀️ 清醒中";
+        badgeSleep.innerText = "清醒中";
       }
     }
 
@@ -682,7 +682,7 @@ INDEX_HTML = """<!DOCTYPE html>
                 ${gName} <span style="font-size:12px; color:var(--text-muted); font-weight:normal;">(${g.group_id})</span>
                 <button class="btn-mode-toggle ${isRoot ? 'btn-mode-root' : 'btn-mode-user'}"
                   onclick="setGroupConfig('${g.group_id}', 'mode', '${isRoot ? 'user' : 'root'}')">
-                  ${isRoot ? '🛠️ root模式 (点切闲聊)' : '💬 user闲聊 (点切root)'}
+                  ${isRoot ? 'root 模式 (点切闲聊)' : '闲聊模式 (点切 root)'}
                 </button>
               </span>
               <span class="badge ${badgeClass}">${g.interject_why}</span>
@@ -764,10 +764,10 @@ INDEX_HTML = """<!DOCTYPE html>
         <div class="group-card" style="border-color: #cbd5e1;">
           <div class="group-card-header">
             <span class="group-id" style="color: #475569;">
-              🔒 主人私聊直通
+              主人私聊直通
               <button class="btn-mode-toggle ${isPrivRoot ? 'btn-mode-root' : 'btn-mode-user'}"
                 onclick="setGroupConfig('private', 'mode', '${isPrivRoot ? 'user' : 'root'}')">
-                ${isPrivRoot ? '🛠️ root模式 (点切闲聊)' : '💬 user闲聊 (点切root)'}
+                ${isPrivRoot ? 'root 模式 (点切闲聊)' : '闲聊模式 (点切 root)'}
               </button>
             </span>
             <span class="badge badge-gold">主人专属通道</span>
@@ -860,7 +860,7 @@ INDEX_HTML = """<!DOCTYPE html>
               <img class="user-avatar" src="https://q1.qlogo.cn/g?b=qq&nk=${u.uid}&s=100" onerror="this.src='https://dummyimage.com/100x100/cbd5e1/475569?text=Q'">
               <div class="user-meta">
                 <div class="user-name">
-                  ${isMaster ? '👑 ' : ''}${u.nickname || '神秘群友'}
+                  ${isMaster ? '' : ''}${u.nickname || '神秘群友'}
                   ${isMaster ? '<span class="badge badge-gold" style="font-size:10px; padding:2px 6px;">专属主人</span>' : ''}
                 </div>
                 <div class="user-qq">QQ: ${u.uid}</div>
@@ -1008,7 +1008,7 @@ LOGIN_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <div class="login-card">
-    <div class="logo">🐟</div>
+    <div class="logo">鱼</div>
     <h1>大肥鱼 AI 控制台</h1>
     <p>请输入安全访问密钥以进入后台</p>
     <div class="input-group">

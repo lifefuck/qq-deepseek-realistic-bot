@@ -7,7 +7,7 @@
 
 - 素材源自 [YunYueSama/codex-deepseek-pet](https://github.com/YunYueSama/codex-deepseek-pet)
   的六视图角色标准像（`design/character-standard.png`）裁剪而成
-- 授权：该仓库明确允许使用、修改、分享及商用，**须注明作者 YunYueSama 和仓库地址** ✅
+- 授权：该仓库明确允许使用、修改、分享及商用，**须注明作者 YunYueSama 和仓库地址**
 - 署名：**作者 YunYueSama · https://github.com/YunYueSama/codex-deepseek-pet**
 
 ## v2-状态立绘（8 张 = 4 表情 × 全身/大头）

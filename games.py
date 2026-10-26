@@ -28,12 +28,12 @@ def handle_quick_game_commands(text: str) -> Optional[str]:
         elif max_val > 1000000:
             max_val = 1000000
         val = random.randint(1, max_val)
-        return f"🎲 骰子骨碌碌滚出了：{val} 点！（范围: 1~{max_val}）"
+        return f"骰子滚出 {val} 点（1~{max_val}）"
 
     # 2. 抛硬币
     if t in ("抛硬币", "扔硬币", "硬币", "/coin"):
         res = "正面（字）" if random.random() < 0.5 else "反面（花）"
-        return f"🪙 硬币在空中翻滚落地：是【{res}】！"
+        return f"硬币落地，是【{res}】"
 
     # 3. 抽签 / 今日运势
     if t in ("抽签", "求签", "今日运势", "/draw"):
@@ -46,7 +46,7 @@ def handle_quick_game_commands(text: str) -> Optional[str]:
             ("万事如意", "大肥鱼专属庇护，今天你是群里最靓的仔！")
         ]
         lot, desc = random.choice(lots)
-        return f"🎋 晃了晃签筒，你抽到了【{lot}】：\n「{desc}」"
+        return f"抽到【{lot}】：\n「{desc}」"
 
     return None
 
@@ -62,7 +62,7 @@ def process_number_bomb(group_id: int, text: str, user_id: int, sender_nick: str
     # 发起新游戏
     if t in ("数字炸弹", "开炸弹", "开数字炸弹", "/bomb"):
         if game and game.get("game") == "bomb":
-            return True, f"💣 游戏正在进行中啦！当前数字范围是 [{game['low']} ~ {game['high']}]，快猜！"
+            return True, f"游戏还在进行，当前范围 [{game['low']} ~ {game['high']}]，继续猜"
         
         target = random.randint(2, 99)
         active_games[group_id] = {
@@ -74,14 +74,14 @@ def process_number_bomb(group_id: int, text: str, user_id: int, sender_nick: str
             "last_active": now,
             "guesses": 0
         }
-        return True, "💣【数字炸弹】已经装填完毕！\n数字范围是【1 ~ 100】，谁猜中谁被炸死！谁先来猜一个数字？"
+        return True, "【数字炸弹】装好了\n范围 1~100，谁猜中谁挨炸。谁先来？"
 
     # 结束游戏
     if t in ("退出数字炸弹", "结束数字炸弹", "结束炸弹", "/stopbomb"):
         if game and game.get("game") == "bomb":
             target = game["target"]
             active_games.pop(group_id, None)
-            return True, f"🏳️ 数字炸弹已提前拆除！刚才的炸弹数字其实是：【{target}】"
+            return True, f"炸弹拆了，答案是【{target}】"
         return False, None
 
     # 如果有活跃的炸弹，检测用户输入是否为纯数字
@@ -98,7 +98,7 @@ def process_number_bomb(group_id: int, text: str, user_id: int, sender_nick: str
             target = game["target"]
 
             if val <= low or val >= high:
-                return True, f"⚠️ 笨蛋！输入的数字必须在合法范围 ({low} ~ {high}) 之间！"
+                return True, f"数字得在 {low} ~ {high} 之间"
 
             game["guesses"] += 1
             game["last_active"] = now
@@ -114,15 +114,15 @@ def process_number_bomb(group_id: int, text: str, user_id: int, sender_nick: str
                 ]
                 p = random.choice(punishments)
                 return True, (
-                    f"💥💥💥 BOOM！！！炸弹爆炸啦！\n"
-                    f"💀 倒霉蛋【{sender_nick}】猜中了数字【{target}】！\n"
-                    f"共经历 {guesses} 轮生死猜忌！接受惩罚吧：\n👉 {p}"
+                    f"BOOM，炸了\n"
+                    f"【{sender_nick}】踩中【{target}】\n"
+                    f"猜了 {guesses} 轮，惩罚是：\n{p}"
                 )
             elif val < target:
                 game["low"] = val
-                return True, f"📉 安全！缩小安全范围至：【{val} ~ {high}】"
+                return True, f"安全，范围缩到【{val} ~ {high}】"
             else:
                 game["high"] = val
-                return True, f"📈 安全！缩小安全范围至：【{low} ~ {val}】"
+                return True, f"安全，范围缩到【{low} ~ {val}】"
 
     return False, None
