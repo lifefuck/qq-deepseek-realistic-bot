@@ -1262,6 +1262,15 @@ group_send_locks: Dict[int, asyncio.Lock] = collections.defaultdict(asyncio.Lock
 
 
 # ==================== 群通知与状态事件处理 ====================
+async def poke_back(ws: aiohttp.ClientWebSocketResponse, group_id: int, user_id: int) -> None:
+    """回戳发起来源。失败只记 warning，不影响后续回复"""
+    try:
+        poke_res = await call_action(ws, "group_poke", {"group_id": group_id, "user_id": user_id}, timeout=3.0)
+        logger.info("[群 %d] 回戳用户 %s 完成: %s", group_id, user_id, poke_res)
+    except Exception as e:
+        logger.warning("[群 %d] 回戳用户 %s 失败: %s", group_id, user_id, e)
+
+
 async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
     """处理戳一戳、群禁言、退群解散等系统通知事件"""
     notice_type = event.get("notice_type") or event.get("post_type")
@@ -1336,6 +1345,9 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
         logger.info("[群 %d] 戳一戳互动已禁用，略过", group_id)
         return
 
+    # 先戳回去再说话：对方戳完的即时反馈就是回戳，别等模型生成完再补一刀
+    await poke_back(ws, group_id, user_id)
+
     # 拟真睡眠作息检查：若正在睡觉被戳
     if is_bot_sleeping(group_id):
         if is_admin:
@@ -1368,14 +1380,6 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
         }
         # 戳一戳也算亲密互动，异步微调好感度
         asyncio.create_task(update_user_memory_async(user_id, nick, "戳了戳小鲸鱼", group_id=group_id))
-
-    # 戳回去！调用 OneBot 11 group_poke 动作回戳对方
-    try:
-        await asyncio.sleep(0.3)
-        poke_res = await call_action(ws, "group_poke", {"group_id": group_id, "user_id": user_id}, timeout=3.0)
-        logger.info("[群 %d] 傲娇回戳用户 %s 完成: %s", group_id, user_id, poke_res)
-    except Exception as e:
-        logger.warning("[群 %d] 回戳用户 %s 失败: %s", group_id, user_id, e)
 
 # ==================== 管理员私聊处理 ====================
 
