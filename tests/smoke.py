@@ -100,6 +100,7 @@ async def main():
     check("表情该留时留着", bot.thin_emoji("行 👉", keep_ratio=1) == "行 👉")
     check("放行也只留一个", bot.thin_emoji("笑死 😂 这人 🤣", keep_ratio=1) == "笑死 😂 这人")
     check("组合表情能整体识别", bot.thin_emoji("晕了 😵‍💫", keep_ratio=0) == "晕了")
+    check("梗组合不被拆开", bot.thin_emoji("懂了 🤓👆 这波", keep_ratio=1) == "懂了 🤓👆 这波")
 
     # 7. 仪表盘状态能取
     status = bot.get_bot_dashboard_status()
