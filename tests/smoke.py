@@ -227,6 +227,15 @@ async def main():
     check("纯括号旁白被丢弃", safety_guard.strip_internal_monologue("（保持简洁自然，不用特意打招呼或回忆过往）") == "")
     check("正常括号内容保留", safety_guard.strip_internal_monologue("（笑）行吧") != "")
 
+    # 🤓👆 连着来就是口头禅，第二次要剥掉
+    from services.messaging import _limit_combo
+    key = 990001
+    bot.recent_bot_replies[key].clear()
+    first = _limit_combo("懂了 🤓👆", key)
+    bot.recent_bot_replies[key].append(first)
+    second = _limit_combo("这波 🤓👆", key)
+    check("🤓👆 不连着出", "🤓👆" in first and "🤓👆" not in second)
+
     print()
     if FAILED:
         print("失败项:", ", ".join(FAILED))
