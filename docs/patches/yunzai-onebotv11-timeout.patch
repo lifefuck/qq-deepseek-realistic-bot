@@ -1,0 +1,30 @@
+diff --git a/plugins/adapter/OneBotv11.js b/plugins/adapter/OneBotv11.js
+index 8f3f8d4..e5b6511 100644
+--- a/plugins/adapter/OneBotv11.js
++++ b/plugins/adapter/OneBotv11.js
+@@ -1077,8 +1077,10 @@ Bot.adapter.push(
+ 
+       if (
+         (data.bot.cookies["qun.qq.com"] = (
+-          await data.bot.sendApi("get_cookies", { domain: "qun.qq.com" }).catch(i => i.error)
+-        ).cookies)
++          // NapCat 拿不到 qun.qq.com 的 cookies 时这里会返回 error 字符串，
++          // 直接 .cookies 会抛 TypeError 并触发断线重连，这里兜成空对象
++          await data.bot.sendApi("get_cookies", { domain: "qun.qq.com" }).catch(() => ({}))
++        )?.cookies)
+       )
+         for (const i of [
+           "aq",
+@@ -1104,9 +1106,10 @@ Bot.adapter.push(
+           data.bot.cookies[domain] = await data.bot
+             .sendApi("get_cookies", { domain })
+             .then(i => i.cookies)
+-            .catch(i => i.error)
++            .catch(() => undefined)
+         }
+-      data.bot.bkn = (await data.bot.sendApi("get_csrf_token").catch(i => i.error)).token
++      // 同样的问题：get_csrf_token 超时会返回 error 字符串，取 .token 会崩
++      data.bot.bkn = (await data.bot.sendApi("get_csrf_token").catch(() => ({})))?.token
+ 
+       data.bot.getFriendMap()
+       data.bot.getGroupMemberMap()

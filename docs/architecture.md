@@ -72,6 +72,13 @@
 - 带指令前缀的消息全让给云崽，AI 保持静默。
 - 群友问「怎么查」「怎么绑定」时才把指令清单拼到消息末尾，平时这两千多字符不出现。
 
+云崽本体是 Gitee 上的第三方项目，不往这个仓库搬。本地做过的改动只有两处，都记在这：
+
+1. **适配器超时补丁**：`plugins/adapter/OneBotv11.js` 里 `get_cookies`、`get_csrf_token` 失败时返回的是 error 字符串，代码直接取 `.cookies` / `.token` 会抛 TypeError，接着就是断线重连。补丁在 `docs/patches/yunzai-onebotv11-timeout.patch`，用 `git apply` 打。
+2. **停用的插件文件**：外部接口失效或上游本身就是坏的文件，统一挪到 `trss-yunzai/disabled-backup/<插件名>/`，没有放进 `plugins/` 子目录（加载器会递归扫，放子目录照样报错）。恢复时挪回去再重启，并同步 `prompts.py` 里的指令清单。
+
+停用清单和原因见 `trss-yunzai-plugin-ops` 技能，不在这里重复。
+
 ## Token 花在哪
 
 改造前后各测过一次：
