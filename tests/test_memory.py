@@ -147,7 +147,7 @@ class TestTopicPool(unittest.TestCase):
         self.assertEqual(self.mgr.get_recent_topics_prompt(exclude_group_id=999), "")
 
     def test_cq_code_stripped(self):
-        self.mgr.record_topic(111, "群友", "[CQ:at,qq=168188902] 小说太狠了真看哭了")
+        self.mgr.record_topic(111, "群友", "[CQ:at,qq=1000000001] 小说太狠了真看哭了")
         content = self.mgr.topics[-1]["content"]
         self.assertNotIn("CQ:", content)
 
