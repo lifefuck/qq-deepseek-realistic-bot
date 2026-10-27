@@ -208,7 +208,7 @@ class MemeManager:
                     cut = min([i for i in (desc.find("。"), desc.find("；")) if i > 15] or [50])
                     desc = desc[:cut]
                 match_parts.append(f"{m['name']}（{desc}）" if desc else m['name'])
-            lines.append(f"- 群友提到/上下文相关梗（顺着梗玩或精准反弹）: {'; '.join(match_parts)}")
+            lines.append(f"- 群友提到/上下文相关梗（仅当群友正文明确在玩梗时顺水推舟接梗，严禁仅因群友昵称/名片包含某些字词而强行硬套尬聊）: {'; '.join(match_parts)}")
 
         # 提取当前 100 个词（去重已命中的）
         pool_words = []

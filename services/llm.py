@@ -217,21 +217,24 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"6. 严禁催问式空话（「你倒是把问题问出来」「刚问啥了」这种），宁可 [PASS] 也别拿废话占屏："
         )
 
+    # 提取时间线中的纯正文内容，剔除发言者昵称前缀，防止奇葩昵称（如带有'疯狂星期四'）污染热梗与联网检索
+    timeline_pure_content = bot.extract_dialogue_content(timeline_text)
+
     # 联网检索增强：当对话涉及最新时效词或求证网络热梗且群开启搜索时，自动注入轻量网页搜索上下文
     web_search_context = ""
     cfg = bot.get_group_config(group_id)
     if cfg.get("enable_search", True) and bot.http_session:
         time_keywords = ("今天", "最新", "热搜", "发布会", "刚刚", "最近发生", "发生什么事", "有什么新闻")
         meme_keywords = ("什么梗", "啥梗", "什么意思", "啥意思", "指什么", "代表什么", "怎么来的", "是什么梗", "是谁啊", "何意啊", "谁懂", "绝了", "抽象", "绷不住", "救命")
-        is_time_search = any(kw in timeline_text for kw in time_keywords)
-        is_meme_search = any(kw in timeline_text for kw in meme_keywords)
+        is_time_search = any(kw in timeline_pure_content for kw in time_keywords)
+        is_meme_search = any(kw in timeline_pure_content for kw in meme_keywords)
         
         # 智能探测：当发言很短（10字以内）、不是普通问候/闲聊、且没有命中本地任何已知梗词时，做一次静默热梗探测
         is_unknown_potential_meme = False
-        last_clean = re.sub(r'\[CQ:[^\]]+\]', '', timeline_text.split('\n')[-1]).strip()
+        last_clean = re.sub(r'\[CQ:[^\]]+\]', '', timeline_pure_content.split('\n')[-1] if timeline_pure_content else "").strip()
         # 排除常见基础寒暄
         common_greetings = ("你好", "在吗", "早安", "晚安", "在干嘛", "早上好", "晚上好", "嗨", "哈喽", "谢谢", "好的")
-        local_has_meme = bool(bot.meme_manager.get_prompt_snippet(timeline_text))
+        local_has_meme = bool(bot.meme_manager.get_prompt_snippet(timeline_pure_content))
         if not local_has_meme and 3 <= len(last_clean) <= 12 and not any(g in last_clean for g in common_greetings):
             # 包含游戏、特定名词结构或口头禅特征
             if any(c in last_clean for c in ("瓦", "桥", "哥", "姐", "酱", "牢", "神", "王", "圣", "急", "典", "乐", "批", "门")):
@@ -240,18 +243,18 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         query_str = ""
         if is_meme_search:
             # 针对问梗场景提取核心词：如「疯狂星期四是什么梗」->「疯狂星期四 梗」
-            m_m = re.search(r'([^，。？！\n\s]{2,15}?)(?:是什么梗|啥梗|什么梗|是什么意思|啥意思|指什么|是啥意思)', timeline_text)
+            m_m = re.search(r'([^，。？！\n\s]{2,15}?)(?:是什么梗|啥梗|什么梗|是什么意思|啥意思|指什么|是啥意思)', timeline_pure_content)
             if m_m:
                 query_str = f"{m_m.group(1).strip()} 梗"
             else:
-                m_q = re.search(r'([^，。？！\n]{2,15})', timeline_text[-25:])
+                m_q = re.search(r'([^，。？！\n]{2,15})', timeline_pure_content[-25:])
                 query_str = f"{m_q.group(1).strip()} 梗" if m_q else ""
         elif is_unknown_potential_meme:
             # 未知疑似抽象/游戏梗探测
             query_str = f"{last_clean} 梗 为什么"
         elif is_time_search:
-            m_q = re.search(r'(?:今天|最新|刚刚|查查|搜搜|看下)?\s*([^，。？！\n]{3,20})', timeline_text)
-            query_str = m_q.group(1).strip() if m_q else timeline_text[-20:].strip()
+            m_q = re.search(r'(?:今天|最新|刚刚|查查|搜搜|看下)?\s*([^，。？！\n]{3,20})', timeline_pure_content)
+            query_str = m_q.group(1).strip() if m_q else timeline_pure_content[-20:].strip()
             
         if query_str:
             search_res = await connectors.search_web_brief(bot.http_session, query_str, limit=2)
@@ -266,8 +269,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
     # 随消息变化的上下文，统一挂在 user 消息末尾
     dynamic_context = ""
     if not is_root_work:
-        # 注入动态网络热词轮换池（100条/30分钟轮换）与群友命中梗
-        memes_context = bot.meme_manager.get_prompt_snippet(timeline_text)
+        # 注入动态网络热词轮换池（100条/30分钟轮换）与群友命中梗（使用纯正文匹配，避免被昵称带偏）
+        memes_context = bot.meme_manager.get_prompt_snippet(timeline_pure_content)
         if memes_context:
             dynamic_context += f"\n{memes_context}\n"
         # 本群最近说过的话回喂给模型，光靠代码削句子治不了「换个说法还是同一个梗」
@@ -276,11 +279,11 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             if repeat_hint:
                 dynamic_context += f"\n{repeat_hint}\n"
         # 面板指令两千多字符，只有真在问用法时才带，平时一个字都不发
-        if bot.needs_games_kb(timeline_text):
+        if bot.needs_games_kb(timeline_pure_content):
             dynamic_context += f"\n【云崽指令清单（群友在问用法，按这个答）】：\n{bot.GAMES_KB}\n"
     # 群文件上下文增强（当群友询问群文件时，仅拉取文件列表标题与元信息，不读文件正文）
     group_files_context = ""
-    if group_id and bot.current_ws and any(kw in timeline_text for kw in ("群文件", "文件列表", "群里有没有", "群里发过", "发群文件", "找文件")):
+    if group_id and bot.current_ws and any(kw in timeline_pure_content for kw in ("群文件", "文件列表", "群里有没有", "群里发过", "发群文件", "找文件")):
         files_summary = await bot.get_group_files_brief(bot.current_ws, group_id)
         if files_summary:
             group_files_context = f"\n【本群文件列表（仅供参考文件名与上传人，未读取文件正文）】：\n{files_summary}\n"

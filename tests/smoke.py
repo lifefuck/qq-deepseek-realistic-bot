@@ -79,6 +79,12 @@ async def main():
     check("问面板要注入", prompts.needs_games_kb("原神怎么绑定uid"))
     check("只提游戏名不注入", not prompts.needs_games_kb("原神真好玩"))
 
+    # 4.1 昵称清洗：避免奇葩昵称（如带疯狂星期四）污染梗匹配
+    dummy_timeline = "[管理员] life: 哈哈\n疯狂星期四V我50: 晚饭吃什么\n张三：今晚打瓦吗"
+    cleaned_content = bot.extract_dialogue_content(dummy_timeline)
+    check("清洗后不包含疯狂星期四昵称", "疯狂星期四" not in cleaned_content)
+    check("清洗后保留真实发言正文", "晚饭吃什么" in cleaned_content and "今晚打瓦吗" in cleaned_content)
+
     # 5. 发送链路：标签要剥掉，图要发出去
     calls.clear()
     sent = await bot.send_segmented_group_message(FakeWS(), 123456789, "笑死，这也太抽象了 [MEME:嘲讽]")
