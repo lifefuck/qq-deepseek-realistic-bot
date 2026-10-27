@@ -37,6 +37,7 @@ from prompts import (SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT, GAMES_KB, needs_games_kb
 import meme_catalog
 import safety_guard
 import cross_interaction
+import memory_atoms
 from services import trace
 from services.messaging import (send_group_message, send_segmented_group_message,
                               send_private_message, send_meme_message, thin_emoji,
@@ -363,6 +364,20 @@ def load_user_memories():
                 else:
                     user_memories = raw_data
             total_users = sum(len(users) for users in user_memories.values() if isinstance(users, dict))
+            # 老档案的 notes 是字符串列表，进内存前统一拆成原子（拆串/去重/补等级），
+            # 不然第一轮注入就会因为类型不对炸掉
+            cleaned = 0
+            for scope in user_memories.values():
+                if not isinstance(scope, dict):
+                    continue
+                for mem in scope.values():
+                    if not isinstance(mem, dict) or "notes" not in mem:
+                        continue
+                    before = len(mem["notes"]) if isinstance(mem["notes"], list) else 0
+                    mem["notes"] = memory_atoms.migrate(mem.get("notes"))
+                    cleaned += max(0, before - len(mem["notes"]))
+            if cleaned:
+                logger.info("记忆原子化完成，合并/拆分了 %d 条重复印象", cleaned)
             logger.info("已成功加载按群隔离记忆库，共 %d 个分区，%d 位群友档案！", len(user_memories), total_users)
         except Exception as e:
             logger.error("加载群友记忆库失败: %s", e)
@@ -395,13 +410,13 @@ def get_or_create_user_memory(user_id: int, nickname: str = "", group_id: Option
             "nickname": "life" if is_admin_user else (nickname or str(user_id)),
             "favor": 80 if is_admin_user else 50,  # 主人默认高好感基准，群友初始为 50 基准
             "traits": "主人兼创造者" if is_admin_user else "普通群友",
-            "notes": ["专属主人兼创造者 life"] if is_admin_user else [],
+            "notes": memory_atoms.migrate(["专属主人兼创造者 life"]) if is_admin_user else [],
             "updated_at": time.time()
         }
     if is_admin_user:
         group_scope[uid_str]["nickname"] = "life"
         group_scope[uid_str]["traits"] = "主人兼创造者"
-        group_scope[uid_str]["notes"] = ["专属主人兼创造者 life"]
+        group_scope[uid_str]["notes"] = memory_atoms.migrate(["专属主人兼创造者 life"])
     elif nickname and group_scope[uid_str].get("nickname") != nickname:
         group_scope[uid_str]["nickname"] = nickname
     return group_scope[uid_str]

@@ -200,7 +200,8 @@ def _dedupe_notes(notes) -> str:
     """印象是多轮打分攒的，「爱对线」这种会重复好几遍，显示前按顿号切开去重。"""
     seen, out = set(), []
     for item in notes or []:
-        for part in str(item).replace("，", "、").split("、"):
+        text = item.get("text") if isinstance(item, dict) else item
+        for part in str(text or "").replace("，", "、").split("、"):
             part = part.strip()
             if part and part not in seen:
                 seen.add(part)

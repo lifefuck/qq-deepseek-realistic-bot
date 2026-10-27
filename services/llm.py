@@ -8,6 +8,7 @@ from meme_manager import meme_manager
 import connectors
 import cross_interaction
 import cross_memory
+import memory_atoms
 
 from typing import Optional
 from typing import Tuple
@@ -49,7 +50,13 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         if target_uid == bot.ADMIN_QQ:
             user_mem_prompt = f"【当前交谈者身份】：专属主人兼创造者 life（QQ {bot.ADMIN_QQ}），拥有绝对最高权限与天然极高好感度。\n"
         else:
-            notes_str = "、".join(mem.get("notes", [])) if mem.get("notes") else "初次接触"
+            # 印象按「还剩多少分量 + 有多新」排序取，装进字数预算就停。
+            # 老数据里的字符串会自动拆成原子，不用手动迁移。
+            notes_str, used_notes = memory_atoms.render(mem.get("notes") or [])
+            if used_notes:
+                memory_atoms.mark_used(mem["notes"], used_notes)
+            if not notes_str:
+                notes_str = "初次接触"
             user_mem_prompt = (
                 f"【当前交谈群友信息】：昵称: {mem.get('nickname')}, 好感度: {mem.get('favor')}/100\n"
                 f"【你对他的背景认知（只影响你跟他说话松不松，不要变成台词，比如「你又来挑我刺」「你又叫我大肥鱼」这种指涉他没做过的事，一句都别说）】：{notes_str}\n"
@@ -172,7 +179,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
     user_prompt = bot.sanitize_text(user_prompt + web_search_context + group_files_context)
     # 注入跨群公共话题记忆（仅供认知背景，不破坏当前群独立性）
     if group_id:
-        cross_topics_hint = cross_memory.cross_group_mgr.get_recent_topics_prompt(exclude_group_id=group_id, limit=3)
+        cross_topics_hint = cross_memory.cross_group_mgr.get_recent_topics_prompt(exclude_group_id=group_id, limit=2)
         if cross_topics_hint:
             user_prompt = bot.sanitize_text(user_prompt + cross_topics_hint)
     if dynamic_context:
@@ -371,7 +378,7 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
     if user_id == bot.ADMIN_QQ:
         mem["nickname"] = "life"
         mem["traits"] = "主人兼创造者"
-        mem["notes"] = ["专属主人兼创造者 life"]
+        mem["notes"] = memory_atoms.migrate(["专属主人兼创造者 life"])
         old_favor = mem.get("favor", 80)
         mem["favor"] = max(80, min(100, old_favor + max(0, favor_delta)))
         mem["updated_at"] = time.time()
@@ -382,14 +389,11 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
 
     old_favor = mem.get("favor", 50)
     mem["favor"] = max(0, min(100, old_favor + favor_delta))
-    if new_note and new_note not in mem["notes"]:
-        mem["notes"].append(new_note)
-        # 记忆条目与字符预算自愈引擎 (源自 dsh-companion 协议)：
-        # 当条目超过 6 条或总字符超过 120 字时，自动合并压缩为高密度事实
-        total_chars = sum(len(n) for n in mem["notes"])
-        if len(mem["notes"]) > 6 or total_chars > 120:
-            compact_notes = "；".join(mem["notes"])
-            mem["notes"] = [compact_notes[:100]]  # 截取提炼高密度关键印象，永不超额
+    # 印象：先结清这段时间的衰减，再按语义去重并入。别再拼接截断——
+    # 那会把六条压成一句 100 字的串，既丢信息又把重复项永久固化。
+    notes = memory_atoms.apply_decay(mem.get("notes") or [])
+    notes = memory_atoms.add_note(notes, new_note)
+    mem["notes"] = notes
             
     mem["updated_at"] = time.time()
     logger.info("[好感判定] 群 %s 用户 %s(%s): delta=%+d, impression=%r, 好感度: %d -> %d/100", 
