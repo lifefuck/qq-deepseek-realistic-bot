@@ -1444,7 +1444,15 @@ def get_bot_dashboard_status() -> Dict[str, Any]:
         "token_usage": token_tracker.get_status_summary(),
         "groups": groups_data,
         "configs": group_configs,
-        "memories": user_memories
+        # 前端按 string[] 渲染印象标签，这里把原子摊平成文本，别让面板上蹦出一串 JSON
+        "memories": {
+            scope_key: {
+                uid: {**mem, "notes": [(a.get("text", "") if isinstance(a, dict) else str(a))
+                                       for a in (mem.get("notes") or [])]}
+                for uid, mem in scope.items() if isinstance(mem, dict)
+            }
+            for scope_key, scope in user_memories.items() if isinstance(scope, dict)
+        }
     }
 
 # ==================== 主连接循环 ====================
