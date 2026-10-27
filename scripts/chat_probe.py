@@ -1,6 +1,17 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""修复后复测：真实模型 + 真实流水线，只把 WebSocket 换成捕获器。"""
+"""真人对话回归探针：真实模型 + 真实流水线，只把 WebSocket 换成捕获器。
+
+改了护栏、@ 判定、追问窗口、切段这类影响聊天手感的逻辑后跑一遍，
+看模型在真实链路上的反应，别只靠单元测试下结论。
+
+用法：
+  cd ~/projects/qq-deepseek-bot
+  set -a && . ~/.config/qq-deepseek-bot.env && set +a
+  .venv/bin/python scripts/chat_probe.py
+
+会真调 8~10 次 API；不发群、不写档案（内存层的 save 被顶掉了）。"""
+
 import asyncio
 import logging
 import os
