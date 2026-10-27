@@ -102,7 +102,11 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     vision_desc = None
     session = bot.get_http_session()
     target_img_url = None
-    is_explicit_image_call = is_at or is_reply_to_bot or is_follow_up or bool(re.search(r"(?:什么番|哪部番|谁画的|出处|搜番|搜截图|找番|看图|这图|图里)", raw_message))
+    # 探测追问窗口判断是否需要显式识图
+    user_conv_key = (group_id, sender_id)
+    follow_up_info = bot.user_follow_up_state.get(user_conv_key)
+    has_active_follow_up = bool(follow_up_info and time.time() < follow_up_info.get("expire", 0.0) and follow_up_info.get("remain", 0) > 0)
+    is_explicit_image_call = is_at or is_reply_to_bot or has_active_follow_up or bool(re.search(r"(?:什么番|哪部番|谁画的|出处|搜番|搜截图|找番|看图|这图|图里)", raw_message))
     if m_imgs and is_explicit_image_call:
         target_img_url = m_imgs[0].replace("&amp;", "&")
     elif (is_at or is_reply_to_bot):
@@ -190,6 +194,17 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 规范化指令前缀与小写，兼容全角斜杠与输入法大小写
     norm_cmd = clean_body.replace("／", "/").strip()
     norm_lower = norm_cmd.lower()
+
+    # 异步自动感知与事实抽取流水（DSH 思想：聊天即感知，无需显式唤醒）
+    try:
+        from services.fish_memory import fish_memory_engine
+        fish_memory_engine.record_turn(
+            group_id=str(group_id),
+            person_id=str(sender_id),
+            user_text=clean_body
+        )
+    except Exception as e:
+        bot.logger.debug("群消息自动感知异常: %s", e)
 
     # 公开指令检测: /memory 或 /memary（所有人均可查看好感度与记忆总结）
     if norm_lower.startswith(("/memary", "/memory")):
