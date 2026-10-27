@@ -152,6 +152,7 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
 
         if res and res.get("status") == "ok":
             bot.group_sent_times[group_id].append(time.time())
+            bot.record_group_send_history(group_id)
             logger.info("[群 %d] 消息已送达: %s", group_id, msg_payload[:40])
         else:
             logger.warning("[群 %d] 发送可能失败: %s | 响应: %s", group_id, msg_payload[:40], res)
