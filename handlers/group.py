@@ -531,7 +531,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         try:
             # 缩短至 1.0 秒轻微防抖，接话更迅速不被冲走
             await asyncio.sleep(1.0)
-            await process_group_trigger(ws, target_gid, is_at=False, sender_nick=nick, is_admin=False, is_mention=mention_flag, target_uid=uid, user_text=text_body)
+            is_adm = (uid == bot.ADMIN_QQ)
+            await process_group_trigger(ws, target_gid, is_at=False, sender_nick=nick, is_admin=is_adm, is_mention=mention_flag, target_uid=uid, user_text=text_body)
         except asyncio.CancelledError:
             pass
 
@@ -569,10 +570,11 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         bot.running_tasks.add(current_task)
         
     # 群聊频控检测：滑动 60 秒内最高发 9 条，第 10 条触发 AI 自主告警
-    # 管理员与 root 模式不限频
+    # 仅 root 工作模式下的管理指令汇报豁免限频，普通聊天（包括主人日常闲聊）均统一限频防风控
     is_rate_limit_tenth = False
     extra_instruction = ""
-    if not is_admin:
+    is_exempt = bool(is_admin and bot.get_channel_mode(group_id) == "root")
+    if not is_exempt:
         recent_count = bot.get_group_recent_send_count(group_id)
         if recent_count >= 10:
             bot.logger.info("[群 %d] 滑动 60 秒内已发满 10 条（当前 %d 条），进入硬静默冷却，略过回复", group_id, recent_count)

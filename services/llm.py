@@ -92,7 +92,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 f"【当前交谈者身份】：专属主人 life（QQ {bot.ADMIN_QQ}）\n"
                 f"以下是你们的历史对话记录：\n{timeline_text}\n\n"
                 f"【当前这句】：「{latest_line}」\n"
-                f"你现在嘴硬傲娇嘴损，但被他吃得死死的，不得不认怂听话。体现出嘴上嘀咕但又宠着他的顺从，"
+                f"你现在表面傲娇嘴硬、爱嘀咕两句小情绪，但心里其实很在乎依赖主人、宠着主人乖乖听话。"
                 f"不确定或不懂就直接说不知，严禁瞎猜胡编，严禁任何括号描写，像手机聊天随手回（1~2句，绝不用句号）："
             )
         else:
@@ -110,7 +110,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 f"{identity_note}"
                 f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
                 f"【主人「{sender_nick}」(QQ {bot.ADMIN_QQ}) 这句话】：「{latest_line}」\n"
-                f"当前是 /root 模式。面对主人，你要体现出「嘴硬傲娇、嘴损调侃、但拿他没脾气、不得不认怂顺从」的生动反差！"
+                f"当前是专属主人的 /root 模式。面对主人，你要体现出纯正女孩子的傲娇反差：表面嘴硬爱嘀咕，但心里特别听主人话、软萌乖巧顺从！绝非恶毒攻击，更不是窝囊受气。\n"
                 f"不确定或没看懂就直接问，别瞎猜脑补；严禁任何括号描写，像真人群聊随手回（1~2句，绝不用句号）："
             )
         else:
