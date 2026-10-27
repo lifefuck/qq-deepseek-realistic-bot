@@ -85,15 +85,16 @@ def sanitize_outgoing_text(text: str) -> Tuple[bool, str]:
 
 def strip_internal_monologue(text: str) -> str:
     """
-    剥离大模型回复中意外输出的内心独白与 [PASS] 残留
+    剥离大模型回复中意外输出的内心独白、舞台剧动作括号与 [PASS] 残留
     """
     if not text:
         return ""
     if "[PASS]" in text:
         return ""
-    # 整条就是一个括号旁白：模型爱写「（保持自然，别太热情）」这种表演提示，直接丢
-    if re.fullmatch(r"[\s\*]*[（(][^（）()]{1,60}[）)][\s\*]*", text):
-        return ""
     # 过滤类似 *（思考中...）* 或 （根据人设我需要...）
     cleaned = re.sub(r"[\*（(]\s*(?:根据人设|此时我|思考中|保持沉默|无需回复|内心独白)[^\*）)]*[\*）)]", "", text)
+    # 剥离所有第三人称动作旁白、语C舞台剧括号，如（甩尾巴拍你手）、(缩成一团往你怀里拱)
+    cleaned = re.sub(r"[（\(][^（）\(\)]{1,60}[）\)]", "", cleaned)
+    # 收拾残留的多余空格
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     return cleaned.strip()

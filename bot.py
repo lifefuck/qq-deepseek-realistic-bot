@@ -593,7 +593,8 @@ DEFAULT_GROUP_CONFIG = {
     "enable_poke": True,        # 是否开启戳一戳互动与回戳
     "enable_games": True,       # 是否开启数字炸弹/掷骰子等文字游戏
     "enable_search": True,      # 是否开启联网热点检索 (鸭鸭搜/B站)
-    "enable_bilibili_push": False, # 是否开启定时热门视频推送 (默认关)
+    "enable_link_resolver": True, # 是否开启群友发送网页/短链/视频链接时自动解析标题与内容
+    "enable_bilibili_push": True, # 是否开启热门视频/链接推送与讨论 (默认开启)
     "enable_yunzai": True,      # 是否开启云崽游戏生态 (原神/星铁/米游社)
     "enable_fun": True          # 被 @ 且带图时接一回合斗图
 }
@@ -936,9 +937,13 @@ def clean_cq_codes(text: str) -> str:
     """去除表情、图片、文件等大段 CQ 码，保留纯文本与卡片语义"""
     # 先做卡片语义提取
     text = parse_card_content(text)
-    # 再剥离纯媒体与文件类 CQ 码（包含 file, image, record, video, face, poke 等）
+    # QQ 原生小黄脸表情 [CQ:face,id=xxx] 保留提示
+    text = re.sub(r"\[CQ:face,id=\d+\]", "[表情]", text)
+    # 大表情/商城表情 [CQ:bface,id=xxx] 保留提示
+    text = re.sub(r"\[CQ:bface,[^\]]*\]", "[大表情]", text)
+    # 再剥离纯媒体与文件类 CQ 码（包含 file, image, record, video, poke 等）
     text = re.sub(r"\[CQ:(image|record|video|file|audio)[^\]]*\]", "", text)
-    text = re.sub(r"\[CQ:(face|poke)[^\]]*\]", "", text)
+    text = re.sub(r"\[CQ:poke[^\]]*\]", "", text)
     return text.strip()
 
 def strip_markdown(text: str) -> str:
@@ -1201,7 +1206,11 @@ async def extract_reply_context(ws: aiohttp.ClientWebSocketResponse, event: dict
     if "reply" in event and isinstance(event["reply"], dict):
         reply_obj = event["reply"]
         nick = reply_obj.get("sender", {}).get("nickname") or reply_obj.get("sender", {}).get("card") or "群友"
-        orig_text = clean_cq_codes(reply_obj.get("raw_message") or reply_obj.get("message") or "")
+        orig_raw = reply_obj.get("raw_message") or reply_obj.get("message") or ""
+        # 如果引用的是图片，保留 CQ:image 以便后续视觉模型识别
+        if "[CQ:image" in str(orig_raw):
+            return str(orig_raw)
+        orig_text = clean_cq_codes(orig_raw)
         if orig_text:
             return f'[引用 {nick}: "{orig_text[:50]}"]'
 
@@ -1213,7 +1222,10 @@ async def extract_reply_context(ws: aiohttp.ClientWebSocketResponse, event: dict
         if res and res.get("status") == "ok":
             data = res.get("data", {})
             nick = data.get("sender", {}).get("nickname") or data.get("sender", {}).get("card") or "群友"
-            orig_text = clean_cq_codes(data.get("raw_message") or "")
+            orig_raw = data.get("raw_message") or ""
+            if "[CQ:image" in str(orig_raw):
+                return str(orig_raw)
+            orig_text = clean_cq_codes(orig_raw)
             if orig_text:
                 return f'[引用 {nick}: "{orig_text[:50]}"]'
     return None
@@ -1223,6 +1235,13 @@ async def extract_reply_context(ws: aiohttp.ClientWebSocketResponse, event: dict
 # 全局 HTTP 会话（复用连接池减少延迟）
 http_session: Optional[aiohttp.ClientSession] = None
 current_ws: Optional[aiohttp.ClientWebSocketResponse] = None
+
+def get_http_session() -> aiohttp.ClientSession:
+    """获取或初始化全局 aiohttp.ClientSession"""
+    global http_session
+    if http_session is None or http_session.closed:
+        http_session = aiohttp.ClientSession()
+    return http_session
 
 # ==================== 发送消息 ====================
 def remove_trailing_period(text: str) -> str:

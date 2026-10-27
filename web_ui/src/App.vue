@@ -4,17 +4,39 @@ import {
   MiuixButton,
   MiuixSwitchPreference,
   MiuixSlider,
+  MiuixTabRow,
   MiuixSnackbarHost,
   showSnackbar
 } from 'miuix-vue'
 
-// 鉴权状态
-const isAuthenticated = ref(false)
-const passwordInput = ref('')
-const authChecking = ref(true)
-const loginError = ref('')
-
-// 业务数据
+// ==================== 类型 ====================
+interface UsageBucket {
+  prompt_tokens: number
+  completion_tokens: number
+  total_tokens: number
+  requests: number
+  cost_cny: number
+}
+interface TodayBucket extends UsageBucket { date: string }
+interface PeriodBucket { prompt_tokens: number; completion_tokens: number; total_tokens: number; cost_cny: number }
+interface ModelBucket extends UsageBucket {}
+interface GroupBucket { total_tokens: number; cost_cny: number; requests: number }
+interface RateTier { input: number; output: number }
+interface ModelPrice {
+  name: string
+  provider: string
+  offpeak: RateTier
+  peak: RateTier
+}
+interface TokenUsage {
+  total: UsageBucket
+  periods: { peak: PeriodBucket; offpeak: PeriodBucket }
+  today: TodayBucket
+  by_model: Record<string, ModelBucket>
+  by_group: Record<string, GroupBucket>
+  current_period: 'peak' | 'offpeak'
+  pricing_table: Record<string, ModelPrice>
+}
 interface BotStatus {
   bot: {
     qq: number
@@ -42,20 +64,28 @@ interface BotStatus {
     notes: string[]
     updated_at: number
   }>>
+  token_usage?: TokenUsage
   logs: string[]
 }
 
+// ==================== 鉴权 ====================
+const isAuthenticated = ref(false)
+const passwordInput = ref('')
+const authChecking = ref(true)
+const loginError = ref('')
+
+// ==================== 业务状态 ====================
 const status = ref<BotStatus | null>(null)
 const selectedGroupId = ref<number | null>(null)
+const activeTab = ref(0)
 const showLogs = ref(false)
 const showMemories = ref(false)
 const autoScroll = ref(true)
 const logContainer = ref<HTMLElement | null>(null)
 
-// 当前选中的群
 const currentGroup = computed(() => {
-  if (!status.value?.groups) return null
-  return status.value.groups.find(g => g.group_id === selectedGroupId.value) || status.value.groups[0] || null
+  if (!status.value?.groups?.length) return null
+  return status.value.groups.find(g => g.group_id === selectedGroupId.value) || status.value.groups[0]
 })
 
 const currentConfig = computed(() => {
@@ -63,26 +93,102 @@ const currentConfig = computed(() => {
   return status.value.configs[String(currentGroup.value.group_id)] || currentGroup.value.config || {}
 })
 
-// 滑块本地值与滑动状态解耦（拖动过程中不发请求，松手才提交）
-const localProb = ref(0.35)
+// 开关乐观更新：点了立刻翻，不等接口回来
+const pendingCfg = ref<Record<string, any>>({})
+const cfg = computed(() => ({ ...(currentConfig.value || {}), ...pendingCfg.value }))
+watch(selectedGroupId, () => { pendingCfg.value = {} })
+
+const localProb = ref(0)
 let isSliding = false
 
-watch(currentConfig, (cfg) => {
-  if (!isSliding) {
-    localProb.value = cfg.interject_prob ?? 0.35
-  }
+watch(() => cfg.value.interject_prob, (v) => {
+  if (!isSliding) localProb.value = Number(v ?? 0.35)
 }, { immediate: true })
 
 function onSliderInput(val: number) {
   isSliding = true
-  localProb.value = Number(val.toFixed(2))
+  localProb.value = Math.round(val * 100) / 100
 }
 
 function onSliderCommit() {
-  if (isSliding) {
-    isSliding = false
+  if (!isSliding) return
+  isSliding = false
+  if (Math.abs(localProb.value - Number(cfg.value.interject_prob ?? 0.35)) > 1e-9) {
     saveConfig('interject_prob', localProb.value)
   }
+}
+
+// ==================== 用量数据 ====================
+const usage = computed<TokenUsage | null>(() => status.value?.token_usage || null)
+
+const periodLabel = computed(() => usage.value?.current_period === 'peak' ? '峰时' : '谷时')
+
+const groupNameMap = computed(() => {
+  const m: Record<string, string> = {}
+  for (const g of status.value?.groups || []) m[String(g.group_id)] = g.group_name
+  m['private'] = '私聊'
+  return m
+})
+
+// 模型用量按花费倒序
+const modelRows = computed(() => {
+  const t = usage.value
+  if (!t) return []
+  return Object.entries(t.by_model)
+    .map(([key, v]) => ({
+      key,
+      price: t.pricing_table?.[key] || null,
+      ...v
+    }))
+    .sort((a, b) => b.cost_cny - a.cost_cny)
+})
+
+// 群用量按花费倒序
+const groupRows = computed(() => {
+  const t = usage.value
+  if (!t) return []
+  const rows = Object.entries(t.by_group).map(([gid, v]) => ({
+    gid,
+    name: groupNameMap.value[gid] || gid,
+    ...v
+  }))
+  rows.sort((a, b) => b.cost_cny - a.cost_cny)
+  const max = rows.reduce((m, r) => Math.max(m, r.cost_cny), 0) || 1
+  return rows.map(r => ({ ...r, ratio: Math.max(r.cost_cny / max, 0.02) }))
+})
+
+const peakRatio = computed(() => {
+  const t = usage.value
+  if (!t) return 0
+  const sum = t.periods.peak.total_tokens + t.periods.offpeak.total_tokens
+  return sum > 0 ? t.periods.peak.total_tokens / sum : 0
+})
+
+// ==================== 格式化 ====================
+// 金额格式化：统一保留 2 位小数（不足 0.01 的极小值保留 4 位，普通金额统一 2 位杜绝长短不一）
+function fmtMoney(v: number): string {
+  if (!v || v === 0) return '¥0.00'
+  if (v < 0.01) return '¥' + v.toFixed(4)
+  return '¥' + v.toFixed(2)
+}
+
+function fmtTok(n: number): string {
+  if (!n) return '0'
+  if (n >= 1e6) return (n / 1e6).toFixed(2) + 'M'
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
+  return String(n)
+}
+
+function fmtRate(r?: RateTier): string {
+  if (!r) return '—'
+  return `¥${r.input} / ¥${r.output}`
+}
+
+function fmtUptime(secs: number): string {
+  if (!secs) return '刚刚'
+  const h = Math.floor(secs / 3600)
+  const m = Math.floor((secs % 3600) / 60)
+  return h > 0 ? `${h} 小时 ${m} 分` : `${m} 分钟`
 }
 
 // 选中的群的记忆成员
@@ -98,25 +204,15 @@ const currentMemories = computed(() => {
   })).sort((a, b) => b.favor - a.favor)
 })
 
-// 时间格式化
-function formatUptime(secs: number): string {
-  if (!secs) return '刚刚'
-  const h = Math.floor(secs / 3600)
-  const m = Math.floor((secs % 3600) / 60)
-  return h > 0 ? `${h}小时${m}分` : `${m}分钟`
-}
-
-// 检查鉴权
+// ==================== 请求 ====================
 async function checkAuth() {
   authChecking.value = true
   const params = new URLSearchParams(window.location.search)
   const urlKey = params.get('key') || params.get('token')
-
   if (urlKey) {
     await doLoginWithKey(urlKey)
     return
   }
-
   try {
     const res = await fetch('/api/status')
     if (res.ok) {
@@ -159,7 +255,6 @@ async function doLoginWithKey(key: string) {
   }
 }
 
-// 手动输入密码登录
 async function handleLogin() {
   if (!passwordInput.value.trim()) {
     loginError.value = '请输入管理员密钥'
@@ -168,7 +263,6 @@ async function handleLogin() {
   await doLoginWithKey(passwordInput.value)
 }
 
-// 退出并清除会话
 async function handleLogout() {
   try {
     await fetch('/api/logout', { method: 'POST' })
@@ -180,7 +274,6 @@ async function handleLogout() {
   showSnackbar({ message: '已锁定控制台', duration: 1500 })
 }
 
-// 刷新状态
 async function refreshData() {
   try {
     const res = await fetch('/api/status')
@@ -193,20 +286,16 @@ async function refreshData() {
       if (status.value?.groups?.length && !selectedGroupId.value) {
         selectedGroupId.value = status.value.groups[0].group_id
       }
-      if (autoScroll.value && showLogs.value) {
-        nextTick(scrollToBottom)
-      }
+      if (autoScroll.value && showLogs.value) nextTick(scrollToBottom)
     }
-  } catch (e: any) {
-    showSnackbar({ message: '刷新失败: ' + e.message, duration: 2000 })
-  }
+  } catch {}
 }
 
-// 修改配置项
 async function saveConfig(key: string, value: any) {
   if (!currentGroup.value) return
+  const gid = currentGroup.value.group_id
+  pendingCfg.value[key] = value
   try {
-    const gid = currentGroup.value.group_id
     const res = await fetch('/api/group/config', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -214,287 +303,439 @@ async function saveConfig(key: string, value: any) {
     })
     const data = await res.json()
     if (res.ok && data.status === 'ok') {
-      showSnackbar({ message: '已保存', duration: 1200 })
       if (status.value) {
         const gidStr = String(gid)
-        if (status.value.configs[gidStr]) status.value.configs[gidStr][key] = value
-        if (currentGroup.value.config) currentGroup.value.config[key] = value
+        if (!status.value.configs[gidStr]) status.value.configs[gidStr] = {}
+        status.value.configs[gidStr][key] = value
       }
+      delete pendingCfg.value[key]
     } else {
-      showSnackbar({ message: '保存失败: ' + (data.error || '未知原因'), duration: 2500 })
+      delete pendingCfg.value[key]
+      showSnackbar({ message: '保存失败：' + (data.error || '未知原因'), duration: 2500 })
     }
   } catch (e: any) {
-    showSnackbar({ message: '网络错误: ' + e.message, duration: 2500 })
+    delete pendingCfg.value[key]
+    showSnackbar({ message: '网络错误：' + e.message, duration: 2500 })
   }
 }
 
 function scrollToBottom() {
-  if (logContainer.value) {
-    logContainer.value.scrollTop = logContainer.value.scrollHeight
-  }
+  if (logContainer.value) logContainer.value.scrollTop = logContainer.value.scrollHeight
 }
 
 onMounted(() => {
   checkAuth()
   setInterval(() => {
     if (isAuthenticated.value) refreshData()
-  }, 6000)
+  }, 8000)
 })
 </script>
 
 <template>
-  <div class="miuix-root">
+  <div class="app-root">
     <MiuixSnackbarHost />
 
-    <!-- 1. 加载等待中 -->
-    <div v-if="authChecking" class="loading-wrap">
+    <!-- 加载中 -->
+    <div v-if="authChecking" class="center-screen">
       <div class="spinner"></div>
     </div>
 
-    <!-- 2. 纯净密码锁屏验证界面 -->
-    <div v-else-if="!isAuthenticated" class="auth-wrap">
+    <!-- 锁屏 -->
+    <div v-else-if="!isAuthenticated" class="center-screen">
       <div class="auth-card">
-        <div class="auth-top">
-          <div class="lock-icon"></div>
-          <h2 class="auth-title">大肥鱼控制台</h2>
-          <p class="auth-desc">输入访问密钥解锁管理权限</p>
+        <div class="auth-lock">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+            <rect x="4" y="10.5" width="16" height="10" rx="3" />
+            <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" />
+          </svg>
         </div>
-
-        <div class="auth-form">
-          <input
-            v-model="passwordInput"
-            type="password"
-            placeholder="输入访问密钥"
-            class="auth-input"
-            autofocus
-            @keyup.enter="handleLogin"
-          />
-          <div v-if="loginError" class="auth-err">{{ loginError }}</div>
-          <MiuixButton type="primary" class="auth-btn" @click="handleLogin">
-            解锁控制台
-          </MiuixButton>
-        </div>
+        <div class="auth-title">大肥鱼控制台</div>
+        <div class="auth-desc">输入访问密钥解锁</div>
+        <input
+          v-model="passwordInput"
+          type="password"
+          placeholder="访问密钥"
+          class="auth-input"
+          autofocus
+          @keyup.enter="handleLogin"
+        />
+        <div v-if="loginError" class="auth-error">{{ loginError }}</div>
+        <MiuixButton type="primary" class="auth-submit" @click="handleLogin">解锁</MiuixButton>
       </div>
     </div>
 
-    <!-- 3. 已认证：纯净直观设置列表 -->
-    <div v-else class="main-wrap">
-      <!-- 顶栏 -->
-      <header class="app-bar">
-        <div class="bar-left">
-          <h1 class="bar-title">大肥鱼控制台</h1>
-          <span class="status-dot-badge">
-            <span class="dot"></span>
-            运行 {{ formatUptime(status?.bot.uptime || 0) }}
-          </span>
-          <span v-if="status?.bot.is_sleeping" class="sleep-badge">
-            休眠中
-          </span>
+    <!-- 主界面 -->
+    <div v-else class="page">
+      <header class="top-bar">
+        <div class="top-left">
+          <div class="top-title">大肥鱼控制台</div>
+          <div class="top-meta">
+            <span class="live-dot"></span>
+            <span>运行 {{ fmtUptime(status?.bot.uptime || 0) }}</span>
+            <span v-if="status?.bot.is_sleeping" class="chip chip-warn">休眠中</span>
+            <span class="chip chip-period" :class="usage?.current_period">
+              {{ periodLabel }}计费
+            </span>
+          </div>
         </div>
-
-        <div class="bar-right">
-          <button class="action-btn" @click="refreshData" title="刷新状态">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.19"/></svg>
+        <div class="top-actions">
+          <button class="icon-btn" title="刷新" @click="refreshData">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M20.5 12a8.5 8.5 0 1 1-2.6-6.1" />
+              <path d="M21 3.5V9h-5.5" />
+            </svg>
           </button>
-          <button class="action-btn" @click="handleLogout" title="锁定并退出">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          <button class="icon-btn" title="锁定" @click="handleLogout">
+            <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+              <rect x="4" y="10.5" width="16" height="10" rx="3" />
+              <path d="M8 10.5V7a4 4 0 0 1 8 0v3.5" />
+            </svg>
           </button>
         </div>
       </header>
 
-      <!-- 群聊切换胶囊条 -->
-      <nav class="group-nav-bar">
-        <button
-          v-for="g in status?.groups"
-          :key="g.group_id"
-          class="group-nav-item"
-          :class="{ active: selectedGroupId === g.group_id }"
-          @click="selectedGroupId = g.group_id"
-        >
-          <span class="nav-name">{{ g.group_name }}</span>
-          <span class="nav-id">{{ g.group_id }}</span>
-        </button>
-      </nav>
+      <div class="tab-wrap">
+        <div class="custom-tab-row">
+          <button
+            class="tab-item"
+            :class="{ active: activeTab === 0 }"
+            @click="activeTab = 0"
+          >
+            用量与花费
+          </button>
+          <button
+            class="tab-item"
+            :class="{ active: activeTab === 1 }"
+            @click="activeTab = 1"
+          >
+            群设置
+          </button>
+        </div>
+      </div>
 
-      <!-- 核心控制列表 -->
-      <main v-if="currentGroup" class="content-body">
-        <!-- 分组 1：响应行为 -->
-        <section class="pref-group">
-          <div class="pref-group-title">响应行为</div>
-          <div class="pref-card">
-            <MiuixSwitchPreference
-              title="智能插话"
-              summary="群友热聊时根据气氛与概率主动参与对话"
-              :modelValue="currentConfig.enable_interject ?? true"
-              @update:modelValue="(val: boolean) => saveConfig('enable_interject', val)"
-            />
+      <!-- ==================== 用量与花费 ==================== -->
+      <main v-if="activeTab === 0" class="body">
+        <div v-if="!usage" class="empty-hint">暂无用量数据</div>
 
-            <div class="pref-divider"></div>
-
-            <!-- 滑块专属内嵌区域：左右内边距完整，绝对防溢出 -->
-            <div class="slider-item">
-              <div class="slider-head">
-                <div class="slider-text-wrap">
-                  <div class="slider-title">主动插话概率</div>
-                  <div class="slider-desc">群活跃冷场时动态调节</div>
+        <template v-else>
+          <!-- 总额 -->
+          <section class="block">
+            <div class="block-title">花费总览</div>
+            <div class="card">
+              <div class="row row-spend">
+                <div class="row-main">
+                  <div class="row-label">累计花费</div>
+                  <div class="row-sub">{{ usage.total.requests }} 次调用 · {{ fmtTok(usage.total.total_tokens) }} tokens</div>
                 </div>
-                <div class="slider-badge">
-                  {{ Math.round(localProb * 100) }}%
-                </div>
+                <div class="spend-amount">{{ fmtMoney(usage.total.cost_cny) }}</div>
               </div>
-              <div class="slider-track-wrap">
-                <MiuixSlider
-                  :modelValue="localProb"
-                  :min="0"
-                  :max="1"
-                  :step="0.05"
-                  @update:modelValue="onSliderInput"
-                  @change-end="onSliderCommit"
-                  @pointerup="onSliderCommit"
-                  @touchend="onSliderCommit"
-                />
+              <div class="divider"></div>
+              <div class="row">
+                <div class="row-main"><div class="row-label">今日花费</div></div>
+                <div class="row-value">{{ fmtMoney(usage.today.cost_cny) }}</div>
+              </div>
+              <div class="divider"></div>
+              <div class="row">
+                <div class="row-main"><div class="row-label">今日调用</div></div>
+                <div class="row-value">{{ usage.today.requests }} 次 · {{ fmtTok(usage.today.total_tokens) }}</div>
+              </div>
+              <div class="divider"></div>
+              <div class="row">
+                <div class="row-main">
+                  <div class="row-label">输入 / 输出</div>
+                  <div class="row-sub">累计 token 结构</div>
+                </div>
+                <div class="row-value">{{ fmtTok(usage.total.prompt_tokens) }} / {{ fmtTok(usage.total.completion_tokens) }}</div>
               </div>
             </div>
+          </section>
 
-            <div class="pref-divider"></div>
-
-            <MiuixSwitchPreference
-              title="完整猫娘人设模式"
-              summary="启用深度人设、好感度判定与个性化语气回复"
-              :modelValue="currentConfig.mode === 'user'"
-              @update:modelValue="(val: boolean) => saveConfig('mode', val ? 'user' : 'default')"
-            />
-          </div>
-        </section>
-
-        <!-- 分组 2：功能与交互开关 -->
-        <section class="pref-group">
-          <div class="pref-group-title">功能与交互</div>
-          <div class="pref-card">
-            <MiuixSwitchPreference
-              title="遵循夜间作息"
-              summary="凌晨时段进入睡眠状态，避免深夜惊扰群友"
-              :modelValue="currentConfig.enable_sleep ?? true"
-              @update:modelValue="(val: boolean) => saveConfig('enable_sleep', val)"
-            />
-            <div class="pref-divider"></div>
-
-            <MiuixSwitchPreference
-              title="戳一戳互动"
-              summary="被群友戳一戳时做出表情立绘与动态文字反馈"
-              :modelValue="currentConfig.enable_poke ?? true"
-              @update:modelValue="(val: boolean) => saveConfig('enable_poke', val)"
-            />
-            <div class="pref-divider"></div>
-
-            <MiuixSwitchPreference
-              title="互动小游戏"
-              summary="支持钓鱼、猜数字、角色抽卡与好感度试炼指令"
-              :modelValue="currentConfig.enable_games ?? true"
-              @update:modelValue="(val: boolean) => saveConfig('enable_games', val)"
-            />
-            <div class="pref-divider"></div>
-
-            <MiuixSwitchPreference
-              title="云崽/喵喵插件指令让路"
-              summary="自动识别游戏查询指令，防止 AI 抢答与冲突"
-              :modelValue="currentConfig.enable_yunzai ?? true"
-              @update:modelValue="(val: boolean) => saveConfig('enable_yunzai', val)"
-            />
-          </div>
-        </section>
-
-        <!-- 分组 3：本群群友记忆 (点击展开收起) -->
-        <section class="pref-group">
-          <div class="pref-group-title header-clickable" @click="showMemories = !showMemories">
-            <span>本群群友档案 ({{ currentMemories.length }})</span>
-            <span class="fold-arrow">{{ showMemories ? '收起 ▲' : '展开 ▼' }}</span>
-          </div>
-
-          <div v-if="showMemories" class="pref-card memories-box">
-            <div v-if="currentMemories.length === 0" class="empty-hint">
-              本群暂未建立群友记忆档案
+          <!-- 峰谷 -->
+          <section class="block">
+            <div class="block-title">
+              峰谷计费分布
+              <span class="block-note">当前按{{ periodLabel }}单价计费</span>
             </div>
-            <div v-else class="memory-list">
-              <div v-for="user in currentMemories" :key="user.qq" class="memory-item">
-                <div class="mem-row-top">
-                  <div class="mem-user-info">
-                    <span class="mem-name">{{ user.nickname }}</span>
-                    <span class="mem-qq">({{ user.qq }})</span>
-                    <span v-if="user.traits" class="mem-tag">{{ user.traits }}</span>
-                  </div>
-                  <div class="mem-favor-tag" :class="user.favor >= 80 ? 'high' : 'normal'">
-                    好感 {{ user.favor }}
-                  </div>
+            <div class="card">
+              <div class="split-bar">
+                <div class="split-peak" :style="{ width: (peakRatio * 100) + '%' }"></div>
+              </div>
+              <div class="split-legend">
+                <div class="legend-item">
+                  <span class="legend-dot peak"></span>
+                  <span class="legend-name">峰时</span>
+                  <span class="legend-val">{{ fmtMoney(usage.periods.peak.cost_cny) }}</span>
                 </div>
+                <div class="legend-item">
+                  <span class="legend-dot offpeak"></span>
+                  <span class="legend-name">谷时</span>
+                  <span class="legend-val">{{ fmtMoney(usage.periods.offpeak.cost_cny) }}</span>
+                </div>
+              </div>
+              <div class="divider"></div>
+              <div class="row">
+                <div class="row-main"><div class="row-label">峰时</div></div>
+                <div class="row-value">{{ fmtTok(usage.periods.peak.total_tokens) }} tokens</div>
+              </div>
+              <div class="divider"></div>
+              <div class="row">
+                <div class="row-main"><div class="row-label">谷时</div></div>
+                <div class="row-value">{{ fmtTok(usage.periods.offpeak.total_tokens) }} tokens</div>
+              </div>
+            </div>
+          </section>
 
+          <!-- 模型 -->
+          <section class="block">
+            <div class="block-title">模型明细</div>
+            <div class="card">
+              <div v-for="(m, idx) in modelRows" :key="m.key" class="model-item">
+                <div v-if="idx > 0" class="divider"></div>
+                <div class="model-head">
+                  <div class="model-name-wrap">
+                    <div class="model-name">{{ m.price?.name || m.key }}</div>
+                    <div class="model-provider">{{ m.price?.provider || '未收录单价' }}</div>
+                  </div>
+                  <div class="model-cost">{{ fmtMoney(m.cost_cny) }}</div>
+                </div>
+                <div class="model-stats">
+                  <span class="stat-pill">{{ m.requests }} 次</span>
+                  <span class="stat-pill">{{ fmtTok(m.total_tokens) }} tokens</span>
+                  <span class="stat-pill">{{ fmtTok(m.prompt_tokens) }} 入 / {{ fmtTok(m.completion_tokens) }} 出</span>
+                </div>
+                <div v-if="m.price" class="model-rates">
+                  <div class="rate-pairs">
+                    <div class="rate-line">
+                      <span class="rate-tag" :class="{ active: usage.current_period === 'offpeak' }">谷</span>
+                      <span class="rate-text">{{ fmtRate(m.price.offpeak) }}</span>
+                    </div>
+                    <div class="rate-line">
+                      <span class="rate-tag peak" :class="{ active: usage.current_period === 'peak' }">峰</span>
+                      <span class="rate-text">{{ fmtRate(m.price.peak) }}</span>
+                    </div>
+                  </div>
+                  <div class="rate-unit">元/百万 token（入/出）</div>
+                </div>
+              </div>
+              <div v-if="modelRows.length === 0" class="empty-hint">还没有模型调用记录</div>
+            </div>
+          </section>
+
+          <!-- 群用量 -->
+          <section class="block">
+            <div class="block-title">各群花费排行</div>
+            <div class="card">
+              <div v-for="(g, idx) in groupRows" :key="g.gid" class="group-usage-item">
+                <div v-if="idx > 0" class="divider"></div>
+                <div class="gu-head">
+                  <div class="gu-name">{{ g.name }}</div>
+                  <div class="gu-cost">{{ fmtMoney(g.cost_cny) }}</div>
+                </div>
+                <div class="gu-track">
+                  <div class="gu-bar" :style="{ width: (g.ratio * 100) + '%' }"></div>
+                </div>
+                <div class="gu-meta">{{ g.requests }} 次 · {{ fmtTok(g.total_tokens) }} tokens</div>
+              </div>
+              <div v-if="groupRows.length === 0" class="empty-hint">还没有群聊调用记录</div>
+            </div>
+          </section>
+        </template>
+      </main>
+
+      <!-- ==================== 群设置 ==================== -->
+      <main v-else class="body">
+        <div class="group-nav">
+          <button
+            v-for="g in status?.groups"
+            :key="g.group_id"
+            class="nav-pill"
+            :class="{ active: selectedGroupId === g.group_id }"
+            @click="selectedGroupId = g.group_id"
+          >
+            <span class="nav-pill-name">{{ g.group_name }}</span>
+            <span class="nav-pill-id">{{ g.group_id }}</span>
+          </button>
+        </div>
+
+        <template v-if="currentGroup">
+          <section class="block">
+            <div class="block-title">响应行为</div>
+            <div class="card">
+              <MiuixSwitchPreference
+                title="智能插话"
+                summary="群友热聊时按气氛与概率主动参与"
+                :modelValue="cfg.enable_interject ?? true"
+                @update:modelValue="(v: boolean) => saveConfig('enable_interject', v)"
+              />
+              <div class="divider"></div>
+
+              <div class="slider-block">
+                <div class="slider-head">
+                  <div class="slider-text">
+                    <div class="row-label">主动插话概率</div>
+                    <div class="row-sub">群活跃冷场时动态调节</div>
+                  </div>
+                  <div class="slider-value">{{ Math.round(localProb * 100) }}%</div>
+                </div>
+                <div class="slider-track">
+                  <MiuixSlider
+                    :modelValue="localProb"
+                    :min="0"
+                    :max="1"
+                    :step="0.05"
+                    @update:modelValue="onSliderInput"
+                    @change-end="onSliderCommit"
+                    @pointerup="onSliderCommit"
+                    @touchend="onSliderCommit"
+                  />
+                </div>
+              </div>
+
+              <div class="divider"></div>
+              <MiuixSwitchPreference
+                title="完整猫娘人设"
+                summary="深度人设、好感度判定与个性化语气"
+                :modelValue="cfg.mode === 'user'"
+                @update:modelValue="(v: boolean) => saveConfig('mode', v ? 'user' : 'default')"
+              />
+            </div>
+          </section>
+
+          <section class="block">
+            <div class="block-title">功能开关</div>
+            <div class="card">
+              <MiuixSwitchPreference
+                title="夜间作息"
+                summary="凌晨时段进入睡眠，不惊扰群友"
+                :modelValue="cfg.enable_sleep ?? true"
+                @update:modelValue="(v: boolean) => saveConfig('enable_sleep', v)"
+              />
+              <div class="divider"></div>
+              <MiuixSwitchPreference
+                title="戳一戳互动"
+                summary="被戳时做出表情与文字反馈"
+                :modelValue="cfg.enable_poke ?? true"
+                @update:modelValue="(v: boolean) => saveConfig('enable_poke', v)"
+              />
+              <div class="divider"></div>
+              <MiuixSwitchPreference
+                title="互动小游戏"
+                summary="钓鱼、猜数字、抽卡与好感试炼"
+                :modelValue="cfg.enable_games ?? true"
+                @update:modelValue="(v: boolean) => saveConfig('enable_games', v)"
+              />
+              <div class="divider"></div>
+              <MiuixSwitchPreference
+                title="插件指令让路"
+                summary="识别游戏查询指令，避免 AI 抢答"
+                :modelValue="cfg.enable_yunzai ?? true"
+                @update:modelValue="(v: boolean) => saveConfig('enable_yunzai', v)"
+              />
+              <div class="divider"></div>
+              <MiuixSwitchPreference
+                title="联网搜索"
+                summary="需要实时信息时主动搜索"
+                :modelValue="cfg.enable_search ?? true"
+                @update:modelValue="(v: boolean) => saveConfig('enable_search', v)"
+              />
+              <div class="divider"></div>
+              <MiuixSwitchPreference
+                title="B 站推送"
+                summary="群友发链接时抓取内容参与讨论"
+                :modelValue="cfg.enable_bilibili_push ?? false"
+                @update:modelValue="(v: boolean) => saveConfig('enable_bilibili_push', v)"
+              />
+              <div class="divider"></div>
+              <MiuixSwitchPreference
+                title="整活模式"
+                summary="允许梗图、玩梗与更放飞的发言"
+                :modelValue="cfg.enable_fun ?? true"
+                @update:modelValue="(v: boolean) => saveConfig('enable_fun', v)"
+              />
+              <div class="divider"></div>
+              <MiuixSwitchPreference
+                title="本群静默"
+                summary="只读不发言，随时可恢复"
+                :modelValue="cfg.muted ?? false"
+                @update:modelValue="(v: boolean) => saveConfig('muted', v)"
+              />
+            </div>
+          </section>
+
+          <section class="block">
+            <div class="block-title clickable" @click="showMemories = !showMemories">
+              <span>本群群友档案 · {{ currentMemories.length }}</span>
+              <span class="fold">{{ showMemories ? '收起' : '展开' }}</span>
+            </div>
+            <div v-if="showMemories" class="card card-pad">
+              <div v-if="currentMemories.length === 0" class="empty-hint">本群还没有群友档案</div>
+              <div v-for="(u, i) in currentMemories" :key="u.qq" class="mem-item" :class="{ 'not-first': i > 0 }">
+                <div class="mem-top">
+                  <div class="mem-id">
+                    <span class="mem-name">{{ u.nickname }}</span>
+                    <span class="mem-qq">{{ u.qq }}</span>
+                    <span v-if="u.traits" class="mem-trait">{{ u.traits }}</span>
+                  </div>
+                  <div class="mem-favor" :class="{ high: u.favor >= 80 }">{{ u.favor }}</div>
+                </div>
                 <div class="favor-track">
-                  <div
-                    class="favor-bar"
-                    :class="user.favor >= 80 ? 'high' : 'normal'"
-                    :style="{ width: `${Math.min(100, Math.max(0, user.favor))}%` }"
-                  ></div>
+                  <div class="favor-bar" :class="{ high: u.favor >= 80 }" :style="{ width: Math.min(100, Math.max(0, u.favor)) + '%' }"></div>
                 </div>
-
-                <div v-if="user.notes && user.notes.length > 0" class="mem-notes">
-                  <span v-for="(n, i) in user.notes.slice(0, 4)" :key="i" class="note-pill">
-                    {{ n }}
-                  </span>
+                <div v-if="u.notes.length" class="mem-notes">
+                  <span v-for="(n, ni) in u.notes.slice(0, 3)" :key="ni" class="note-pill">{{ n }}</span>
                 </div>
               </div>
             </div>
-          </div>
-        </section>
+          </section>
 
-        <!-- 分组 4：实时日志 (点击展开收起) -->
-        <section class="pref-group">
-          <div class="pref-group-title header-clickable" @click="showLogs = !showLogs">
-            <span>实时运行日志</span>
-            <span class="fold-arrow">{{ showLogs ? '收起 ▲' : '展开 ▼' }}</span>
-          </div>
-
-          <div v-if="showLogs" class="pref-card log-card">
-            <div class="log-bar">
-              <label class="auto-scroll-check">
-                <input type="checkbox" v-model="autoScroll" />
-                <span>自动置底</span>
-              </label>
-              <button class="mini-btn" @click="refreshData">刷新</button>
+          <section class="block">
+            <div class="block-title clickable" @click="showLogs = !showLogs">
+              <span>运行日志</span>
+              <span class="fold">{{ showLogs ? '收起' : '展开' }}</span>
             </div>
-            <div class="log-view" ref="logContainer">
-              <div v-for="(line, idx) in status?.logs || []" :key="idx" class="log-line">
-                {{ line }}
+            <div v-if="showLogs" class="card log-card">
+              <div class="log-bar">
+                <label class="log-check">
+                  <input type="checkbox" v-model="autoScroll" />
+                  <span>自动置底</span>
+                </label>
+                <button class="mini-btn" @click="refreshData">刷新</button>
+              </div>
+              <div class="log-view" ref="logContainer">
+                <div v-for="(line, idx) in status?.logs || []" :key="idx" class="log-line">{{ line }}</div>
               </div>
             </div>
-          </div>
-        </section>
+          </section>
+        </template>
       </main>
     </div>
   </div>
 </template>
 
 <style scoped>
-/* 根视窗 */
-.miuix-root {
+/* ============ 基础 ============ */
+.app-root {
   min-height: 100vh;
-  background-color: #f6f7f9;
-  color: #1a1a1a;
+  background: #f5f6f7;
+  color: #131313;
   display: flex;
   justify-content: center;
 }
 
-.loading-wrap {
+.center-screen {
   display: flex;
   align-items: center;
   justify-content: center;
-  height: 80vh;
+  width: 100%;
+  min-height: 100vh;
+  padding: 20px;
 }
 
 .spinner {
-  width: 32px;
-  height: 32px;
-  border: 3px solid rgba(0, 125, 255, 0.15);
-  border-top-color: #007dff;
+  width: 30px;
+  height: 30px;
+  border: 3px solid rgba(52, 130, 255, 0.16);
+  border-top-color: #3482ff;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
@@ -503,432 +744,769 @@ onMounted(() => {
   to { transform: rotate(360deg); }
 }
 
-/* 锁屏密码验证界面 */
-.auth-wrap {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  padding: 20px;
-}
-
+/* ============ 锁屏 ============ */
 .auth-card {
   width: 100%;
-  max-width: 380px;
-  background: #ffffff;
+  max-width: 340px;
+  background: #fff;
   border-radius: 24px;
-  padding: 36px 26px;
-  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.04);
+  padding: 32px 24px 26px;
   text-align: center;
 }
 
-.lock-icon {
-  font-size: 34px;
-  margin-bottom: 12px;
+.auth-lock {
+  width: 52px;
+  height: 52px;
+  margin: 0 auto 14px;
+  border-radius: 50%;
+  background: #f2f5fa;
+  color: #3482ff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .auth-title {
-  font-size: 20px;
+  font-size: 19px;
   font-weight: 700;
-  margin-bottom: 6px;
-  color: #1a1a1a;
+  letter-spacing: 0.2px;
 }
 
 .auth-desc {
   font-size: 13px;
-  color: #8c8c8c;
-  margin-bottom: 24px;
+  color: #9096a3;
+  margin: 6px 0 20px;
 }
 
 .auth-input {
   width: 100%;
-  padding: 13px 16px;
+  height: 46px;
+  padding: 0 16px;
   border-radius: 14px;
-  border: 1px solid #e5e5e5;
-  background: #f8f9fa;
+  border: 1px solid #e8e9ec;
+  background: #f7f8fa;
   font-size: 15px;
-  margin-bottom: 14px;
   outline: none;
-  transition: all 0.2s;
-  box-sizing: border-box;
+  transition: border-color 0.18s, background 0.18s;
 }
 
 .auth-input:focus {
-  border-color: #007dff;
-  background: #ffffff;
+  border-color: #3482ff;
+  background: #fff;
 }
 
-.auth-err {
-  color: #ff4d4f;
+.auth-error {
+  color: #e94634;
   font-size: 12px;
-  margin-bottom: 12px;
+  margin-top: 10px;
 }
 
-.auth-btn {
+.auth-submit {
   width: 100%;
-  height: 44px;
+  height: 46px;
+  margin-top: 16px;
   font-weight: 600;
-  border-radius: 12px;
+  border-radius: 14px;
 }
 
-/* 主面板容器 */
-.main-wrap {
+/* ============ 页面骨架 ============ */
+.page {
   width: 100%;
-  max-width: 740px;
-  padding: 16px;
+  max-width: 620px;
+  padding: 14px 14px 40px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 14px;
 }
 
-/* 顶栏 */
-.app-bar {
+.top-bar {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  padding: 6px 4px;
+  gap: 12px;
+  padding: 4px 2px 0;
 }
 
-.bar-left {
+.top-left {
+  min-width: 0;
+}
+
+.top-title {
+  font-size: 21px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+.top-meta {
   display: flex;
   align-items: center;
-  gap: 10px;
   flex-wrap: wrap;
-}
-
-.bar-title {
-  font-size: 18px;
-  font-weight: 700;
-}
-
-.status-dot-badge {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
+  margin-top: 7px;
   font-size: 12px;
-  color: #595959;
-  background: #ffffff;
-  padding: 3px 10px;
-  border-radius: 9999px;
-  border: 1px solid rgba(0, 0, 0, 0.05);
+  color: #8b919e;
 }
 
-.dot {
+.live-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #00b578;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14);
 }
 
-.sleep-badge {
-  font-size: 12px;
-  color: #fa8c16;
-  background: #fff7e6;
-  padding: 3px 8px;
-  border-radius: 9999px;
+.chip {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  line-height: 1.5;
+  white-space: nowrap;
 }
 
-.bar-right {
+.chip-warn {
+  color: #d97706;
+  background: #fef3e2;
+}
+
+.chip-period.peak {
+  color: #dc2626;
+  background: #fdeceb;
+}
+
+.chip-period.offpeak {
+  color: #0f8a4d;
+  background: #e8f7ee;
+}
+
+.top-actions {
   display: flex;
-  gap: 6px;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
-.action-btn {
+.icon-btn {
   width: 36px;
   height: 36px;
-  border-radius: 50%;
   border: none;
-  background: #ffffff;
-  color: #595959;
+  border-radius: 50%;
+  background: #fff;
+  color: #555b66;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
-  transition: transform 0.15s;
+  transition: transform 0.14s ease, background 0.14s ease;
 }
 
-.action-btn:active {
-  transform: scale(0.92);
+.icon-btn:active {
+  transform: scale(0.9);
+  background: #eef0f3;
 }
 
-/* 群切换导航条 (单层横滑胶囊) */
-.group-nav-bar {
+.tab-wrap {
   display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  padding: 2px 0 6px 0;
-  -webkit-overflow-scrolling: touch;
+  justify-content: center;
 }
 
-.group-nav-bar::-webkit-scrollbar {
-  display: none;
+.custom-tab-row {
+  display: flex;
+  background: #e8eaed;
+  padding: 3px;
+  border-radius: 999px;
+  width: 100%;
+  max-width: 320px;
 }
 
-.group-nav-item {
+.tab-item {
+  flex: 1;
   border: none;
-  background: #ffffff;
-  padding: 8px 16px;
-  border-radius: 9999px;
+  background: transparent;
+  padding: 7px 16px;
+  border-radius: 999px;
   font-size: 13px;
+  font-weight: 600;
+  color: #717682;
   cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.2, 0, 0, 1);
   white-space: nowrap;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #595959;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
-  transition: all 0.2s cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 
-.group-nav-item.active {
-  background: #007dff;
-  color: #ffffff;
-  box-shadow: 0 3px 10px rgba(0, 125, 255, 0.22);
+.tab-item.active {
+  background: #fff;
+  color: #131313;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.08);
 }
 
-.nav-name {
-  font-weight: 600;
-}
-
-.nav-id {
-  font-size: 11px;
-  opacity: 0.7;
-}
-
-/* 设置分组列表 (单层无毛刺圆角卡片) */
-.content-body {
+.body {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 18px;
 }
 
-.pref-group {
+/* ============ 分组 ============ */
+.block {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
 }
 
-.pref-group-title {
+.block-title {
   font-size: 13px;
   font-weight: 600;
-  color: #8c8c8c;
-  padding: 0 12px;
-}
-
-.header-clickable {
-  cursor: pointer;
+  color: #8b919e;
+  padding: 0 14px;
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
-.fold-arrow {
+.block-note {
   font-size: 11px;
-  color: #007dff;
+  font-weight: 400;
+  color: #a8adb8;
+  white-space: nowrap;
 }
 
-.pref-card {
-  background: #ffffff;
+.block-title.clickable {
+  cursor: pointer;
+}
+
+.fold {
+  font-size: 12px;
+  font-weight: 500;
+  color: #3482ff;
+  white-space: nowrap;
+}
+
+.card {
+  background: #fff;
   border-radius: 20px;
   overflow: hidden;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.03);
 }
 
-.pref-divider {
+.card-pad {
+  padding: 4px 16px;
+}
+
+.divider {
   height: 1px;
-  background: rgba(0, 0, 0, 0.04);
+  background: #f0f1f3;
   margin: 0 16px;
 }
 
-/* 滑块专属槽位与防溢出样式 */
-.slider-item {
-  padding: 14px 16px;
+/* ============ 行 ============ */
+.row {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 13px 16px;
+  min-height: 52px;
+}
+
+.row-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.row-label {
+  font-size: 15px;
+  font-weight: 500;
+  color: #131313;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row-sub {
+  font-size: 12px;
+  color: #9096a3;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.row-value {
+  font-size: 14px;
+  color: #4b515c;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.row-spend {
+  padding-top: 16px;
+  padding-bottom: 16px;
+}
+
+.spend-amount {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.4px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* ============ 峰谷条 ============ */
+.split-bar {
+  height: 8px;
+  border-radius: 999px;
+  background: #eaf3ff;
+  margin: 16px 16px 12px;
+  overflow: hidden;
+}
+
+.split-peak {
+  height: 100%;
+  background: #f2913b;
+  border-radius: 999px;
+  transition: width 0.35s cubic-bezier(0.22, 0.9, 0.3, 1);
+}
+
+.split-legend {
+  display: flex;
+  gap: 22px;
+  padding: 0 16px 14px;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.legend-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.legend-dot.peak { background: #f2913b; }
+.legend-dot.offpeak { background: #7fb2f0; }
+
+.legend-name {
+  font-size: 12px;
+  color: #8b919e;
+  white-space: nowrap;
+}
+
+.legend-val {
+  font-size: 12px;
+  font-weight: 600;
+  color: #4b515c;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ============ 模型 ============ */
+.model-item {
+  padding: 14px 16px;
+}
+
+.model-item .divider {
+  margin: 0 -16px 14px;
+  width: calc(100% + 32px);
+}
+
+.model-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.model-name-wrap {
+  min-width: 0;
+}
+
+.model-name {
+  font-size: 15px;
+  font-weight: 600;
+  color: #131313;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-provider {
+  font-size: 12px;
+  color: #9096a3;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-cost {
+  font-size: 17px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.model-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.stat-pill {
+  font-size: 11px;
+  color: #5b6473;
+  background: #f4f6f8;
+  padding: 3px 9px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+
+.model-rates {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #f2f3f5;
+}
+
+.rate-pairs {
+  display: flex;
+  align-items: center;
   gap: 10px;
+}
+
+.rate-line {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.rate-tag {
+  font-size: 10px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: #eef4ff;
+  color: #6d7c95;
+  line-height: 1.6;
+}
+
+.rate-tag.peak {
+  background: #fdf0e6;
+  color: #b06a24;
+}
+
+.rate-tag.active {
+  background: #3482ff;
+  color: #fff;
+}
+
+.rate-text {
+  font-size: 12px;
+  color: #4b515c;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rate-unit {
+  font-size: 11px;
+  color: #a8adb8;
+  white-space: nowrap;
+}
+
+/* ============ 群用量 ============ */
+.group-usage-item {
+  padding: 13px 16px;
+}
+
+.group-usage-item .divider {
+  margin: 0 -16px 13px;
+  width: calc(100% + 32px);
+}
+
+.gu-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.gu-name {
+  font-size: 14px;
+  font-weight: 600;
+  color: #131313;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.gu-cost {
+  font-size: 14px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.gu-track {
+  height: 5px;
+  border-radius: 999px;
+  background: #f2f4f6;
+  margin: 8px 0 6px;
+  overflow: hidden;
+}
+
+.gu-bar {
+  height: 100%;
+  border-radius: 999px;
+  background: #3482ff;
+  transition: width 0.35s cubic-bezier(0.22, 0.9, 0.3, 1);
+}
+
+.gu-meta {
+  font-size: 11px;
+  color: #9096a3;
+  white-space: nowrap;
+}
+
+/* ============ 群切换 ============ */
+.group-nav {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 2px 4px;
+  scrollbar-width: none;
+}
+
+.group-nav::-webkit-scrollbar {
+  display: none;
+}
+
+.nav-pill {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  border: none;
+  background: #fff;
+  padding: 8px 15px;
+  border-radius: 999px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.16s ease, color 0.16s ease;
+}
+
+.nav-pill-name {
+  font-size: 13px;
+  font-weight: 600;
+  color: #3d434e;
+}
+
+.nav-pill-id {
+  font-size: 10px;
+  color: #a8adb8;
+}
+
+.nav-pill.active {
+  background: #3482ff;
+}
+
+.nav-pill.active .nav-pill-name {
+  color: #fff;
+}
+
+.nav-pill.active .nav-pill-id {
+  color: rgba(255, 255, 255, 0.72);
+}
+
+/* ============ 滑块 ============ */
+.slider-block {
+  padding: 14px 16px;
 }
 
 .slider-head {
   display: flex;
+  align-items: flex-start;
   justify-content: space-between;
-  align-items: center;
-}
-
-.slider-title {
-  font-size: 15px;
-  font-weight: 500;
-  color: #1a1a1a;
-}
-
-.slider-desc {
-  font-size: 12px;
-  color: #8c8c8c;
-  margin-top: 1px;
-}
-
-.slider-badge {
-  font-size: 13px;
-  font-weight: 700;
-  color: #007dff;
-  background: #f0f7ff;
-  padding: 3px 10px;
-  border-radius: 9999px;
-  min-width: 46px;
-  text-align: center;
-}
-
-.slider-track-wrap {
-  width: 100%;
-  padding: 2px 4px;
-  box-sizing: border-box;
-}
-
-/* 群记忆列表 */
-.memories-box {
-  padding: 14px 16px;
-}
-
-.empty-hint {
-  text-align: center;
-  color: #8c8c8c;
-  font-size: 13px;
-  padding: 16px 0;
-}
-
-.memory-list {
-  display: flex;
-  flex-direction: column;
   gap: 12px;
 }
 
-.memory-item {
-  padding-bottom: 10px;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.04);
+.slider-text {
+  min-width: 0;
 }
 
-.memory-item:last-child {
-  border-bottom: none;
-  padding-bottom: 0;
+.slider-value {
+  font-size: 14px;
+  font-weight: 700;
+  color: #3482ff;
+  background: #eef4ff;
+  padding: 3px 10px;
+  border-radius: 999px;
+  min-width: 50px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
-.mem-row-top {
+.slider-track {
+  margin-top: 10px;
+  padding: 0 2px;
+}
+
+/* ============ 记忆 ============ */
+.mem-item {
+  padding: 12px 0;
+}
+
+.mem-item.not-first {
+  border-top: 1px solid #f0f1f3;
+}
+
+.mem-top {
   display: flex;
-  justify-content: space-between;
   align-items: center;
-  margin-bottom: 6px;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
 }
 
-.mem-user-info {
+.mem-id {
   display: flex;
   align-items: center;
   gap: 6px;
-  font-size: 14px;
+  min-width: 0;
 }
 
 .mem-name {
+  font-size: 14px;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mem-qq {
-  font-size: 12px;
-  color: #8c8c8c;
-}
-
-.mem-tag {
   font-size: 11px;
-  background: #f0f0f0;
-  padding: 1px 6px;
-  border-radius: 4px;
-  color: #595959;
+  color: #a8adb8;
+  flex-shrink: 0;
 }
 
-.mem-favor-tag {
+.mem-trait {
+  font-size: 10px;
+  color: #6b7280;
+  background: #f4f6f8;
+  padding: 1px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.mem-favor {
   font-size: 12px;
   font-weight: 700;
+  color: #3482ff;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
 }
 
-.mem-favor-tag.high { color: #f43f5e; }
-.mem-favor-tag.normal { color: #007dff; }
+.mem-favor.high {
+  color: #f43f5e;
+}
 
 .favor-track {
-  width: 100%;
-  height: 5px;
-  background: #f0f0f0;
-  border-radius: 9999px;
+  height: 4px;
+  border-radius: 999px;
+  background: #f2f4f6;
   overflow: hidden;
-  margin-bottom: 6px;
 }
 
 .favor-bar {
   height: 100%;
-  border-radius: 9999px;
-  transition: width 0.3s;
+  border-radius: 999px;
+  background: #3482ff;
+  transition: width 0.3s ease;
 }
 
-.favor-bar.high { background: #f43f5e; }
-.favor-bar.normal { background: #007dff; }
+.favor-bar.high {
+  background: #f43f5e;
+}
 
 .mem-notes {
   display: flex;
-  gap: 4px;
   flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
 }
 
 .note-pill {
   font-size: 11px;
-  color: #8c8c8c;
-  background: #f6f7f9;
-  padding: 2px 6px;
-  border-radius: 4px;
+  color: #6b7280;
+  background: #f5f6f7;
+  padding: 2px 8px;
+  border-radius: 6px;
 }
 
-/* 日志卡片 */
+/* ============ 日志 ============ */
 .log-card {
-  padding: 14px;
-  background: #1e1e1e;
-  color: #d1d5db;
+  padding: 12px;
+  background: #1c1d1f;
 }
 
 .log-bar {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  justify-content: space-between;
   margin-bottom: 8px;
   font-size: 12px;
+  color: #b6bac2;
 }
 
-.auto-scroll-check {
+.log-check {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   cursor: pointer;
 }
 
 .mini-btn {
-  background: rgba(255, 255, 255, 0.1);
   border: none;
+  background: rgba(255, 255, 255, 0.12);
   color: #fff;
-  padding: 3px 8px;
-  border-radius: 4px;
   font-size: 11px;
+  padding: 3px 10px;
+  border-radius: 7px;
   cursor: pointer;
 }
 
 .log-view {
-  height: 280px;
+  height: 260px;
   overflow-y: auto;
-  font-family: monospace;
-  font-size: 11px;
-  line-height: 1.5;
-  background: #141414;
+  background: #141517;
+  border-radius: 12px;
   padding: 10px;
-  border-radius: 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.55;
 }
 
 .log-line {
   white-space: pre-wrap;
   word-break: break-all;
-  color: #a3a3a3;
+  color: #9aa0aa;
+}
+
+.empty-hint {
+  text-align: center;
+  font-size: 13px;
+  color: #a8adb8;
+  padding: 22px 16px;
 }
 </style>

@@ -19,6 +19,7 @@ import logging
 import random
 import re
 import time
+import datetime
 
 # 由 bot.py 在启动时注入自己。直接 import bot 在 `python bot.py` 下会拿到
 # 另一个模块实例（__main__ 与 bot 各一份），全局状态就分裂了。
@@ -38,7 +39,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         "Content-Type": "application/json"
     }
     
-    identity_note = f"（补充认知：你在 QQ 上的名字/昵称叫「小鲸鱼」或「鲸宝」，你的 QQ 号是 {bot.BOT_QQ}，你叫 life bot fish 是因为部署账号的昵称，那也是你！严禁把自己的名字当成别人或山寨货）\n"
+    # 42~59行原先在开头放动态精确分秒，现前移到 prompt 末尾，保证通用身份规则为完全静态前缀
+    identity_note = f"（认知基础：你在 QQ 上的名字/昵称叫「小鲸鱼」或「鲸宝」，你的 QQ 号是 {bot.BOT_QQ}，你叫 life bot fish 是因为部署账号的昵称，那也是你！严禁把自己的名字当成别人或山寨货）\n"
     # 调用方没单独递当前这句时，退化成时间线最后一行，避免提示词里出现一对空引号
     if not latest_line and timeline_text.strip():
         latest_line = timeline_text.strip().splitlines()[-1].strip()
@@ -74,12 +76,11 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         if channel_mode == "root":
             user_prompt = (
                 f"{identity_note}"
-                f"【当前交谈者身份】：专属主人兼创造者「{sender_nick}」(QQ {bot.ADMIN_QQ})\n"
+                f"【当前交谈者身份】：专属主人 life（QQ {bot.ADMIN_QQ}）\n"
                 f"以下是你们的历史对话记录：\n{timeline_text}\n\n"
-                f"【核心交互原则】：\n"
-                f"1. 你依然是主人身边那条熟悉的大肥鱼/小鲸鱼，在 /root 模式下你是他的私人技术搭档与秘书；\n"
-                f"2. 懂主人的日常口语、黑话、意图与暗语，绝不咬文嚼字，绝不打官腔背书；\n"
-                f"3. 像天天开黑写代码的老朋友一样交流，直接奔着解决问题去，干脆利落自然回复（1~2句，绝不用句号）："
+                f"【当前这句】：「{latest_line}」\n"
+                f"你现在嘴硬傲娇嘴损，但被他吃得死死的，不得不认怂听话。体现出嘴上嘀咕但又宠着他的顺从，"
+                f"不确定或不懂就直接说不知，严禁瞎猜胡编，严禁任何括号描写，像手机聊天随手回（1~2句，绝不用句号）："
             )
         else:
             user_prompt = (
@@ -88,7 +89,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 # 记忆块放时间线后面：历史是累加的公共前缀，放前面才能被缓存命中
                 f"{user_mem_prompt}"
                 f"【主人发来私信】：\n"
-                f"当前跟你说话的是你的专属主人兼创造者。请清楚认同主人身份，态度自然真实、听主人的话，结合好感度自然交流（20~40 字）："
+                f"当前跟你说话的是你的专属主人兼创造者。请清楚认同主人身份，态度自然真实、听主人的话，结合好感度自然交流，严禁括号描写（20~40 字）："
             )
     elif is_admin and is_at:
         if channel_mode == "root":
@@ -96,7 +97,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 f"{identity_note}"
                 f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
                 f"【主人「{sender_nick}」(QQ {bot.ADMIN_QQ}) 这句话】：「{latest_line}」\n"
-                f"当前是 /root 工作模式，你是主人的技术老搭档兼秘书。直接对着这句话办事或接话，像熟人开黑一样干脆利落（1~2句，绝不用句号）："
+                f"当前是 /root 模式。面对主人，你要体现出「嘴硬傲娇、嘴损调侃、但拿他没脾气、不得不认怂顺从」的生动反差！"
+                f"不确定或没看懂就直接问，别瞎猜脑补；严禁任何括号描写，像真人群聊随手回（1~2句，绝不用句号）："
             )
         else:
             follow_up_note = (
@@ -114,9 +116,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 f"【主人说的这句】：「{latest_line}」\n"
                 f"对这句话本身作反应，别把注意力放在「他来找我了」上；看不懂他想说啥就直接问他这句什么意思，"
                 f"别另起话题、也别再讲一遍你上一轮说过的话。\n"
-                f"语气可以是黏人的：撒个娇、卖个乖、蹭他一下都行，但一句话里最多一处，当调味不当主食；"
-                f"他要是不接这茬，你就顺着事往下说，别追着讨回应、别反复问他在不在、别每句都要他哄；"
-                f"他说要睡要忙要走，就痛快放人，别拦着讨价还价"
+                f"语气可以是黏人的：撒个娇、卖个乖都行，但严禁出现任何括号动作旁白描写（如（甩尾巴）等彻底禁用）；"\
+                f"严禁把「拔电源」「敲代码」「我是AI」当梗挂嘴边；"\
                 f"（20~35 字，绝不用句号）："
             )
     elif is_at or is_mention or is_follow_up:
@@ -135,8 +136,10 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"【他最后这句】：「{latest_line}」\n"
             f"上面的记录只是前情，你只对他最后这句作反应，别去答前面别人说过的话；"
             f"他要是只回你半句（「不要」「对的」这种），先接住这半句，再联系前情把话接圆；"
+            f"对方在装懂、吹牛、说废话或小丑发言，一针见血挑刺拆穿，幽默机智损，别招人烦；"
+            f"遇到不确定、没听过或没看懂的，严禁瞎猜胡编，直接坦荡说不知道/看不懂；"
             f"要是拿具体问题考你（算术、常识、时间、数字），先把答案说出来再损他，别用「这还要问我」糊弄过去；"
-            f"别把他当成刚认识的人重新打招呼，也别复述他的问题、别催他重说、别问「你刚说啥」（默认1句，最多2句，绝不用句号，别写小作文）："
+            f"严禁输出任何动作括号，随手打字（默认1句，最多2句，绝不用句号，别写小作文）："
         )
     else:
         user_prompt = (
@@ -144,9 +147,12 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"群友在群聊中的近期发言：\n{timeline_text}\n\n"
             f"【旁观规则（最高优先级）】：\n"
             f"1. 你正在旁观。若群友是在私聊互动、打游戏开黑/组队、讨论内部黑话、或你没有十足把握理解其前因后果，【必须直接且仅输出 [PASS] 彻底闭嘴】；\n"
-            f"2. 严禁不懂装懂、严禁答非所问、严禁发出反问套话（如「你在说什么呀」、「我也打不开」）；\n"
-            f"3. 只有当你完全搞懂话题并能给出极其一针见血的 1 句短接话时才说；插不上话输出 [PASS]；\n"
-            f"4. 严禁催问式空话（「你倒是把问题问出来」「刚问啥了」这种），宁可 [PASS] 也别拿废话占屏："
+            f"2. 若近期发言附带群友发的图片/表情包：\n"
+            f"   - 只有当该图片是非常有趣、有明显槽点、有强烈接梗点的梗图/表情包，且你能给出极其精准幽默的神吐槽时，才回 1 句简短吐槽；\n"
+            f"   - 若只是日常打卡、普通截图、工作学习、系统提示或你觉得没必要评价，【必须输出 [PASS] 静默】；\n"
+            f"3. 严禁不懂装懂、严禁答非所问、严禁发出反问套话（如「你在说什么呀」、「我也打不开」）；\n"
+            f"4. 只有当你完全搞懂话题并能给出极其一针见血的 1 句短接话时才说；插不上话输出 [PASS]；\n"
+            f"5. 严禁催问式空话（「你倒是把问题问出来」「刚问啥了」这种），宁可 [PASS] 也别拿废话占屏："
         )
 
     # 联网检索增强：当对话涉及最新时效词且群开启搜索时，自动注入轻量网页搜索上下文
@@ -190,6 +196,23 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             group_files_context = f"\n【本群文件列表（仅供参考文件名与上传人，未读取文件正文）】：\n{files_summary}\n"
 
     user_prompt = bot.sanitize_text(user_prompt + web_search_context + group_files_context)
+    # 注入当前时间戳（挂在 user prompt 末尾，确保开头固定身份 prompt 命中最长前缀缓存 KV Cache）
+    now_dt = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
+    hour = now_dt.hour
+    if 5 <= hour < 9:
+        period_str = "清晨/早晨"
+    elif 9 <= hour < 12:
+        period_str = "上午"
+    elif 12 <= hour < 14:
+        period_str = "中午"
+    elif 14 <= hour < 18:
+        period_str = "下午"
+    elif 18 <= hour < 23:
+        period_str = "晚上"
+    else:
+        period_str = "深夜/凌晨"
+    time_hint = f"\n【当前真实系统时间】：{now_dt.strftime('%Y-%m-%d %H:%M')} 星期{['一','二','三','四','五','六','日'][now_dt.weekday()]}（时段: {period_str}）\n"
+    user_prompt = bot.sanitize_text(user_prompt + time_hint)
     # 注入跨群公共话题记忆（仅供认知背景，不破坏当前群独立性）
     if group_id:
         cross_topics_hint = cross_memory.cross_group_mgr.get_recent_topics_prompt(exclude_group_id=group_id, limit=2)
@@ -233,11 +256,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                         logger.info("前缀缓存命中 %s / 输入 %s tokens", hit, usage.get("prompt_tokens"))
                 reply = data["choices"][0]["message"]["content"].strip()
                 logger.info("模型生成完成 (耗时 %.2fs): %s", elapsed, reply[:30])
-            # 免@追问时模型爱甩 [PASS]，用户看着就是没搭理他，给一次机会明说必须接
-            if attempt == 1 and is_follow_up and not is_root_work and "[PASS]" in reply:
-                logger.info("追问场景模型想沉默，强制接话重试一次")
-                attempt_prompt = user_prompt + "\n（这次必须接一句，不许输出 [PASS]：看不懂就反问他那句什么意思）"
-                continue
+            # 免@追问时若模型选择沉默，尊重其决定静默，不重复重试烧 token
             return reply
     except asyncio.CancelledError:
         logger.info("DeepSeek 请求被中止。")
@@ -375,7 +394,8 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
 
     key = (group_id, user_id)
     now_ts = time.time()
-    if now_ts - bot._favor_last_run.get(key, 0.0) < bot.FAVOR_MIN_INTERVAL:
+    # 冷却周期内不重复跑，省 token（从 60 秒提升至 120 秒，且短句直接忽略）
+    if now_ts - bot._favor_last_run.get(key, 0.0) < max(bot.FAVOR_MIN_INTERVAL, 120.0):
         buf = bot._favor_pending.setdefault(key, [])
         buf.append(dialogue_snippet)
         del buf[:-5]  # 只留最近 5 句，防止长期不说话时无限攒

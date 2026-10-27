@@ -18,6 +18,7 @@ import re
 import safety_guard
 import time
 from services import trace
+from services import vision
 
 # 由 bot.py 在启动时注入自己。直接 import bot 在 `python bot.py` 下会拿到
 # 另一个模块实例（__main__ 与 bot 各一份），全局状态就分裂了。
@@ -81,12 +82,48 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     bot.group_msg_count_since_bot[group_id] += 1
 
     # 捕获群聊中的图片进入两段式近期图片缓冲池，并尝试进行超轻量视觉转录
-    m_imgs = re.findall(r'\[CQ:image,[^\]]*url=([^ control\,\]]+)', raw_message)
+    m_imgs = re.findall(r'\[CQ:image,[^\]]*?url=([^,\]]+)', raw_message)
     if m_imgs:
         for u in m_imgs:
             u_clean = u.replace("&amp;", "&")
-            bot.group_recent_images[group_id].append((u_clean, time.time(), sender_nick))
-            # 只记下来源，等机器人真要接话时再取摘要，不为每张图白调一次视觉模型
+            bot.group_recent_images[group_id].append((u_clean, time.time(), sender_id, sender_nick))
+
+    # 解析引用消息与合并转发
+    reply_prefix = await bot.extract_reply_context(ws, event, raw_message)
+    raw_message = await bot.expand_forward_messages(ws, raw_message)
+    if reply_prefix and "[CQ:image" in reply_prefix:
+        raw_message = f"{reply_prefix}\n{raw_message}"
+        reply_prefix = None
+        # 重新扫描图片
+        m_imgs = re.findall(r'\[CQ:image,[^\]]*?url=([^,\]]+)', raw_message)
+
+    # 只要消息中含有图片（包括群友发图、表情包、或者@机器人带图），均尝试通过 Gemini 视觉模型解析画面
+    # 策略优化：普通旁观发图不再盲目调用视觉模型，只有被 @、引用机器人、处于追问中、或包含搜图/出处关键词时才触发识图
+    vision_desc = None
+    session = bot.get_http_session()
+    target_img_url = None
+    is_explicit_image_call = is_at or is_reply_to_bot or is_follow_up or bool(re.search(r"(?:什么番|哪部番|谁画的|出处|搜番|搜截图|找番|看图|这图|图里)", raw_message))
+    if m_imgs and is_explicit_image_call:
+        target_img_url = m_imgs[0].replace("&amp;", "&")
+    elif (is_at or is_reply_to_bot):
+        now_ts = time.time()
+        for item in reversed(bot.group_recent_images[group_id]):
+            if len(item) == 4:
+                img_u, img_t, img_sid, img_snick = item
+            else:
+                img_u, img_t, img_snick = item[:3]
+                img_sid = None
+            if now_ts - img_t < 120.0:
+                if (img_sid and img_sid == sender_id) or img_snick == sender_nick or not target_img_url:
+                    target_img_url = img_u
+                    if (img_sid and img_sid == sender_id) or img_snick == sender_nick:
+                        break
+
+    if target_img_url:
+        bot.logger.info("[群 %d] 捕获图片，调用 Gemini 识图感知画面: %s", group_id, target_img_url[:60])
+        vision_desc = await vision.describe_image(session, target_img_url)
+        if vision_desc:
+            bot.logger.info("[群 %d] Gemini 识图成功: %s", group_id, vision_desc[:60])
 
     # 记下群友之间的 @，模型接话时用来判断谁跟谁熟
     m_ats = re.findall(r'\[CQ:at,[^\]]*qq=(\d+)[^\]]*\]', raw_message)
@@ -97,10 +134,6 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
                 cross_interaction.record_interaction(group_id, sender_id, sender_nick, t_qq, target_qq_str)
         except Exception:
             pass
-
-    # 解析引用消息与合并转发
-    reply_prefix = await bot.extract_reply_context(ws, event, raw_message)
-    raw_message = await bot.expand_forward_messages(ws, raw_message)
 
     # 深度解析主流媒体短链 (抖音/小红书/B站短链)
     if bot.http_session and ("douyin.com" in raw_message or "xhslink.com" in raw_message or "b23.tv" in raw_message):
@@ -117,7 +150,13 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 移除 reply 的 CQ 码残留
     clean_body = re.sub(r"\[CQ:reply,id=-?\d+\]", "", clean_body).strip()
 
-    # 如果用户只 @ 了机器人，没有附带文字，给一个默认问候
+    # 如果有图片内容但用户没有附加文本，将内容作为描述体
+    if vision_desc and not clean_body:
+        clean_body = f"[发送了图片/表情包]: {vision_desc}"
+    elif vision_desc:
+        clean_body = f"{clean_body}\n[用户发送/附带的图片/表情包内容]: {vision_desc}".strip()
+
+    # 如果用户只 @ 了机器人，没有附带文字也没有图片
     if is_at and not clean_body:
         clean_body = "在吗"
     elif not clean_body:
@@ -176,7 +215,9 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         # 寻找群内 90 秒内的有效图片
         now_ts = time.time()
         target_img_url = None
-        for img_u, img_t, img_sender in reversed(bot.group_recent_images[group_id]):
+        for item in reversed(bot.group_recent_images[group_id]):
+            img_u = item[0]
+            img_t = item[1]
             if now_ts - img_t < 90.0:
                 target_img_url = img_u
                 break
@@ -284,22 +325,17 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         # 3. 绝对值修改某人好感度: 改 123456 的好感度为 80 / 把 123456 好感度调至 0 / 设为 100 / 3650199442 好感度 80 / 调成 0 / 改为 0
         # 兼容正序与倒序: "把298152965好感度调至0" 或 "把好感度调至0 298152965"
         m_favor = re.search(r"(?:把|将|改|设置)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)\s*(?:的)?\s*(?:好感度|favor)?\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)", clean_body, re.IGNORECASE)
-        if not m_favor:
+        if m_favor:
+            target_qq = int(m_favor.group(1))
+            new_favor = max(0, min(100, int(m_favor.group(2))))
+        else:
             m_favor = re.search(r"(?:好感度|favor)\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)", clean_body, re.IGNORECASE)
             if m_favor:
                 # 倒序形式: group(1)是数值, group(2)是QQ
                 new_favor = max(0, min(100, int(m_favor.group(1))))
                 target_qq = int(m_favor.group(2))
-                mem = bot.get_or_create_user_memory(target_qq, group_id=group_id)
-                mem["favor"] = new_favor
-                mem["updated_at"] = time.time()
-                bot.save_user_memories()
-                report = f"已将 (QQ {target_qq}) 的好感度设为 {new_favor}/100"
-                await bot.send_group_message(ws, group_id, report, is_command_report=True)
-                return
+
         if m_favor:
-            target_qq = int(m_favor.group(1))
-            new_favor = max(0, min(100, int(m_favor.group(2))))
             mem = bot.get_or_create_user_memory(target_qq, group_id=group_id)
             mem["favor"] = new_favor
             mem["updated_at"] = time.time()
@@ -463,8 +499,13 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         bot.logger.debug("[群 %d] 处于管理员 /stop 静默保护期（剩余 %.0fs），保持静默不插话", group_id, silence_exp - now)
         return
 
-    # 意图门控：结合冷热场动态权重、代称、讨论疑问词综合判定插话
+    # 意图门控：结合冷热场动态权重、代称、讨论疑问词综合判定插话；若本条带有识别到的图片画面，且有一定信息量，也交由大模型自主评判
     should_trigger, is_mention_bot = bot.should_active_interrupt(clean_body, group_id=group_id, msg_count_since=bot.group_msg_count_since_bot[group_id])
+    if vision_desc and len(vision_desc) >= 5:
+        # 群友发了图片/表情包，允许进入大模型自主判断（AI 会自行决定是回梗还是 [PASS] 静默）
+        should_trigger = True
+        bot.logger.info("[群 %d] 捕获到群友发图/表情包，送入大模型自主决策是否插话评价", group_id)
+
     bot.group_last_msg_time[group_id] = now
     if not should_trigger:
         return
@@ -555,7 +596,9 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
     if not is_at and not is_admin:
         bot.group_last_active_reply[group_id] = time.time()
     
-    await asyncio.sleep(1.0)
+    # 拟真发话停顿：被@或追问时直连秒回，旁观插话保留 0.3s 微停顿
+    if not is_at and not is_admin and not is_follow_up:
+        await asyncio.sleep(0.3)
     # 当群友主动艾特机器人呼叫时，回复必须带上 [CQ:at] 艾特该群友；若为主动旁观插话则自然接话不强行艾特
     at_target = target_uid if is_at else None
     sent_text = await bot.send_segmented_group_message(ws, group_id, reply, is_command_report=(is_admin and bot.get_channel_mode(group_id) == "root"), at_user_id=at_target)

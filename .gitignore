@@ -26,4 +26,5 @@ node_modules/
 
 # 备份快照
 *.bak
+*.bak-*
 .tmp_*
