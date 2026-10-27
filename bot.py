@@ -948,6 +948,35 @@ async def get_group_files_brief(ws: aiohttp.ClientWebSocketResponse, group_id: i
         logger.debug("获取群文件列表异常: %s", e)
         return ""
 
+def extract_dialogue_content(timeline_text: str) -> str:
+    """从群聊时间线文本中提取发言纯正文，剔除发言者昵称前缀与 [管理员] 标识。
+
+    时间线形如:
+      [管理员] life: 哈哈
+      疯狂星期四V我50: 今天吃啥
+    若直接匹配整行，群友的奇葩昵称（如带有'疯狂星期四'）会污染全局梗匹配与时效搜索，
+    导致大模型无论聊什么都死抠昵称里的梗。
+    """
+    if not timeline_text:
+        return ""
+    content_lines = []
+    for line in timeline_text.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # 兼容可能有 [管理员] 或普通昵称后的冒号分割 (支持中文冒号和英文冒号)
+        # 如: "[管理员] 张三: 正文" 或 "李四: 正文"
+        if ":" in line:
+            parts = line.split(":", 1)
+            content_lines.append(parts[1].strip())
+        elif "：" in line:
+            parts = line.split("：", 1)
+            content_lines.append(parts[1].strip())
+        else:
+            content_lines.append(line)
+    return "\n".join(content_lines)
+
+
 def clean_cq_codes(text: str) -> str:
     """去除表情、图片、文件等大段 CQ 码，保留纯文本与卡片语义"""
     # 先做卡片语义提取
