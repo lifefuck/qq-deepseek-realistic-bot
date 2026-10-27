@@ -317,16 +317,16 @@ async def generate_agent_command_reply(action_type: str, detail: str = "", is_pr
         "Content-Type": "application/json"
     }
     
-    channel_mode = bot.get_channel_mode(None)
+    channel_mode = bot.get_channel_mode(group_id if not is_private else None)
     if channel_mode == "root":
         prompt = (
             f"主人（开发者 life）下达了管理指令：{action_type}，细节：{detail}。\n"
-            f"当前是 root 工作模式，请用专业、干练、利落的工程师口吻临场给出 1 句简明执行确认（10~25字以内，拒绝废话，绝不用句号）："
+            f"当前是专属主人的 root 模式，请用傲娇但听话顺从的少女口吻临场给出 1 句简明执行确认（表面嘀咕两句但利落办好，10~25字以内，拒绝废话，绝不用句号）："
         )
     else:
         prompt = (
             f"主人（life）在{'私聊' if is_private else '群里'}下达了管理指令：{action_type}，执行结果细节：{detail}。\n"
-            f"请以大肥鱼/小鲸鱼随性、生动的口吻临场随机给出一句回复（每次措辞自拟，拒绝死板模板，可俏皮、可利落，1 句，15~30字以内，绝不用句号）："
+            f"请以小鲸鱼俏皮、亲近随性的口吻临场随机给出一句回复（每次措辞自拟，拒绝死板模板，可俏皮可爱、可随性利落，1 句，15~30字以内，绝不用句号）："
         )
 
     payload = {
