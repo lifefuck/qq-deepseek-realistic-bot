@@ -32,7 +32,7 @@ def bind(host):
 
 logger = logging.getLogger("qqbot.llm")
 
-async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False, is_private: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, sender_nick: str = "", group_id: Optional[int] = None, is_follow_up: bool = False, latest_line: str = "") -> Optional[str]:
+async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False, is_private: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, sender_nick: str = "", group_id: Optional[int] = None, is_follow_up: bool = False, latest_line: str = "", extra_system_instruction: str = "") -> Optional[str]:
     """请求 SiliconFlow DeepSeek-V3 模型"""
     headers = {
         "Authorization": f"Bearer {bot.SILICONFLOW_API_KEY}",
@@ -233,6 +233,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             user_prompt = bot.sanitize_text(user_prompt + cross_topics_hint)
     if dynamic_context:
         user_prompt = bot.sanitize_text(user_prompt + dynamic_context)
+    if extra_system_instruction:
+        user_prompt = bot.sanitize_text(user_prompt + f"\n【实时突发情境指令（请严格融入人设自由发挥）】：\n{extra_system_instruction}\n")
     max_tokens_val = 1500 if is_root_work else bot.MAX_OUTPUT_TOKENS
     temperature_val = 0.75 if is_root_work else 0.8
     payload = {

@@ -568,21 +568,51 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
     if current_task:
         bot.running_tasks.add(current_task)
         
+    # 群聊频控检测：滑动 60 秒内最高发 9 条，第 10 条触发 AI 自主告警
+    # 管理员与 root 模式不限频
+    is_rate_limit_tenth = False
+    extra_instruction = ""
+    if not is_admin:
+        recent_count = bot.get_group_recent_send_count(group_id)
+        if recent_count >= 10:
+            bot.logger.info("[群 %d] 滑动 60 秒内已发满 10 条（当前 %d 条），进入硬静默冷却，略过回复", group_id, recent_count)
+            return
+        elif recent_count == 9:
+            is_rate_limit_tenth = True
+            extra_instruction = (
+                "【系统风控触发通知】：你在当前群聊中最近1分钟内发言已达上限（这是第10条配额），"
+                "发完这句之后你将被系统强制闭麦冷静1分钟以防被腾讯QQ风控封号！"
+                "请用你日常的傲娇、吐槽或随性口吻向群友自然告别/吐槽，说明自己打字太快要被风控封嘴/先潜水歇一分钟，"
+                "严禁机械报幕或念诵规则数字，像真实群友打字一样自由表达。"
+            )
+
     try:
-        reply = await bot.call_deepseek(dialogue_text, is_at=is_at, is_admin=is_admin, is_private=False, is_mention=is_mention, target_uid=target_uid, sender_nick=sender_nick, group_id=group_id, is_follow_up=is_follow_up, latest_line=user_text)
+        reply = await bot.call_deepseek(
+            dialogue_text,
+            is_at=is_at,
+            is_admin=is_admin,
+            is_private=False,
+            is_mention=is_mention,
+            target_uid=target_uid,
+            sender_nick=sender_nick,
+            group_id=group_id,
+            is_follow_up=is_follow_up,
+            latest_line=user_text,
+            extra_system_instruction=extra_instruction
+        )
     finally:
         if current_task:
             bot.running_tasks.discard(current_task)
-            
+
     if not reply:
         return
-        
+
     # 如果回复中带有 [PASS]（或者模型啰嗦解释了为什么保持沉默）
     # 只要判定包含 [PASS]，不管后面带不带括号解释，都必须彻底保持静默！
     if "[PASS]" in reply:
         bot.logger.info("[群 %d] 模型输出包含 [PASS]，保持绝对静默不发送群消息。", group_id)
         return
-        
+
     # 额外拦截模型常见的内心括号自我独白（如“（根据规则保持沉默）”、“（保持静默）”）
     if any(silent_kw in reply for silent_kw in ["保持沉默", "保持静默", "无需回复", "不便插话", "选择沉默"]):
         bot.logger.info("[群 %d] 拦截到模型静默解释独白: %s，直接丢弃。", group_id, reply)
@@ -600,18 +630,23 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         if any(re.search(pat, reply) for pat in confused_patterns):
             bot.logger.info("[群 %d] 拦截到旁观插话中没搞懂的困惑反问套话: %s，保持静默直接丢弃", group_id, reply)
             return
-        
+
     # 机器人每次在群里发话后，重置该群的消息计数
     bot.group_msg_count_since_bot[group_id] = 0
     if not is_at and not is_admin:
         bot.group_last_active_reply[group_id] = time.time()
-    
+
     # 拟真发话停顿：被@或追问时直连秒回，旁观插话保留 0.3s 微停顿
     if not is_at and not is_admin and not is_follow_up:
         await asyncio.sleep(0.3)
     # 当群友主动艾特机器人呼叫时，回复必须带上 [CQ:at] 艾特该群友；若为主动旁观插话则自然接话不强行艾特
     at_target = target_uid if is_at else None
     sent_text = await bot.send_segmented_group_message(ws, group_id, reply, is_command_report=(is_admin and bot.get_channel_mode(group_id) == "root"), at_user_id=at_target)
+
+    # 如果刚发出的正是第 10 条告警消息，给该群施加 60 秒的主动静默期防封
+    if is_rate_limit_tenth:
+        bot.group_silence_until[group_id] = time.time() + 60.0
+        bot.logger.warning("[群 %d] 已发出第 10 条风控告警，自动挂起 60 秒群静默保护期", group_id)
 
     # 写回上下文的是实际发出去的那句：削平过、标签剥过，跟群里看到的一致
     clean_reply_record = bot.remove_trailing_period(bot.strip_markdown(sent_text or "")).strip()

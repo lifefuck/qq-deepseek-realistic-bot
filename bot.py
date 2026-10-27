@@ -110,7 +110,8 @@ _SELF_REF_RE = re.compile(r"本(?:大)?(?:肥)?(?:鱼|鲸宝|鲸鱼|鲸)|我(?:�
 BOT_KEYWORDS = {
     "大肥鱼", "肥鱼", "小鲸鱼", "鲸鱼", "鲸宝", "deepseek", "v3", "r1", 
     "bot", "机器人", "ai", "人工智障", "人工智能", "什么生物", "回消息", "理人", "说话",
-    "笨蛋", "傻子", "傻鱼", "小鱼", "死鱼", "咸鱼"
+    "笨蛋", "傻子", "傻鱼", "小鱼", "死鱼", "咸鱼",
+    "爸爸", "主人", "开发者", "老父亲", "创造者"
 }
 
 # 日志格式：rid 放在最前面，一眼能把一条消息的全程串起来
@@ -474,22 +475,35 @@ load_user_memories()
 
 memory_write_lock = asyncio.Lock()
 
-# 单群发信速率硬保护 (滑动窗口: 60秒内最多发 8 条，防腾讯单群风控禁言)
+# 单群发信速率硬保护 (滑动窗口: 60秒内最多发 9 条，第 10 条触发 AI 自主告警后进入 60 秒冷却，防腾讯单群风控禁言)
 GROUP_RATE_LIMIT_WINDOW = 60.0
-GROUP_MAX_MESSAGES_PER_WINDOW = 8
+GROUP_MAX_MESSAGES_PER_WINDOW = 9
 group_send_history: Dict[int, Deque[float]] = collections.defaultdict(collections.deque)
 group_rate_limit_warned: Dict[int, float] = {}
 
-def check_and_record_group_rate_limit(group_id: int) -> bool:
-    """检查并记录群发信。60秒内超8条返回 False (防腾讯风控)"""
+def get_group_recent_send_count(group_id: int) -> int:
+    """获取当前群在滑动 60 秒窗口内已发送的消息条数"""
     now = time.time()
     dq = group_send_history[group_id]
     while dq and now - dq[0] > GROUP_RATE_LIMIT_WINDOW:
         dq.popleft()
-    if len(dq) >= GROUP_MAX_MESSAGES_PER_WINDOW:
-        return False
+    return len(dq)
+
+def record_group_send_history(group_id: int) -> None:
+    """记录一次群消息发送（戳一戳不计入）"""
+    now = time.time()
+    dq = group_send_history[group_id]
+    while dq and now - dq[0] > GROUP_RATE_LIMIT_WINDOW:
+        dq.popleft()
     dq.append(now)
-    return True
+
+def check_and_record_group_rate_limit(group_id: int) -> bool:
+    """检查群发信是否处于允许发送区间。60秒内未达到上限返回 True"""
+    now = time.time()
+    dq = group_send_history[group_id]
+    while dq and now - dq[0] > GROUP_RATE_LIMIT_WINDOW:
+        dq.popleft()
+    return len(dq) < GROUP_MAX_MESSAGES_PER_WINDOW
 
 # ==================== 状态存储（按群隔离） ====================
 # 群聊近期图片缓存池 (用于两段式搜番与以图搜图): group_id -> deque of (image_url, timestamp, sender_nick)
