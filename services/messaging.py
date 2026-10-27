@@ -37,9 +37,10 @@ def _tidy(text: str) -> str:
     return re.sub(r"\s+([，。！？、])", r"\1", text)
 
 
-def thin_emoji(text: str, keep_ratio: float = 0.35) -> str:
+def thin_emoji(text: str, keep_ratio: float = 0.15) -> str:
     """表情抽稀：模型看到"可以带表情"就爱每条都甩，光靠 prompt 压不住。
-    这里按概率只放行一部分，放行的那条也只留一个，整体才是「偶尔」而不是标配。"""
+    这里按概率只放行一部分，放行的那条也只留一个，整体才是「偶尔」而不是标配。
+    默认 0.15——群里连发十几条才该见到一两个，多了就成客服表情包了。"""
     matches = list(_EMOJI_RE.finditer(text))
     if not matches:
         return text
@@ -52,8 +53,25 @@ def thin_emoji(text: str, keep_ratio: float = 0.35) -> str:
     return _tidy(text[:first.start()] + first.group() + rest)
 
 
+_SEG_END_RE = re.compile(r'[!！?？~。；\n]{1,3}')
+
+
+def _merge_fragments(parts: list[str]) -> list[str]:
+    """把纯表情、两三个字的碎片并回相邻那句。
+    否则「清蒸？你这是要把我炖了？」后面会单独飞出去一个 😤，看着像手滑。"""
+    out: list[str] = []
+    for p in parts:
+        bare = _EMOJI_RE.sub("", p).strip(" ，,、")
+        if out and (not bare or len(bare) < 3):
+            out[-1] = out[-1] + " " + p
+        else:
+            out.append(p)
+    return [p for p in out if p.strip()]
+
+
 def split_reply_segments(text: str) -> list[str]:
-    """按标点切成 1~3 条短消息，像真人连续打字"""
+    """按句末标点切成 1~3 条短消息，像真人连续打字。
+    只认中文句末标点，不拿空格当分隔符——「部署写在 README 里」被切成两条的锅就是它。"""
     clean = bot.strip_markdown(text).strip()
     clean = bot.remove_trailing_period(clean)
     if not clean:
@@ -63,19 +81,20 @@ def split_reply_segments(text: str) -> list[str]:
         return lines[:3]
     if len(clean) <= 16:
         return [clean]
-    # 针对中文标点（句号、感叹号、问号、分号）切分
-    m = re.split(r'([!！?？~。；\s]{1,3})', clean)
     parts = []
     buf = ''
-    for token in m:
-        if not token:
-            continue
-        buf += token
-        if re.search(r'[!！?？~。；\s]', token) and len(buf.strip()) >= 5:
+    pos = 0
+    for m in _SEG_END_RE.finditer(clean):
+        buf += clean[pos:m.end()]
+        pos = m.end()
+        if len(buf.strip()) >= 5:
             parts.append(buf.strip())
             buf = ''
+    if clean[pos:].strip():
+        buf += clean[pos:]
     if buf.strip():
         parts.append(buf.strip())
+    parts = _merge_fragments(parts)
     if len(parts) >= 2:
         return parts[:3]
     return [clean]
@@ -253,16 +272,14 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         return ""
 
     segments = split_reply_segments(text)
-    # 25% 概率或强烈情绪时触发表情包
-    should_send_meme = bool(meme_tag) or (random.random() < 0.25) or any(k in text for k in ["大肥鱼", "炸毛", "闹麻了", "草", "无敌了", "才不是", "哼", "气死"])
-    # 情绪立绘或表情包选择：如果文本带有强烈情绪，优先匹配状态立绘，否则匹配随机表情包
+    # 图片比表情更抢眼：默认 8% 概率，模型自己要图（[MEME:xx]）或踩到强情绪词才发
+    should_send_meme = bool(meme_tag) or (random.random() < 0.08) or any(k in text for k in ["炸毛", "闹麻了", "无敌了", "气死"])
+    # 情绪立绘只在真的炸毛/害羞时才上，别让「怎么」「为什么」这种口头词也甩一张图
     status_avatar = None
-    if "气" in text or "死" in text or "滚" in text or "闭嘴" in text:
+    if any(k in text for k in ["气死", "滚", "闭嘴", "炸毛", "火大"]):
         status_avatar = bot.get_status_avatar_b64("angry")
-    elif "害羞" in text or "夸" in text or "爱" in text or "喜欢" in text:
+    elif any(k in text for k in ["害羞", "脸红", "好耶"]):
         status_avatar = bot.get_status_avatar_b64("shy")
-    elif "为什么" in text or "怎么" in text or "思考" in text:
-        status_avatar = bot.get_status_avatar_b64("think")
 
     final_pic_b64 = status_avatar
     if not final_pic_b64 and should_send_meme:

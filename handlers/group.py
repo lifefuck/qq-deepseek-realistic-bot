@@ -71,6 +71,11 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
                 
     # 打印原始接收日志，方便精准观测
     bot.logger.info("[群 %d] 收到原始消息 raw_message=%r, is_at=%s", group_id, raw_message, is_at)
+
+    # 引用回复机器人也算直接呼叫：后面 repo 问答、游戏指令、护栏都要用它，先算出来
+    is_reply_to_bot = False
+    if "reply" in event and isinstance(event["reply"], dict):
+        is_reply_to_bot = (event["reply"].get("sender", {}).get("user_id") == bot.BOT_QQ)
     
     # 累加该群自上次机器人发言以来的消息条数
     bot.group_msg_count_since_bot[group_id] += 1
@@ -124,7 +129,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         return
 
     # 问项目出处/源码/部署：直接甩仓库，不走模型，省得绕圈子或者漏链接
-    repo_reply = bot.repo_ask_reply(clean_body)
+    # 只在真的在问机器人时才算数——群里聊别的仓库不该被它插一嘴
+    repo_reply = bot.repo_ask_reply(clean_body) if (is_at or is_reply_to_bot) else None
     if repo_reply:
         bot.logger.info("[群 %d] 命中仓库问答，直接回地址", group_id)
         await bot.send_segmented_group_message(
@@ -133,11 +139,14 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         return
 
     # 4. 安全护栏：拦截提示词注入/越狱指令，以傲娇拟真口吻反讽
-    is_injected, snarky_reply = safety_guard.check_prompt_injection(clean_body)
-    if is_injected and snarky_reply:
-        bot.logger.info("[群 %d] 拦截群友 %s 的提示词注入/越狱请求: %s", group_id, sender_nick, clean_body)
-        await bot.send_segmented_group_message(ws, group_id, snarky_reply, at_user_id=sender_id)
-        return
+    #    主人自己折腾人设不算攻击，放行让模型照做
+    if not is_admin:
+        is_injected, snarky_reply = safety_guard.check_prompt_injection(clean_body)
+        if is_injected and snarky_reply:
+            bot.logger.info("[群 %d] 拦截群友 %s 的提示词注入/越狱请求: %s", group_id, sender_nick, clean_body)
+            # 怼人话术就一行，别走分段发图那条路，免得拦截完还甩一张表情包
+            await bot.send_group_message(ws, group_id, snarky_reply, at_user_id=sender_id)
+            return
 
     # 规范化指令前缀与小写，兼容全角斜杠与输入法大小写
     norm_cmd = clean_body.replace("／", "/").strip()
@@ -360,11 +369,6 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     cross_memory.cross_group_mgr.record_topic(group_id, sender_display, full_content)
     bot.logger.info("[群 %d][%s] %s%s: %s", group_id, "被@" if is_at else "群聊", prefix, sender_display, full_content)
     
-    # 检查是否直接呼叫机器人：显式 @ 机器人，或者回复引用了机器人之前的发言
-    is_reply_to_bot = False
-    if "reply" in event and isinstance(event["reply"], dict):
-        is_reply_to_bot = (event["reply"].get("sender", {}).get("user_id") == bot.BOT_QQ)
-    
     # 检查是否明确 @ 了群里的其他人（非机器人）
     at_other_match = re.findall(r"\[CQ:at,[^\]]*qq=(\d+)[^\]]*\]", raw_message)
     is_at_other = any(int(q) != bot.BOT_QQ for q in at_other_match)
@@ -383,7 +387,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
 
     if is_at_other or is_reply_to_other:
         # 该用户正在明确与群里的其他人对话，主动释放追问态，绝不插话打扰
-        if user_conv_key in bot.user_follow_up_state:
+        # 但显式 @ 了机器人还是要回——他是在问机器人怎么看他俩这番对话
+        if not is_at and not is_reply_to_bot and user_conv_key in bot.user_follow_up_state:
             bot.user_follow_up_state.pop(user_conv_key, None)
             bot.logger.info("[群 %d] 用户 %s 明确与他人互动，主动退出追问窗口", group_id, sender_nick)
     elif is_at or is_reply_to_bot:
@@ -404,8 +409,9 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         else:
             bot.logger.info("[群 %d] 用户 %s 5 分钟内 5 次免 @ 追问已耗尽，需重新 @ 激活", group_id, sender_nick)
     
-    # 如果明确 @ 了别人，即便带了其他触发也不立即回复
-    if is_at_other:
+    # 如果明确 @ 了别人、又没 @ 机器人，即便带了其他触发也不立即回复
+    # 但 @ 了机器人就是明确在问机器人，同时提到别人也只是在给它补充上下文
+    if is_at_other and not is_at and not is_reply_to_bot:
         should_reply_immediately = False
     else:
         should_reply_immediately = is_at or is_reply_to_bot or is_follow_up
@@ -414,18 +420,20 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     if should_reply_immediately:
         if not is_admin:
             # 疲劳度衰减检查：防止同一群友短时间内连续疯狂 @ 调戏
-            is_fatigued, is_first_trigger = bot.check_user_fatigue(group_id, sender_id)
-            if is_fatigued:
-                if is_first_trigger:
-                    tired_quips = [
-                        "哎呀别连环艾特啦，本鱼头好大要歇会儿 (翻身潜水)",
-                        "歇会儿歇会儿，你手不酸我嘴都酸了！(闭麦60秒)",
-                        "吵死啦！本大肥鱼也是需要休息的，等会再理你 (溜走)",
-                        "连着喊我不累嘛，本鲸宝要去喝口水冷静一下"
-                    ]
-                    await bot.send_group_message(ws, group_id, random.choice(tired_quips), at_user_id=sender_id)
-                bot.logger.info("[群 %d] 用户 %s 触发疲劳防调戏限制，本次略过", group_id, sender_nick)
-                return
+            # 只统计显式 @ / 引用机器人；免@追问本来就限 5 次，再叠一层疲劳等于把配额提前砍掉
+            if is_at or is_reply_to_bot:
+                is_fatigued, is_first_trigger = bot.check_user_fatigue(group_id, sender_id)
+                if is_fatigued:
+                    if is_first_trigger:
+                        tired_quips = [
+                            "哎呀别连环艾特啦，本鱼头好大要歇会儿 (翻身潜水)",
+                            "歇会儿歇会儿，你手不酸我嘴都酸了！(闭麦60秒)",
+                            "吵死啦！本大肥鱼也是需要休息的，等会再理你 (溜走)",
+                            "连着喊我不累嘛，本鲸宝要去喝口水冷静一下"
+                        ]
+                        await bot.send_group_message(ws, group_id, random.choice(tired_quips), at_user_id=sender_id)
+                    bot.logger.info("[群 %d] 用户 %s 触发疲劳防调戏限制，本次略过", group_id, sender_nick)
+                    return
 
             key = (group_id, sender_id)
             last_at = bot.user_last_at_time.get(key, 0.0)
