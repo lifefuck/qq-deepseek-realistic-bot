@@ -594,7 +594,7 @@ INDEX_HTML = """<!DOCTYPE html>
           badgeSleep.innerText = "主人唤醒中 (30分钟)";
         } else {
           badgeSleep.className = "badge badge-slate";
-          badgeSleep.innerText = "休眠中 (23:00~07:00)";
+          badgeSleep.innerText = "休眠中 (01:00~07:00)";
         }
       } else {
         badgeSleep.className = "badge badge-success";
@@ -668,7 +668,7 @@ INDEX_HTML = """<!DOCTYPE html>
         const isSleepOn = cfg.enable_sleep !== false;
         const isPokeOn = cfg.enable_poke !== false;
         const isMuted = !!cfg.muted;
-        const probPct = Math.round((cfg.interject_prob || 0.35) * 100);
+        const probPct = Math.round((cfg.interject_prob ?? 0.10) * 100);
 
         let badgeClass = "badge-slate";
         if (g.interject_why.includes("热场")) badgeClass = "badge-success";
@@ -710,7 +710,7 @@ INDEX_HTML = """<!DOCTYPE html>
               </div>
 
               <div class="control-row">
-                <span class="control-label">23:00~07:00 睡眠作息</span>
+                <span class="control-label">01:00~07:00 睡眠作息</span>
                 <div class="switch-pill ${isSleepOn ? 'active-on' : 'active-off'}"
                   onclick="setGroupConfig('${g.group_id}', 'enable_sleep', ${!isSleepOn})">
                   <span class="opt-on">入睡</span>

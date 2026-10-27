@@ -33,7 +33,8 @@ import fun_features
 import media_resolver
 from meme_manager import meme_manager
 from prompts import (SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT, GAMES_KB, needs_games_kb,
-                     repo_ask_reply, _POKE_QUIPS, _POKE_ADMIN_QUIPS)
+                     repo_ask_reply, _POKE_QUIPS, _POKE_ADMIN_QUIPS,
+                     _POKE_FAVOR_HIGH, _POKE_FAVOR_MID, _POKE_FAVOR_LOW)
 import meme_catalog
 import safety_guard
 import cross_interaction
@@ -86,10 +87,10 @@ FOLLOW_UP_WINDOW = 300.0        # 持续对话追问窗口为 5 分钟 (300 秒)
 FOLLOW_UP_MAX_COUNT = 5         # 追问窗口内最多免 @ 回答 5 次，有新的 @ 则重置配额
 MAX_OUTPUT_TOKENS = 200         # 限制单次生成长度，防长篇大论
 
-# 拟真作息睡眠参数 (23:00 ~ 07:00 CST 为入睡期)
-SLEEP_START_HOUR = 23
+# 拟真作息睡眠参数 (01:00 ~ 07:00 CST 为入睡期)
+SLEEP_START_HOUR = 1
 SLEEP_END_HOUR = 7
-sleep_override_until: float = 0.0          # 主人专属叫醒生效截止时间戳
+sleep_override_until: float = 0.0          # 唤醒生效截止时间戳（保留扩展）
 user_sleep_reply_cd: Dict[tuple, float] = collections.defaultdict(float)  # 限制半夜对单个群友每 3 分钟最多回一句梦话
 
 # 疲劳度衰减参数 (防群友连续狂 @ 调戏)
@@ -506,8 +507,8 @@ def check_and_record_group_rate_limit(group_id: int) -> bool:
     return len(dq) < GROUP_MAX_MESSAGES_PER_WINDOW
 
 # ==================== 状态存储（按群隔离） ====================
-# 群聊近期图片缓存池 (用于两段式搜番与以图搜图): group_id -> deque of (image_url, timestamp, sender_nick)
-group_recent_images: Dict[int, Deque[Tuple[str, float, str]]] = collections.defaultdict(lambda: collections.deque(maxlen=10))
+# 群聊近期图片缓存池 (用于两段式搜番与以图搜图): group_id -> deque of (image_url, timestamp, sender_id, sender_nick)
+group_recent_images: Dict[int, Deque[Tuple[str, float, int, str]]] = collections.defaultdict(lambda: collections.deque(maxlen=10))
 
 # 情绪立绘目录
 AVATARS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "avatars", "v2-状态立绘")
@@ -602,8 +603,8 @@ DEFAULT_GROUP_CONFIG = {
     "mode": "user",            # "user" (拟真闲聊) 或 "root" (技术老搭档)
     "muted": False,             # /off 一键静音的总闸：群友说什么都不回，管理员指令照旧
     "enable_interject": True,   # 是否允许主动插话
-    "interject_prob": 0.35,     # 主动插话基准概率 (0.0 ~ 1.0)
-    "enable_sleep": True,       # 是否启用 23:00~07:00 拟真作息
+    "interject_prob": 0.10,     # 主动插话基准概率 (0.0 ~ 1.0，调降至 10%)
+    "enable_sleep": True,       # 是否启用 01:00~07:00 拟真作息
     "enable_poke": True,        # 是否开启戳一戳互动与回戳
     "enable_games": True,       # 是否开启数字炸弹/掷骰子等文字游戏
     "enable_search": True,      # 是否开启联网热点检索 (鸭鸭搜/B站)
@@ -1089,7 +1090,8 @@ INTERJECT_NOISE_KEYWORDS = {
 
 def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int = 0) -> tuple[bool, bool]:
     """
-    判断是否应该主动插话（结合各群独立开关、黑名单降噪与冷热场动态调节）。
+    判断是否应该送入大模型由 AI 自主思考是否接话（结合各群独立开关、黑名单降噪与冷热场动态调节）。
+    彻底废除固定代称/唤醒词列表，完全交由大模型根据上下文思考接梗或输出 [PASS] 静默。
     返回: (should_trigger: bool, is_mention_bot: bool)
     """
     cfg = get_group_config(group_id if group_id else None)
@@ -1100,25 +1102,17 @@ def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int =
     if is_bot_sleeping(group_id):
         return False, False
 
-    lower = text.lower()
-    # 1. 明确提到机器人、模型、AI 或相关代称梗词，命中即触发
-    if any(kw in lower for kw in BOT_KEYWORDS):
-        return True, True
-    
-    # 2. 命中日常私聊/开黑/组队黑名单词汇，坚决不瞎插话打扰群友
+    # 1. 命中日常私聊/开黑/组队黑名单词汇，坚决不瞎插话打扰群友
     if any(nkw in text for nkw in INTERJECT_NOISE_KEYWORDS):
         return False, False
 
-    # 3. 问句或讨论，结合冷热场动态介入（严格要求文本长度 >= 6，排除无主语碎片追问）
-    has_question = any(q in text for q in ["？", "?", "怎么", "如何", "为什么", "为啥", "什么原因", "有没有", "是谁", "啥"])
-    if has_question and len(text) >= 6:
-        base_p = float(cfg.get('interject_prob', 0.35))
-        final_prob, why = calculate_interject_probability(group_id, base_p)
-        logger.info("[群 %d] 插话问句触发判定: 基准=0.35, 调整后=%.2f (%s)", group_id, final_prob, why)
-        import random
-        return (random.random() < final_prob), False
-
-    return False, False
+    # 2. 只要是有实质内容（非纯水、长度>=4）的群消息，结合冷热场动态概率送入大模型自主思考
+    # 大模型在旁观模式下拥有最终裁决权：插不上话/未被明确提及/不确定上下文时自动输出 [PASS] 静默
+    base_p = float(cfg.get('interject_prob', 0.15))
+    final_prob, why = calculate_interject_probability(group_id, base_p)
+    logger.debug("[群 %d] 旁观动态思考判定: 基准=%.2f, 调整后=%.2f (%s)", group_id, base_p, final_prob, why)
+    import random
+    return (random.random() < final_prob), False
 
 # ==================== OneBot11 API 请求包装 ====================
 async def call_action(ws: aiohttp.ClientWebSocketResponse, action: str, params: dict, timeout: float = 2.0) -> Optional[dict]:
@@ -1221,9 +1215,9 @@ async def extract_reply_context(ws: aiohttp.ClientWebSocketResponse, event: dict
         reply_obj = event["reply"]
         nick = reply_obj.get("sender", {}).get("nickname") or reply_obj.get("sender", {}).get("card") or "群友"
         orig_raw = reply_obj.get("raw_message") or reply_obj.get("message") or ""
-        # 如果引用的是图片，保留 CQ:image 以便后续视觉模型识别
+        # 如果引用的是图片，保留发送者信息与 CQ:image 以便后续视觉模型识别发送人
         if "[CQ:image" in str(orig_raw):
-            return str(orig_raw)
+            return f'[引用 {nick} 发送的图片: {str(orig_raw)}]'
         orig_text = clean_cq_codes(orig_raw)
         if orig_text:
             return f'[引用 {nick}: "{orig_text[:50]}"]'
@@ -1238,7 +1232,7 @@ async def extract_reply_context(ws: aiohttp.ClientWebSocketResponse, event: dict
             nick = data.get("sender", {}).get("nickname") or data.get("sender", {}).get("card") or "群友"
             orig_raw = data.get("raw_message") or ""
             if "[CQ:image" in str(orig_raw):
-                return str(orig_raw)
+                return f'[引用 {nick} 发送的图片: {str(orig_raw)}]'
             orig_text = clean_cq_codes(orig_raw)
             if orig_text:
                 return f'[引用 {nick}: "{orig_text[:50]}"]'
@@ -1401,27 +1395,23 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
     # 先戳回去再说话：对方戳完的即时反馈就是回戳，别等模型生成完再补一刀
     await poke_back(ws, group_id, user_id)
 
-    # 拟真睡眠作息检查：若正在睡觉被戳
+    # 拟真睡眠作息检查：若正在睡觉被戳，触发翻身梦话反应（戳一戳保持原样，不叫醒）
     if is_bot_sleeping(group_id):
-        if is_admin:
-            sleep_override_until = now + 1800.0  # 主人戳一戳直接唤醒 30 分钟
-            logger.info("[作息系统] 主人戳一戳叫醒大肥鱼！")
-        else:
-            logger.info("[群 %d] 处于睡眠期，被群友 %s 戳一戳，触发翻身梦话反应", group_id, user_id)
-            await asyncio.sleep(0.5)
-            sleep_poke = random.choice([
-                "(闭着眼睛把尾巴缩进被窝，翻身继续睡)",
-                "(被戳得翻了个身，砸吧砸吧嘴没醒)",
-                "呼噜...别戳啦，在睡觉呢 (扯被子盖住头)"
-            ])
-            await send_group_message(ws, group_id, sleep_poke, at_user_id=user_id)
-            return
+        logger.info("[群 %d] 处于睡眠期，被 %s 戳一戳，触发翻身梦话反应", group_id, f"管理员 {user_id}" if is_admin else f"群友 {user_id}")
+        await asyncio.sleep(0.5)
+        sleep_poke = random.choice([
+            "呼噜...别戳啦，在睡觉呢",
+            "唔...别闹，困死了继续睡",
+            "呼呼...大半夜别戳鱼啦"
+        ])
+        await send_group_message(ws, group_id, sleep_poke, at_user_id=user_id)
+        return
 
     logger.info("[群 %d] 机器人被 %s 戳一戳！触发动态傲娇回复...", group_id, f"管理员 {user_id}" if is_admin else f"群友 {user_id}")
     
     # 异步调用模型生成傲娇动态回复
     nick = "管理员" if is_admin else "群友"
-    reply = await call_deepseek_poke(nick, is_admin=is_admin, group_id=group_id)
+    reply = await call_deepseek_poke(nick, is_admin=is_admin, group_id=group_id, user_id=user_id)
     if reply:
         await asyncio.sleep(0.5)
         # 被戳一戳时，文字回复前置 @ 对方
@@ -1449,7 +1439,7 @@ def get_bot_dashboard_status() -> Dict[str, Any]:
         last_msg = group_last_msg_time.get(gid, 0.0)
         last_reply = group_last_bot_reply_time.get(gid, 0.0)
         msg_count = group_msg_count_since_bot.get(gid, 0)
-        base_p = float(cfg.get("interject_prob", 0.35))
+        base_p = float(cfg.get("interject_prob", 0.10))
         prob, why = calculate_interject_probability(gid, base_p)
         g_name = group_names_cache.get(gid, f"群聊 {gid}")
         groups_data.append({
@@ -1528,11 +1518,60 @@ async def _favor_keeper():
             logger.error("[好感守护] 异常: %s", e)
 
 
+async def _cold_group_activator():
+    """群聊冷场智能唤醒：白天时段（10:00~21:00）若白名单群安静超过 3 小时，且群开启插话，随性唤醒"""
+    # 启动等待 5 分钟避免刚连上就触发
+    await asyncio.sleep(300)
+    while True:
+        try:
+            await asyncio.sleep(600)  # 每 10 分钟巡检一次
+            now_dt = datetime.datetime.now()
+            # 仅限白天活跃期：10:00 到 21:00
+            if not (10 <= now_dt.hour <= 21):
+                continue
+            now_ts = time.time()
+            for gid in list(ALLOWED_GROUPS):
+                cfg = get_group_config(gid)
+                if cfg.get("muted") or not cfg.get("enable_active_reply", True):
+                    continue
+                # 静默保护
+                if now_ts < group_silence_until.get(gid, 0.0):
+                    continue
+                last_msg_t = group_last_msg_time.get(gid, 0.0)
+                last_active_t = group_last_active_reply.get(gid, 0.0)
+                # 上次有消息超过 3 小时 (10800s)，且上次机器人主动插话超过 4 小时 (14400s)
+                if (now_ts - last_msg_t > 10800.0) and (now_ts - last_active_t > 14400.0):
+                    timeline = group_timelines.get(gid)
+                    if not timeline or len(timeline) < 2:
+                        continue
+                    # 检查历史是否有过真实交流（避免僵尸群）
+                    if current_ws and not current_ws.closed:
+                        logger.info("[群 %d] 检测到白天冷场超过 3 小时，触发轻量随性抛话唤醒", gid)
+                        group_last_active_reply[gid] = now_ts
+                        group_last_msg_time[gid] = now_ts
+                        # 委托 process_group_trigger 发起一次冷场唤醒
+                        from handlers.group import process_group_trigger
+                        asyncio.create_task(process_group_trigger(
+                            current_ws, gid,
+                            is_at=False,
+                            sender_nick="小鲸鱼",
+                            is_admin=False,
+                            target_uid=None,
+                            user_text="（大家怎么突然都不说话了呀，悄悄冒个泡）",
+                            extra_instruction="当前群聊已经冷场安静了3个多小时。你作为群里的常驻成员，随性伸个懒腰冒个泡、或者对之前的残余话题丢句俏皮的吐槽/引子打破冷场（严禁机械报时，1句傲娇随意的短句，绝不用句号）。"
+                        ))
+        except asyncio.CancelledError:
+            raise
+        except Exception as ce:
+            logger.debug("[冷场唤醒守护] 巡检异常: %s", ce)
+
+
 async def main():
     logger.info("启动 QQ DeepSeek 群聊 & 私聊机器人...")
     logger.info("白名单群: %s | 机器人 QQ: %d | 模型: %s | 管理员: %d", list(ALLOWED_GROUPS), BOT_QQ, MODEL_NAME, ADMIN_QQ)
 
     asyncio.create_task(_favor_keeper())
+    asyncio.create_task(_cold_group_activator())
 
     # 启动轻量现代浅色 Web 仪表盘（只绑 127.0.0.1，外网走 Cloudflare 隧道）
     try:

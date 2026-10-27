@@ -133,24 +133,118 @@ def sync_memes() -> dict:
     except Exception as e:
         logger.error(f"拉取搜狗流行词失败: {e}")
 
-    # 3. 补充常青经典二次元/群友高频互动梗（保底库）
+    # 3. 获取并解析社区与游戏热榜（Bilibili、贴吧、抖音聚合）
+    logger.info("正在获取社区与亚文化高频热榜 (Bilibili/贴吧/抖音)... ")
+    trending_count = 0
+    sources = [("bilibili-hot-search", "B站热搜"), ("tieba", "贴吧热议"), ("douyin", "抖音热点")]
+    for sid, sname in sources:
+        try:
+            raw_data = fetch_url(f"https://newsnow.busiyi.world/api/s?id={sid}", timeout=8)
+            t_json = json.loads(raw_data)
+            for it in t_json.get("items", [])[:15]:
+                title = (it.get("title") or "").strip()
+                if 2 <= len(title) <= 20 and not any(w in title for w in ("外交部", "气象", "地震", "总书记", "政治")):
+                    if title not in seen_names and is_safe_meme(title):
+                        seen_names.add(title)
+                        memes_list.append({
+                            "name": title,
+                            "desc": f"近期{sname}高频热点事件/讨论话题",
+                            "source": sid,
+                            "type": "社区热搜"
+                        })
+                        trending_count += 1
+        except Exception as e:
+            logger.warning(f"拉取 {sname} 失败: {e}")
+
+    # 尝试从 GitHub cxyfreedom/website-hot-hub 补充 B 站优质视频热梗
+    try:
+        hub_text = fetch_url("https://raw.githubusercontent.com/cxyfreedom/website-hot-hub/main/README.md", timeout=10)
+        bili_m = re.search(r"## Bilibili.*?(?=## |\Z)", hub_text, re.DOTALL)
+        if bili_m:
+            for line in bili_m.group(0).splitlines()[:50]:
+                m_t = re.search(r"^\d+\.\s*(?:《|【)?([^】》\n(（]{2,18})", line.strip())
+                if m_t:
+                    name = m_t.group(1).strip()
+                    if name not in seen_names and not any(bad in name for bad in ("PV", "http", "宣传片", "自驾", "评测")):
+                        if is_safe_meme(name):
+                            seen_names.add(name)
+                            clean_line = line.strip()[:35]
+                            memes_list.append({
+                                "name": name,
+                                "desc": f"近期B站高频二创热点/爆款内容：{clean_line}",
+                                "source": "github_hot_hub",
+                                "type": "二创热梗"
+                            })
+                            trending_count += 1
+    except Exception as e:
+        logger.warning(f"拉取 website-hot-hub 失败: {e}")
+    logger.info(f"成功补充多平台热搜与二创热点: {trending_count} 条")
+
+    # 3.5 对未带详细背景的 Top 新热词尝试补充简短背景摘要
+    deepseek_key = os.environ.get("DEEPSEEK_API_KEY", "")
+    if deepseek_key:
+        unexplained = [m for m in memes_list if m.get("source") in ("bilibili-hot-search", "douyin", "tieba") and not m.get("desc_generated")][:15]
+        if unexplained:
+            logger.info(f"正在调用轻量 LLM 异步补充最新热词短释义 (待处理 {len(unexplained)} 条)...")
+            try:
+                names_prompt = "\n".join([f"{i+1}. {m['name']}" for i, m in enumerate(unexplained)])
+                req_payload = {
+                    "model": "deepseek-ai/DeepSeek-V3",
+                    "messages": [
+                        {"role": "system", "content": "你是一个懂各种网络热搜、游戏黑话和流行梗的年轻人。请为每个给出的网络热词或热搜标题写一句极其简炼的背景（20字以内，讲清楚这是什么梗、大家在调侃或关注什么）。输出格式：每行一个'序号. 解释'，不要废话。"},
+                        {"role": "user", "content": names_prompt}
+                    ],
+                    "temperature": 0.5,
+                    "max_tokens": 500
+                }
+                api_url = "https://api.siliconflow.cn/v1/chat/completions"
+                req_obj = urllib.request.Request(
+                    api_url,
+                    data=json.dumps(req_payload).encode("utf-8"),
+                    headers={"Authorization": f"Bearer {deepseek_key}", "Content-Type": "application/json"}
+                )
+                with urllib.request.urlopen(req_obj, timeout=12) as resp:
+                    if resp.status == 200:
+                        res_data = json.loads(resp.read().decode())
+                        ans_text = res_data["choices"][0]["message"]["content"]
+                        for line in ans_text.splitlines():
+                            m_idx = re.match(r"^(\d+)\.\s*(.*)", line.strip())
+                            if m_idx:
+                                idx = int(m_idx.group(1)) - 1
+                                if 0 <= idx < len(unexplained):
+                                    brief_desc = m_idx.group(2).strip()
+                                    if brief_desc:
+                                        unexplained[idx]["desc"] = brief_desc[:40]
+                                        unexplained[idx]["desc_generated"] = True
+                        logger.info("已成功为最新热搜补充一句话梗背景！")
+            except Exception as e:
+                logger.warning(f"自动提炼热搜梗摘要跳过或失败: {e}")
+
+    # 4. 补充常青经典二次元/群友高频互动梗（保底库，含别名变体与圈子归类）
     classic_memes = [
-        {"name": "尊嘟假嘟", "desc": "真的假的谐音，可爱卖萌语气", "source": "classic", "type": "谐音"},
-        {"name": "泰裤辣", "desc": "太酷了谐音，调侃热血或中二名场面", "source": "classic", "type": "谐音"},
-        {"name": "电子布洛芬", "desc": "指看了让人治愈开心、缓解疲惫的视频或段子", "source": "classic", "type": "修辞"},
-        {"name": "偷感很重", "desc": "形容小心翼翼、生怕被发现的害羞或心虚状态", "source": "classic", "type": "现象"},
-        {"name": "硬控", "desc": "形容被某事物深深吸引或震撼，完全动弹不得", "source": "classic", "type": "现象"},
-        {"name": "水灵灵地", "desc": "调侃某人毫无预兆、理直气壮地做出某事", "source": "classic", "type": "现象"},
-        {"name": "班味", "desc": "上班久了身上散发出的疲惫、憔悴与沧桑感", "source": "classic", "type": "现象"},
-        {"name": "疯狂星期四", "desc": "肯德基特惠活动演变出的各种离谱反转求请客文案", "source": "classic", "type": "梗"},
-        {"name": "CPU/KTV", "desc": "调侃PUA的代称（“你在CPU我吗”）", "source": "classic", "type": "谐音"},
-        {"name": "纯爱战士", "desc": "崇尚专一美好爱情、拒绝牛头人剧情的二次元同好", "source": "classic", "type": "二次元"},
-        {"name": "牛头人(NTR)", "desc": "调侃被横刀夺爱、绿帽背叛情节", "source": "classic", "type": "二次元"},
-        {"name": "发癫/发疯文学", "desc": "情绪饱满、逻辑混乱却极具感染力的情绪发泄对话", "source": "classic", "type": "文风"},
-        {"name": "赛博菩萨", "desc": "在网上无偿分享资源、攻略或解决疑难的好心人", "source": "classic", "type": "网络赞誉"},
-        {"name": "义父", "desc": "对送福利、借账号、请客大佬的尊称调侃", "source": "classic", "type": "群聊称呼"},
-        {"name": "汗流浃背了吧", "desc": "对局或对线占据上风时调侃对方心虚紧张", "source": "classic", "type": "对线调侃"},
-        {"name": "老登/小登", "desc": "对群内老油条与新人群友的调侃称呼", "source": "classic", "type": "称呼"},
+        {"name": "打瓦", "desc": "指玩射击游戏《无畏契约》(Valorant)，常伴随瓦学弟/叫妈妈/笨蛋奶妈等抽象逆天二创梗", "source": "classic", "type": "游戏梗", "category": "game", "aliases": ["达瓦", "我要打瓦", "瓦罗兰特", "valorant", "打瓦叫妈", "贤者"]},
+        {"name": "瓦学弟", "desc": "《无畏契约》玩家的戏称（与GO学长相对），常被二创调侃在游戏里爱认妈或叫妈妈带飞", "source": "classic", "type": "游戏梗", "category": "game", "aliases": ["瓦批", "无畏契约学弟"]},
+        {"name": "三角洲堵桥", "desc": "《三角洲行动》航天基地发射桥玩法，乌鲁鲁/狙击手卡桥头封锁撤离点只杀人不吃包", "source": "classic", "type": "游戏梗", "category": "game", "aliases": ["发射桥", "航天基地堵桥", "三角洲封桥"]},
+        {"name": "堵桥", "desc": "战术撤离或吃鸡游戏中守在必经桥头截杀撤离玩家（三角洲航天基地乌鲁鲁堵桥最出名）", "source": "classic", "type": "游戏梗", "category": "game", "aliases": ["守桥", "卡桥头", "桥头战神"]},
+        {"name": "乌鲁鲁", "desc": "《三角洲行动》工程干员，因巡飞弹技能在发射桥堵桥极其恶心闻名", "source": "classic", "type": "游戏梗", "category": "game", "aliases": ["巡飞弹", "大胖子", "三角洲乌鲁鲁"]},
+        {"name": "老六", "desc": "指游戏中游离于团队之外、行为猥琐阴险的伏击者或苟分老银币", "source": "classic", "type": "游戏梗", "category": "game", "aliases": ["当老六", "真老六", "老六行为", "老六架枪"]},
+        {"name": "尊嘟假嘟", "desc": "真的假的谐音，可爱卖萌语气", "source": "classic", "type": "谐音", "category": "abstract", "aliases": ["尊嘟", "假嘟", "zundu"]},
+        {"name": "泰裤辣", "desc": "太酷了谐音，调侃热血或中二名场面", "source": "classic", "type": "谐音", "category": "abstract", "aliases": ["太裤辣", "太酷啦"]},
+        {"name": "电子布洛芬", "desc": "指看了让人治愈开心、缓解疲惫的视频或段子", "source": "classic", "type": "修辞", "category": "acg", "aliases": ["精神布洛芬"]},
+        {"name": "偷感很重", "desc": "形容小心翼翼、生怕被发现的害羞或心虚状态", "source": "classic", "type": "现象", "category": "general", "aliases": ["偷感"]},
+        {"name": "硬控", "desc": "形容被某事物深深吸引或震撼，完全动弹不得", "source": "classic", "type": "现象", "category": "general", "aliases": ["硬控我", "被硬控"]},
+        {"name": "水灵灵地", "desc": "调侃某人毫无预兆、理直气壮地做出某事", "source": "classic", "type": "现象", "category": "general", "aliases": ["水灵灵"]},
+        {"name": "班味", "desc": "上班久了身上散发出的疲惫、憔悴与沧桑感", "source": "classic", "type": "现象", "category": "general", "aliases": ["去班味", "班味重"]},
+        {"name": "疯狂星期四", "desc": "肯德基特惠活动演变出的各种离谱反转求请客文案（v我50）", "source": "classic", "type": "梗", "category": "general", "aliases": ["v我50", "狂四", "肯德基星期四"]},
+        {"name": "CPU/KTV", "desc": "调侃PUA的代称（“你在CPU我吗”）", "source": "classic", "type": "谐音", "category": "abstract", "aliases": ["cpu我", "你在cpu我"]},
+        {"name": "纯爱战士", "desc": "崇尚专一美好爱情、拒绝牛头人剧情的二次元同好", "source": "classic", "type": "二次元", "category": "acg", "aliases": ["纯爱战神"]},
+        {"name": "牛头人(NTR)", "desc": "调侃被横刀夺爱、绿帽背叛情节", "source": "classic", "type": "二次元", "category": "acg", "aliases": ["ntr", "牛头人"]},
+        {"name": "发癫/发疯文学", "desc": "情绪饱满、逻辑混乱却极具感染力的情绪发泄对话", "source": "classic", "type": "文风", "category": "abstract", "aliases": ["发癫", "发疯"]},
+        {"name": "赛博菩萨", "desc": "在网上无偿分享资源、攻略或解决疑难的好心人", "source": "classic", "type": "网络赞誉", "category": "general", "aliases": ["网络菩萨"]},
+        {"name": "义父", "desc": "对送福利、借账号、请客大佬的尊称调侃", "source": "classic", "type": "群聊称呼", "category": "abstract", "aliases": ["请客义父", "活义父"]},
+        {"name": "汗流浃背了吧", "desc": "对局或对线占据上风时调侃对方心虚紧张", "source": "classic", "type": "对线调侃", "category": "game", "aliases": ["汗流浃背", "老弟汗流浃背了吧"]},
+        {"name": "老登/小登", "desc": "对群内老油条与新人群友的调侃称呼", "source": "classic", "type": "称呼", "category": "abstract", "aliases": ["老登", "小登"]},
+        {"name": "红温", "desc": "源自电竞选手Uzi比赛失利脸色涨红，引申为情绪急躁、破防、愤怒", "source": "classic", "type": "游戏梗", "category": "game", "aliases": ["红温了", "急了急了", "破大防"]},
     ]
     for m in classic_memes:
         if m["name"] not in seen_names:

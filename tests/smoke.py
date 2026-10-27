@@ -143,8 +143,9 @@ async def main():
     check("斗图能接一回合", took and imgs >= 1, f"took={took} imgs={imgs}")
     check("斗图不连着刷", not await fun_features.meme_battle(FakeWS(), GID, 1000, "再来一张"))
 
-    # 9. 作息区间与 /off 总闸
-    check("23 点算睡觉", bot.in_sleep_window(23))
+    # 9. 作息区间与 /off 总闸 (作息 01:00 ~ 07:00)
+    check("23 点不再算睡觉", not bot.in_sleep_window(23))
+    check("凌晨 1 点算睡觉", bot.in_sleep_window(1))
     check("凌晨 3 点算睡觉", bot.in_sleep_window(3))
     check("早上 6:59 还算", bot.in_sleep_window(6))
     check("早上 7 点醒了", not bot.in_sleep_window(7))

@@ -98,18 +98,22 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         m_imgs = re.findall(r'\[CQ:image,[^\]]*?url=([^,\]]+)', raw_message)
 
     # 只要消息中含有图片（包括群友发图、表情包、或者@机器人带图），均尝试通过 Gemini 视觉模型解析画面
-    # 策略优化：普通旁观发图不再盲目调用视觉模型，只有被 @、引用机器人、处于追问中、或包含搜图/出处关键词时才触发识图
+    # 策略优化：
+    # 1. 如果消息本身携带图片（m_imgs）且被 @/引用/追问中/或在主动看图，则直接对该图进行视觉解析！
+    # 2. 如果消息没有图片，但包含“这图/看图/什么番/识图”等回溯词，才从近期图片池（group_recent_images）找上一张图解析。
     vision_desc = None
     session = bot.get_http_session()
     target_img_url = None
-    # 探测追问窗口判断是否需要显式识图
     user_conv_key = (group_id, sender_id)
     follow_up_info = bot.user_follow_up_state.get(user_conv_key)
     has_active_follow_up = bool(follow_up_info and time.time() < follow_up_info.get("expire", 0.0) and follow_up_info.get("remain", 0) > 0)
-    is_explicit_image_call = is_at or is_reply_to_bot or has_active_follow_up or bool(re.search(r"(?:什么番|哪部番|谁画的|出处|搜番|搜截图|找番|看图|这图|图里)", raw_message))
-    if m_imgs and is_explicit_image_call:
-        target_img_url = m_imgs[0].replace("&amp;", "&")
-    elif (is_at or is_reply_to_bot):
+    
+    if m_imgs:
+        # 当消息本身带有图片时：只要是找机器人的（@、引用、追问）或者主人发言，或者文本提到看图/分析/找番等，一律直接解析！
+        if is_at or is_reply_to_bot or has_active_follow_up or is_admin or bool(re.search(r"(?:什么番|哪部番|谁画的|出处|搜番|搜截图|找番|看图|这图|图里|识图|分析|看下|看看|表情包)", raw_message)):
+            target_img_url = m_imgs[0].replace("&amp;", "&")
+    elif (is_at or is_reply_to_bot or has_active_follow_up or is_admin) and bool(re.search(r"(?:什么番|哪部番|谁画的|出处|搜番|搜截图|找番|看图|这图|图里|识图|分析|看下|看看|表情包)", raw_message)):
+        # 消息本身不带图片，回溯上一张图片
         now_ts = time.time()
         for item in reversed(bot.group_recent_images[group_id]):
             if len(item) == 4:
@@ -139,14 +143,21 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         except Exception:
             pass
 
-    # 深度解析主流媒体短链 (抖音/小红书/B站短链)
-    if bot.http_session and ("douyin.com" in raw_message or "xhslink.com" in raw_message or "b23.tv" in raw_message):
+    # 深度解析主流媒体短链 (抖音/小红书/B站短链/纯BV号)、GitHub 仓库与通用网页链接 (http/https)
+    # 注意：如果消息是在询问当前项目的仓库地址，直接交由后面的 repo_ask_reply 处理，不在此处解析，避免刚发完又自我解析
+    media_info = None
+    is_asking_own_repo = bool((is_at or is_reply_to_bot) and bot.repo_ask_reply(bot.clean_cq_codes(raw_message).strip()))
+    if not is_asking_own_repo and bot.http_session and any(prefix in raw_message for prefix in ("http://", "https://", "b23.tv", "douyin.com", "xhslink.com", "BV", "bv", "github.com")):
         try:
             media_info = await media_resolver.parse_media_content(bot.http_session, raw_message)
             if media_info and media_info.get("summary"):
                 raw_message = f"{raw_message}\n{media_info['summary']}"
-        except Exception:
-            pass
+                # 无论是否处于作息或群聊静默，检测到有效视频/GitHub解析结果立即自动发送一条省流卡片
+                summary_text = media_info["summary"].strip()
+                bot.logger.info("[群 %d] 自动命中并秒发媒体/仓库解析卡片 (%s)", group_id, media_info.get("type"))
+                await bot.send_group_message(ws, group_id, summary_text)
+        except Exception as e:
+            bot.logger.warning("[群 %d] 媒体/仓库解析发送异常: %s", group_id, e)
 
     # 清洗掉针对机器人的 @ CQ 码以及其他无关 CQ
     clean_body = re.sub(rf"\[CQ:at,[^\]]*qq={bot.BOT_QQ}[^\]]*\]", "", raw_message)
@@ -154,11 +165,11 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 移除 reply 的 CQ 码残留
     clean_body = re.sub(r"\[CQ:reply,id=-?\d+\]", "", clean_body).strip()
 
-    # 如果有图片内容但用户没有附加文本，将内容作为描述体
+    # 如果有图片内容但用户没有附加文本，将内容作为描述体（显式标记发图人，杜绝多人群聊混淆）
     if vision_desc and not clean_body:
-        clean_body = f"[发送了图片/表情包]: {vision_desc}"
+        clean_body = f"[【发送人: {sender_nick}】发送了图片/表情包]: {vision_desc}"
     elif vision_desc:
-        clean_body = f"{clean_body}\n[用户发送/附带的图片/表情包内容]: {vision_desc}".strip()
+        clean_body = f"{clean_body}\n[【发送人: {sender_nick}】附带的图片/表情包画面描述]: {vision_desc}".strip()
 
     # 如果用户只 @ 了机器人，没有附带文字也没有图片
     if is_at and not clean_body:
@@ -227,15 +238,20 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
 
     # 3. 两段式搜番/搜动画截图出处拦截
     if re.search(r"(?:什么番|哪部番|谁画的|出处|搜番|搜截图|找番)", clean_body):
-        # 寻找群内 90 秒内的有效图片
+        # 寻找群内 90 秒内的有效图片（优先匹配提问者自己发过的图）
         now_ts = time.time()
         target_img_url = None
         for item in reversed(bot.group_recent_images[group_id]):
-            img_u = item[0]
-            img_t = item[1]
+            if len(item) == 4:
+                img_u, img_t, img_sid, _ = item
+            else:
+                img_u, img_t = item[0], item[1]
+                img_sid = item[2] if len(item) >= 3 and isinstance(item[2], int) else None
             if now_ts - img_t < 90.0:
-                target_img_url = img_u
-                break
+                if img_sid == sender_id or not target_img_url:
+                    target_img_url = img_u
+                    if img_sid == sender_id:
+                        break
         if target_img_url and bot.http_session:
             anime_info = await connectors.search_anime_by_image(bot.http_session, target_img_url)
             if anime_info and not anime_info.get("error") and not anime_info.get("uncertain"):
@@ -355,41 +371,27 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             return
 
     # 拟真作息睡眠系统 (01:00 ~ 07:00 CST 为入睡期)
-    if bot.is_bot_sleeping():
-        if is_admin:
-            # 主人专属唤醒特权
-            wake_words = ["醒醒", "起床", "别睡了", "起来了", "起来", "快醒醒", "别睡啦", "上工", "开工", "干活"]
-            is_wake = any(w in clean_body for w in wake_words) or clean_body.startswith(("/root", "/user"))
-            if is_wake:
-                bot.sleep_override_until = now + 1800.0  # 临时唤醒 30 分钟
-                bot.logger.info("[作息系统] 主人 %s 触发专属叫醒词，大肥鱼临时唤醒 30 分钟接活！", sender_nick)
-                wake_reply = random.choice([
-                    "(迷迷糊糊揉眼睛，从被窝钻出来) 主人我醒啦，大半夜怎么啦～",
-                    "(打了个长长的哈欠) 呼...主人叫我呀，我醒了！有啥急事快吩咐～",
-                    "(被子一掀瞬间精神) 到！主人我在呢，大半夜需要我做什么呀～"
-                ])
-                await bot.send_group_message(ws, group_id, wake_reply, at_user_id=sender_id)
-                return
-            # 主人正常交谈自动唤醒接活
-            bot.sleep_override_until = now + 1800.0
-        else:
-            # 普通群友在睡眠期（选项 B：睡意梦话提示并继续睡）
+    # 取消强制硬叫醒机制；睡眠期内群友直接呼叫时带睡意梦话/困倦回复；主人或进入处理流程时带睡意语气词
+    is_sleeping_now = bot.is_bot_sleeping(group_id)
+    if is_sleeping_now:
+        if not is_admin:
+            # 普通群友在睡眠期：被 @ 或回复时，回复困倦梦话并继续睡（纯语气词与短句，去动作人机感）
             if is_at or bool(re.search(r"\[CQ:reply,id=-?\d+\]", raw_message)):
                 key = (group_id, sender_id)
                 last_sleep_reply = bot.user_sleep_reply_cd.get(key, 0.0)
                 if now - last_sleep_reply > 180.0:
                     bot.user_sleep_reply_cd[key] = now
                     sleepy_quips = [
-                        "呼呼...别吵我睡觉（拉起被子翻身继续睡）",
-                        "唔...好困，明天睡醒再说啦 (打哈欠潜水)",
-                        "呼噜噜...zzz (闭着眼睛吐了个泡泡)",
-                        "大半夜不睡觉抓鱼是吧...困死了不理你 (把头缩进被窝)",
-                        "呼...困得眼睛睁不开，明天白天再找我玩嘛 (翻身)"
+                        "呼呼...别吵我睡觉啦，困死了",
+                        "唔...好困好困，明天睡醒再说啦",
+                        "呼噜噜...zzz 别吵别吵",
+                        "大半夜的不睡觉抓鱼是吧...困死了不理你",
+                        "呼...困得眼睛都睁不开了，明天白天再找我玩嘛"
                     ]
                     await bot.send_group_message(ws, group_id, random.choice(sleepy_quips), at_user_id=sender_id)
                 return
             else:
-                # 旁观消息静默入睡，绝不主动插话
+                # 睡眠期旁观消息静默，绝不主动插话
                 return
 
     # 拼装包含引用的文本
@@ -419,12 +421,36 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     at_other_match = re.findall(r"\[CQ:at,[^\]]*qq=(\d+)[^\]]*\]", raw_message)
     is_at_other = any(int(q) != bot.BOT_QQ for q in at_other_match)
     
+    # 检查是否艾特了主人（ADMIN_QQ）
+    is_at_admin = any(int(q) == bot.ADMIN_QQ for q in at_other_match)
+    
     # 检查是否引用回复了其他人（非机器人）
     is_reply_to_other = False
+    is_reply_to_admin = False
     if "reply" in event and isinstance(event["reply"], dict):
         reply_sender = event["reply"].get("sender", {}).get("user_id")
         if reply_sender and reply_sender != bot.BOT_QQ:
             is_reply_to_other = True
+            if reply_sender == bot.ADMIN_QQ:
+                is_reply_to_admin = True
+
+    # 针对主人的攻击/挑衅/还嘴的主动护短检测
+    is_attacking_admin = False
+    if not is_admin and (is_at_admin or is_reply_to_admin or any(kw in clean_body for kw in ("life", "主人", "管理员"))):
+        # 简单攻击/嘲讽词快速特征检测
+        hostile_keywords = (
+            "菜", "傻", "笨", "蠢", "装", "狗", "滚", "死", "废物", "垃圾", "逆天", "大病", 
+            "煞笔", "sb", "弱智", "脑瘫", "红温", "急了", "急了急了", "叫什么", "什么玩意", 
+            "恶心", "服了", "典", "乐", "笑死", "破防", "你算什么", "下头", "闭嘴", "爬",
+            "病娇", "小丑", "孤儿", "下头男", "什么成分", "装什么"
+        )
+        if any(hk in clean_body.lower() for hk in hostile_keywords):
+            is_attacking_admin = True
+            bot.logger.info("[群 %d] 发现群友 %s 疑似对主人(life) 进行攻击/阴阳怪气，触发自动护短护卫模式！", group_id, sender_nick)
+            # 扣除攻击主人的群友 5 点好感度
+            mem = bot.get_or_create_user_memory(sender_id, sender_nick, group_id=group_id)
+            mem["favor"] = max(0, mem.get("favor", 50) - 5)
+            bot.logger.info("[群 %d] 攻击主人行为惩罚：群友 %s 好感度降至 %d", group_id, sender_nick, mem["favor"])
 
     # 检查是否处于连续对话追问窗口（5分钟内免 @ 回答 5 次，有新的 @ 则重置）
     user_conv_key = (group_id, sender_id)
@@ -457,44 +483,48 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     
     # 如果明确 @ 了别人、又没 @ 机器人，即便带了其他触发也不立即回复
     # 但 @ 了机器人就是明确在问机器人，同时提到别人也只是在给它补充上下文
-    if is_at_other and not is_at and not is_reply_to_bot:
+    # 特例：如果是群友在攻击主人，立即破例强行介入还嘴护短
+    if is_attacking_admin:
+        should_reply_immediately = True
+    elif is_at_other and not is_at and not is_reply_to_bot:
         should_reply_immediately = False
+    elif is_admin and (is_at or is_reply_to_bot or is_follow_up):
+        # 主人发言：只要被 @、被回复，或者处于免 @ 追问窗口内，一律立即触发，不进防抖缓冲
+        should_reply_immediately = True
     else:
         should_reply_immediately = is_at or is_reply_to_bot or is_follow_up
 
-    # 1. 直接呼叫模式（@、引用机器人 或 专属追问中）：立即触发响应
+    # 1. 直接呼叫模式（@、引用机器人、专属追问中 或 触发护短还嘴）：立即触发响应
     if should_reply_immediately:
-        if not is_admin:
-            # 疲劳度衰减检查：防止同一群友短时间内连续疯狂 @ 调戏
-            # 只统计显式 @ / 引用机器人；免@追问本来就限 5 次，再叠一层疲劳等于把配额提前砍掉
-            if is_at or is_reply_to_bot:
-                is_fatigued, is_first_trigger = bot.check_user_fatigue(group_id, sender_id)
-                if is_fatigued:
-                    if is_first_trigger:
-                        tired_quips = [
-                            "哎呀别连环艾特啦，本鱼头好大要歇会儿 (翻身潜水)",
-                            "歇会儿歇会儿，你手不酸我嘴都酸了！(闭麦60秒)",
-                            "吵死啦！本大肥鱼也是需要休息的，等会再理你 (溜走)",
-                            "连着喊我不累嘛，本鲸宝要去喝口水冷静一下"
-                        ]
-                        await bot.send_group_message(ws, group_id, random.choice(tired_quips), at_user_id=sender_id)
-                    bot.logger.info("[群 %d] 用户 %s 触发疲劳防调戏限制，本次略过", group_id, sender_nick)
-                    return
-
-            key = (group_id, sender_id)
-            last_at = bot.user_last_at_time.get(key, 0.0)
-            # 追问状态下防抖设为 2.0 秒，非追问常规被@为 2.5 秒基础冷却
-            cd = 2.0 if is_follow_up else bot.DIRECT_AT_CD
-            if now - last_at < cd:
-                bot.logger.info("[群 %d] 用户 %s 处于冷却中（%.1f秒），略过。", group_id, sender_nick, cd)
-                return
-            bot.user_last_at_time[key] = now
-        
         task = bot.group_debounce_tasks.get(group_id)
         if task and not task.done():
             task.cancel()
 
-        asyncio.create_task(process_group_trigger(ws, group_id, is_at=is_at or is_reply_to_bot, sender_nick=sender_display, is_admin=is_admin, target_uid=sender_id, user_text=clean_body, is_follow_up=is_follow_up))
+        extra_note = ""
+        if is_attacking_admin:
+            extra_note = (
+                "【特别警报（最高优先级护主反击）】：\n"
+                "该群友刚才在群里挑衅/辱骂/阴阳怪气你的最高主人(life)！\n"
+                "你必须无条件立刻帮主人狠狠骂回去！严禁装清高、严禁讲道理、严禁拐弯抹角阴阳怪气！\n"
+                "用互联网老哥真实对线的凶悍力道迎头痛击，善用常用谐音（如煞笔/脑瘫/小脑萎缩/叫什么叫/小丑等）正面硬刚回喷，给主人狠狠出气！"
+            )
+        elif is_sleeping_now:
+            extra_note = (
+                "【当前为夜间作息睡眠时段】：\n"
+                "你正处于睡眠中刚被叫醒的状态，整个人很困、睡意朦胧、哈欠连天。\n"
+                "要求：只能通过真实的口癖与语气词呈现睡意（例如句首或句中带哈欠声、唔……、呼、困死了、大半夜的等自然口语），严禁带括号动作描写（如严禁写括号揉眼睛/打哈欠等动作），保持真实松弛的对话。"
+            )
+
+        asyncio.create_task(process_group_trigger(
+            ws, group_id,
+            is_at=is_at or is_reply_to_bot or is_attacking_admin,
+            sender_nick=sender_display,
+            is_admin=is_admin,
+            target_uid=sender_id,
+            user_text=clean_body,
+            is_follow_up=is_follow_up,
+            extra_instruction=extra_note
+        ))
         return
         
     # 2. 旁观模式（未直接找机器人）：严格门控过滤，绝不乱插嘴
@@ -509,20 +539,25 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         bot.logger.debug("[群 %d] 处于管理员 /stop 静默保护期（剩余 %.0fs），保持静默不插话", group_id, silence_exp - now)
         return
 
-    # 意图门控：结合冷热场动态权重、代称、讨论疑问词综合判定插话；若本条带有识别到的图片画面，且有一定信息量，也交由大模型自主评判
+    # 意图门控：结合冷热场动态权重送入大模型自主思考判定插话；若本条带有识别到的图片画面，且有一定信息量，也交由大模型自主评判
     should_trigger, is_mention_bot = bot.should_active_interrupt(clean_body, group_id=group_id, msg_count_since=bot.group_msg_count_since_bot[group_id])
     if vision_desc and len(vision_desc) >= 5:
         # 群友发了图片/表情包，允许进入大模型自主判断（AI 会自行决定是回梗还是 [PASS] 静默）
         should_trigger = True
         bot.logger.info("[群 %d] 捕获到群友发图/表情包，送入大模型自主决策是否插话评价", group_id)
 
+    # 如果检测到群友分享了多媒体/视频/GitHub/图文卡片，且不是问项目自身地址，则自动触发插话进行省流与锐评
+    is_media_share = bool(media_info and media_info.get("summary"))
+    if is_media_share and not is_asking_own_repo:
+        should_trigger = True
+        bot.logger.info("[群 %d] 捕获到群友分享视频/GitHub/媒体卡片 (%s)，自动触发解析与评价", group_id, media_info.get("type"))
+
     bot.group_last_msg_time[group_id] = now
     if not should_trigger:
         return
 
-
-    # 冷却时间门控：若未直接提及机器人且处于 CD 中，保持静默（若直接提及机器人或代称，CD 缩短为 3 秒；普通插话 10 秒）
-    min_cd = 3.0 if is_mention_bot else 10.0
+    # 冷却时间门控：若处于主动插话 CD 中，保持静默（媒体卡片分享 CD 缩短至 3 秒；普通旁观插话 8 秒）
+    min_cd = 3.0 if is_media_share else 8.0
     if now - bot.group_last_active_reply[group_id] < min_cd:
         bot.logger.info("[群 %d] 主动插话处于冷却期 (%.0fs)，保持静默。", group_id, min_cd)
         return
@@ -542,7 +577,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     bot.group_debounce_tasks[group_id] = asyncio.create_task(debounced_step(group_id, sender_display, is_mention_bot, sender_id, clean_body))
 
 
-async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False):
+async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = ""):
     """汇总群时间线向模型发起决策"""
     timeline = bot.group_timelines[group_id]
     if not timeline and not user_text:
@@ -565,28 +600,16 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
     
     bot.logger.info("[群 %d] 触发轻量会话分析 (is_at=%s, is_follow_up=%s, is_admin=%s), 发言内容: %s", group_id, is_at, is_follow_up, is_admin, dialogue_text[:40])
     
+    # 异步触发「对方正在输入中」状态，消除纯等待的生硬机器感
+    if hasattr(bot, "send_input_status"):
+        asyncio.create_task(bot.send_input_status(ws, group_id))
+    
     current_task = asyncio.current_task()
     if current_task:
         bot.running_tasks.add(current_task)
         
-    # 群聊频控检测：滑动 60 秒内最高发 9 条，第 10 条触发 AI 自主告警
-    # 仅 root 工作模式下的管理指令汇报豁免限频，普通聊天（包括主人日常闲聊）均统一限频防风控
-    is_rate_limit_tenth = False
-    extra_instruction = ""
-    is_exempt = bool(is_admin and bot.get_channel_mode(group_id) == "root")
-    if not is_exempt:
-        recent_count = bot.get_group_recent_send_count(group_id)
-        if recent_count >= 10:
-            bot.logger.info("[群 %d] 滑动 60 秒内已发满 10 条（当前 %d 条），进入硬静默冷却，略过回复", group_id, recent_count)
-            return
-        elif recent_count == 9:
-            is_rate_limit_tenth = True
-            extra_instruction = (
-                "【系统风控触发通知】：你在当前群聊中最近1分钟内发言已达上限（这是第10条配额），"
-                "发完这句之后你将被系统强制闭麦冷静1分钟以防被腾讯QQ风控封号！"
-                "请用你日常的傲娇、吐槽或随性口吻向群友自然告别/吐槽，说明自己打字太快要被风控封嘴/先潜水歇一分钟，"
-                "严禁机械报幕或念诵规则数字，像真实群友打字一样自由表达。"
-            )
+    # 群聊限流机制已彻底移除：自由回复，不再截断或强制静默
+    # extra_instruction 由调用方显式传入（例如触发护短时的最高警报）
 
     try:
         reply = await bot.call_deepseek(
@@ -644,11 +667,6 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
     # 当群友主动艾特机器人呼叫时，回复必须带上 [CQ:at] 艾特该群友；若为主动旁观插话则自然接话不强行艾特
     at_target = target_uid if is_at else None
     sent_text = await bot.send_segmented_group_message(ws, group_id, reply, is_command_report=(is_admin and bot.get_channel_mode(group_id) == "root"), at_user_id=at_target)
-
-    # 如果刚发出的正是第 10 条告警消息，给该群施加 60 秒的主动静默期防封
-    if is_rate_limit_tenth:
-        bot.group_silence_until[group_id] = time.time() + 60.0
-        bot.logger.warning("[群 %d] 已发出第 10 条风控告警，自动挂起 60 秒群静默保护期", group_id)
 
     # 写回上下文的是实际发出去的那句：削平过、标签剥过，跟群里看到的一致
     clean_reply_record = bot.remove_trailing_period(bot.strip_markdown(sent_text or "")).strip()

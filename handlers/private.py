@@ -51,6 +51,8 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
     if session:
         try:
             media_info = await media_resolver.parse_media_content(session, raw_message)
+            if media_info and media_info.get("summary"):
+                await bot.send_private_message(ws, user_id, media_info["summary"].strip())
         except Exception as e:
             bot.logger.warning("[私聊] 链接解析异常: %s", e)
 
@@ -80,10 +82,9 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         await bot.handle_memory_summary_command(ws, user_id=bot.ADMIN_QQ)
         return
 
-    # 管理员私聊直接自动唤醒睡眠状态 30 分钟
+    # 管理员私聊：睡眠期不设硬叫醒，保持自然互动
     if bot.is_bot_sleeping():
-        bot.sleep_override_until = time.time() + 1800.0
-        bot.logger.info("[作息系统] 主人发起私聊，大肥鱼自动解除睡眠状态 30 分钟！")
+        bot.logger.info("[作息系统] 主人发起私聊，当前处于夜间作息睡眠期（自然响应，无需强制叫醒）")
 
     # 管理员指令拦截
     if (
@@ -182,8 +183,17 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
     current_task = asyncio.current_task()
     if current_task:
         bot.running_tasks.add(current_task)
+
+    sleep_instruction = ""
+    if bot.is_bot_sleeping():
+        sleep_instruction = (
+            "【当前为夜间作息睡眠时段】：\n"
+            "你正处于半夜被主人私聊叫醒的状态，整个人很困、睡意朦胧。\n"
+            "要求：只能通过真实的语气词与口语呈现困意（例如句首带哈欠声、唔……、呼、困死了、大半夜的怎么啦等自然口语），严禁带括号动作描写（严禁写括号揉眼睛/打哈欠等动作），保持真诚松弛。"
+        )
+
     try:
-        reply = await bot.call_deepseek(timeline_str, is_at=True, is_admin=True, is_private=True)
+        reply = await bot.call_deepseek(timeline_str, is_at=True, is_admin=True, is_private=True, extra_system_instruction=sleep_instruction)
     finally:
         if current_task:
             bot.running_tasks.discard(current_task)

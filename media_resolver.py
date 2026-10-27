@@ -103,25 +103,34 @@ async def resolve_short_url(session: aiohttp.ClientSession, short_url: str) -> s
 
 async def parse_media_content(session: aiohttp.ClientSession, text: str) -> Optional[Dict[str, Any]]:
     """检测并解析文本中的主流短视频/图文分享卡片"""
-    # 1. 检测 B 站短链 b23.tv
+    # 1. 检测 B 站短链 b23.tv 或 bili2233.cn 或直接包含的 BV 号
+    bvid = None
     m_bili = re.search(r"https?://(?:b23\.tv|bili2233\.cn)/[a-zA-Z0-9]+", text)
     if m_bili:
         real_url = await resolve_short_url(session, m_bili.group(0))
-        m_bv = re.search(r"(BV[a-zA-Z0-9]{10})", real_url)
+        m_bv = re.search(r"(BV[a-zA-Z0-9]{10})", real_url, re.IGNORECASE)
         if m_bv:
             bvid = m_bv.group(1)
-            # 请求 B 站官方接口获取视频详细标题与简介
-            fetched = await safe_fetch(
-                session, f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}", timeout=5.0
-            )
-            if fetched:
-                try:
-                    vdata = json.loads(fetched[1]).get("data", {})
-                except (json.JSONDecodeError, AttributeError):
-                    vdata = {}
-                title = vdata.get("title", "")
-                desc = vdata.get("desc", "")
-                up = vdata.get("owner", {}).get("name", "")
+    else:
+        # 兼容直接发 bilibili.com/video/BV... 或群友纯发 BV 号
+        m_bv = re.search(r"\b(BV[a-zA-Z0-9]{10})\b", text, re.IGNORECASE)
+        if m_bv:
+            bvid = m_bv.group(1)
+
+    if bvid:
+        # 请求 B 站官方接口获取视频详细标题与简介
+        fetched = await safe_fetch(
+            session, f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}", timeout=5.0
+        )
+        if fetched:
+            try:
+                vdata = json.loads(fetched[1]).get("data", {})
+            except (json.JSONDecodeError, AttributeError):
+                vdata = {}
+            title = vdata.get("title", "")
+            desc = vdata.get("desc", "")
+            up = vdata.get("owner", {}).get("name", "")
+            if title:
                 return {
                     "type": "bilibili",
                     "title": title,
@@ -161,31 +170,72 @@ async def parse_media_content(session: aiohttp.ClientSession, text: str) -> Opti
                 "summary": f"[小红书笔记] 标题: {title[:80]}"
             }
 
-    # 4. 通用网页链接解析 (http/https)，提取 title 与 meta description 参与讨论
+    # 4. 检测 GitHub 仓库或文件/issue链接 (github.com/owner/repo)
+    m_gh = re.search(r"https?://github\.com/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)", text)
+    if m_gh:
+        owner = m_gh.group(1)
+        repo = m_gh.group(2).rstrip("/").removesuffix(".git")
+        # 排除保留路径
+        if owner.lower() not in ("topics", "features", "collections", "events", "sponsors", "settings", "explore"):
+            fetched = await safe_fetch(
+                session, f"https://api.github.com/repos/{owner}/{repo}", timeout=5.0
+            )
+            if fetched:
+                try:
+                    gh_data = json.loads(fetched[1])
+                except (json.JSONDecodeError, AttributeError):
+                    gh_data = {}
+                full_name = gh_data.get("full_name") or f"{owner}/{repo}"
+                description = gh_data.get("description") or "暂无项目描述"
+                stars = gh_data.get("stargazers_count", 0)
+                forks = gh_data.get("forks_count", 0)
+                lang = gh_data.get("language") or "未知"
+                return {
+                    "type": "github",
+                    "title": full_name,
+                    "author": owner,
+                    "summary": f"[GitHub开源项目] {full_name} ({lang} | ★{stars} | ⑂{forks})\n简介: {description[:100]}"
+                }
+
+    # 5. 通用网页链接解析 (http/https)，提取 title 与 meta description 参与讨论
+    # 同时针对 GitHub、微信公众号、知乎、微博等提供结构化清洗
     m_url = re.search(r"https?://[^\s<>\"'，。！？（）\[\]]+", text)
     if m_url:
         target_url = m_url.group(0).rstrip(".,;:!?，。！？")
         fetched = await safe_fetch(session, target_url, timeout=5.0)
         if fetched:
-            html = fetched[1]
+            final_url, html = fetched
             m_title = re.search(r'<title[^>]*>([^<]+)</title>', html, re.IGNORECASE)
             title = m_title.group(1).strip() if m_title else ""
-            m_desc = re.search(r'<meta\s+[^>]*name=["\']description["\']\s+content=["\']([^"\']*)["\']', html, re.IGNORECASE)
+            m_desc = re.search(r'<meta\s+[^>]*name=[\"\']description[\"\']\s+content=[\"\']([^\"\']*)[\"\']', html, re.IGNORECASE)
             if not m_desc:
-                m_desc = re.search(r'<meta\s+[^>]*property=["\']og:description["\']\s+content=["\']([^"\']*)["\']', html, re.IGNORECASE)
+                m_desc = re.search(r'<meta\s+[^>]*property=[\"\']og:description[\"\']\s+content=[\"\']([^\"\']*)[\"\']', html, re.IGNORECASE)
             desc = m_desc.group(1).strip() if m_desc else ""
-            if title or desc:
+            
+            # 尝试正文简要提炼（提取首个有意义的段落或正文文字，省流给群友）
+            body_snippet = ""
+            p_matches = re.findall(r'<p[^>]*>([\s\S]*?)</p>', html, re.IGNORECASE)
+            for p_raw in p_matches:
+                clean_p = re.sub(r'<[^>]+>', '', p_raw).strip()
+                clean_p = re.sub(r'[\r\n\t\s]+', ' ', clean_p)
+                if len(clean_p) >= 20 and not any(k in clean_p for k in ["ICP", "版权所有", "Copyright", "cookie", "javascript"]):
+                    body_snippet = clean_p[:150]
+                    break
+
+            if title or desc or body_snippet:
                 clean_title = re.sub(r'[\r\n\t]+', ' ', title)[:100]
                 summary_parts = []
                 if clean_title:
                     summary_parts.append(f"标题: {clean_title}")
                 if desc:
                     clean_desc = re.sub(r'[\r\n\t]+', ' ', desc)[:120]
-                    summary_parts.append(f"摘要: {clean_desc}")
+                    summary_parts.append(f"简介: {clean_desc}")
+                elif body_snippet:
+                    summary_parts.append(f"摘要: {body_snippet}")
                 return {
                     "type": "webpage",
                     "title": clean_title,
-                    "summary": f"[分享网页] {' | '.join(summary_parts)}"
+                    "summary": f"[分享网页省流] {' | '.join(summary_parts)}"
                 }
 
     return None

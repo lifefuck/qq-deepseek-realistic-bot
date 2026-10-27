@@ -22,6 +22,7 @@ bot = None
 def bind(host):
     global bot
     bot = host
+    host.send_input_status = send_input_status
 import meme_catalog
 import safety_guard
 
@@ -35,6 +36,41 @@ def _tidy(text: str) -> str:
     """摘完表情后收拾残留空格，别留下「说了 句话」这种断口"""
     text = re.sub(r"[ \t]{2,}", " ", text).strip()
     return re.sub(r"\s+([，。！？、])", r"\1", text)
+
+
+# 常见口语同音错字与懒汉打字映射（极低概率随机微调，注入真人糙汉打字质感）
+_SLANG_TYPOS = [
+    ("怎么", "怎麽"),
+    ("怎么", "zm"),
+    ("什么", "啥"),
+    ("确实", "确式"),
+    ("确实", "确实是"),
+    ("笑死", "笑s"),
+    ("好的", "好滴"),
+    ("真的", "真得"),
+    ("这样", "酱紫"),
+    ("知道", "知晓"),
+]
+
+
+def desensitize_commas(text: str) -> str:
+    """去人机感：真人发消息极少使用大量逗号，用空格替代逗号，消除工整翻译腔。"""
+    if not text:
+        return text
+    # 将中文逗号和英文逗号替换为空格
+    t = text.replace("，", " ").replace(",", " ")
+    # 收拾连续多余空格
+    return re.sub(r"[ \t]{2,}", " ", t).strip()
+
+
+def inject_casual_typo(text: str, prob: float = 0.04) -> str:
+    """偶尔（约 4% 概率）出现轻微输入法谐音/缩写，增加真人随手打字质感。"""
+    if random.random() >= prob or len(text) < 4:
+        return text
+    for src, dst in _SLANG_TYPOS:
+        if src in text:
+            return text.replace(src, dst, 1)
+    return text
 
 
 def thin_emoji(text: str, keep_ratio: float = 0.15) -> str:
@@ -101,6 +137,17 @@ def split_reply_segments(text: str) -> list[str]:
     return [clean]
 
 
+async def send_input_status(ws: aiohttp.ClientWebSocketResponse, group_id: int):
+    """向 NapCat 发送群聊「正在输入中」状态（status_type=1），营造拟真打字体感"""
+    if not ws or ws.closed:
+        return
+    try:
+        # OneBot 11 / NapCat API: set_input_status (status_type: 1 为正在输入)
+        await bot.call_action(ws, "set_input_status", {"group_id": group_id, "status_type": 1}, timeout=1.5)
+    except Exception as e:
+        logger.debug("[群 %d] 设置输入中状态异常: %s", group_id, e)
+
+
 async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None):
     """向 NapCat 发送群消息并捕获发送状态（支持可选 @ 对方，并内置群级 60 秒频控保护防 1200 拦截）"""
     if "[PASS]" in text:
@@ -110,9 +157,11 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
     clean_text = bot.obfuscate_urls_for_qq(clean_text)
     # 过滤末尾句号
     clean_text = bot.remove_trailing_period(clean_text)
-    # 普通聊天里的表情抽稀，指令汇报/卡片不掺和
+    # 普通聊天里的表情抽稀与去逗号、真人随手打字质感注入，指令汇报/卡片不掺和
     if not is_command_report:
         clean_text = thin_emoji(clean_text)
+        clean_text = desensitize_commas(clean_text)
+        clean_text = inject_casual_typo(clean_text)
 
     # 普通聊天强控 200 字防水群；管理汇报与 memory 概览解除字数硬截断限制（放宽至 2000 字）
     max_len = 2000 if is_command_report else 200
@@ -128,28 +177,8 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
         msg_payload = clean_text
 
     async with bot.group_send_locks[group_id]:
-        now = time.time()
-        # 清理 60 秒之前的发送记录
-        bot.group_sent_times[group_id] = [t for t in bot.group_sent_times[group_id] if now - t < 60.0]
-        
-        # 如果最近 60 秒内已经发了 8 条，进入安全限流等待，避免触发 QQ 风控 (本群每分钟只能发10条)
-        if len(bot.group_sent_times[group_id]) >= 8:
-            oldest = bot.group_sent_times[group_id][0]
-            wait_time = max(0.5, 60.0 - (now - oldest) + 0.5)
-            logger.warning("[群 %d] 达到频控安全线 (8条/60s)，主动延时 %.1f 秒再发，防止被 QQ 风控拦截...", group_id, wait_time)
-            await asyncio.sleep(wait_time)
-            # 唤醒后再次清理
-            now = time.time()
-            bot.group_sent_times[group_id] = [t for t in bot.group_sent_times[group_id] if now - t < 60.0]
-
         res = await bot.call_action(ws, "send_group_msg", {"group_id": group_id, "message": msg_payload}, timeout=3.0)
         
-        # 如果不幸还是遇到了 299/1200 (每分钟只能发10条)，进行指数退避自动重试
-        if res and res.get("status") == "failed" and "每分钟只能发10条" in str(res.get("message", "")):
-            logger.warning("[群 %d] 触发 QQ 每分钟 10 条限制！等待 6 秒后自动重试...", group_id)
-            await asyncio.sleep(6.0)
-            res = await bot.call_action(ws, "send_group_msg", {"group_id": group_id, "message": msg_payload}, timeout=3.0)
-
         if res and res.get("status") == "ok":
             bot.group_sent_times[group_id].append(time.time())
             bot.record_group_send_history(group_id)
@@ -270,8 +299,8 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     segments = [seg for seg in (safety_guard.strip_internal_monologue(s) for s in segments) if seg]
     if not segments:
         return ""
-    # 图片比表情更抢眼：概率压到 8%，但触发词照旧——群友一说「大肥鱼」「草」就是要图
-    should_send_meme = bool(meme_tag) or (random.random() < 0.08) or any(k in text for k in ["大肥鱼", "炸毛", "闹麻了", "草", "无敌了", "才不是", "哼", "气死"])
+    # 图片比表情更抢眼：概率压到 4%（抽稀防机械甩图），触发词保留
+    should_send_meme = bool(meme_tag) or (random.random() < 0.04) or any(k in text for k in ["大肥鱼", "炸毛", "闹麻了", "草", "无敌了", "才不是", "哼", "气死"])
     # 立绘是另一套：只在真炸毛/真害羞时上，别让「怎么」「为什么」这种口头词也甩一张图
 
     status_avatar = None
@@ -285,16 +314,20 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         # 模型给了情绪就按情绪选，没给就用正文关键词兜底，再不行退回老逻辑
         final_pic_b64 = meme_catalog.pick_b64(meme_tag, text) or bot.get_random_meme_b64(text)
 
+    # 1. 拟真打字态：在长文本多段连发间隔中，再次轻量刷新输入中状态
+    if hasattr(bot, "send_input_status") and len(segments) > 1:
+        asyncio.create_task(bot.send_input_status(ws, group_id))
+
     for i, seg in enumerate(segments):
         target_at = at_user_id if i == 0 else None
         await send_group_message(ws, group_id, seg, is_command_report=False, at_user_id=target_at)
         if i < len(segments) - 1:
-            delay = min(0.6, max(0.2, len(seg) * 0.02))
+            delay = min(0.3, max(0.1, len(seg) * 0.01))
             await asyncio.sleep(delay)
             
-    # 文字发完后，如果触发了立绘或表情包，延迟 0.2s 单独甩出一张真实图片
+    # 文字发完后，如果触发了立绘或表情包，轻量延迟 0.1s 单独甩出一张真实图片
     if final_pic_b64:
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.1)
         await send_meme_message(ws, group_id=group_id, b64_data=final_pic_b64)
 
     return text
@@ -341,6 +374,8 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
         clean_seg = bot.obfuscate_urls_for_qq(clean_seg)
         clean_seg = bot.remove_trailing_period(clean_seg)
         clean_seg = thin_emoji(clean_seg)
+        clean_seg = desensitize_commas(clean_seg)
+        clean_seg = inject_casual_typo(clean_seg)
         if not clean_seg:
             continue
         res = await bot.call_action(ws, "send_private_msg", {"user_id": user_id, "message": clean_seg}, timeout=3.0)
@@ -349,6 +384,6 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
         else:
             logger.warning("[私聊 %d] 私信发送可能失败: %s | 响应: %s", user_id, clean_seg[:40], res)
         if i < len(segments) - 1:
-            delay = min(1.2, max(0.5, len(clean_seg) * 0.05))
+            delay = min(0.4, max(0.1, len(clean_seg) * 0.01))
             await asyncio.sleep(delay)
 
