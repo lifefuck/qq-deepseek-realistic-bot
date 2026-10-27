@@ -537,11 +537,6 @@ user_last_at_time: Dict[tuple, float] = {}
 # 戳一戳冷却表: (group_id, user_id) -> timestamp (防恶意狂戳刷屏)
 user_last_poke_time: Dict[tuple, float] = {}
 
-# 戳一戳发言的群级限流：单用户 CD 挡不住几个人轮流戳，人多时照样刷屏
-group_poke_reply_time: Dict[int, collections.deque] = collections.defaultdict(collections.deque)
-POKE_REPLY_WINDOW = 60.0
-POKE_REPLY_MAX = 2
-
 # 群禁言与全员禁言状态监测（防禁言期间盲跑大模型烧 Token）
 group_bot_ban_expire: Dict[int, float] = {}   # group_id -> 机器人解禁时间戳
 group_all_banned: Dict[int, bool] = collections.defaultdict(bool)      # group_id -> 是否全员禁言
@@ -1390,16 +1385,6 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
             return
 
     logger.info("[群 %d] 机器人被 %s 戳一戳！触发动态傲娇回复...", group_id, f"管理员 {user_id}" if is_admin else f"群友 {user_id}")
-
-    # 群级限流：三个人轮流戳就是三倍输出，之前一波连刷十几条直接把频控线顶穿
-    dq = group_poke_reply_time[group_id]
-    while dq and now - dq[0] > POKE_REPLY_WINDOW:
-        dq.popleft()
-    if not is_admin:
-        if len(dq) >= POKE_REPLY_MAX:
-            logger.info("[群 %d] 戳一戳发言已达上限 (%d 条/%.0f 秒)，本次只回戳不吱声", group_id, POKE_REPLY_MAX, POKE_REPLY_WINDOW)
-            return
-        dq.append(now)
     
     # 异步调用模型生成傲娇动态回复
     nick = "管理员" if is_admin else "群友"
