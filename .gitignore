@@ -11,6 +11,11 @@ token_usage.json
 cross_group_topics.json
 group_configs.json
 data/*.json
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+*.db
 .dashboard_auth
 .dashboard_sessions.json
 *.auth

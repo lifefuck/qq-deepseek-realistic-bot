@@ -231,7 +231,22 @@ def _format_member(uid: str, mem: dict, member: dict) -> str:
 
     favor = int(mem.get("favor", 50))
     notes = _dedupe_notes(mem.get("notes")) or "无印象"
-    tail = f"好感 {favor}/100 {_favor_tier(favor)}｜{notes}"
+
+    # 查询深层持久化记忆条目（借鉴 DSH）
+    fish_mems_count = 0
+    try:
+        from services.fish_memory import fish_memory_engine
+        with fish_memory_engine._get_conn() as conn:
+            row = conn.execute(
+                "SELECT COUNT(1) AS cnt FROM fish_memory_records WHERE person_id=? AND is_deleted=0",
+                (str(uid),)
+            ).fetchone()
+            fish_mems_count = row["cnt"] if row else 0
+    except Exception:
+        pass
+
+    extra_fish = f"（已沉淀 {fish_mems_count} 条深层旧事）" if fish_mems_count > 0 else ""
+    tail = f"好感 {favor}/100 {_favor_tier(favor)}｜{notes} {extra_fish}".strip()
     return "\n".join([head, meta, tail])
 
 

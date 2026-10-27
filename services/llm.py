@@ -59,9 +59,22 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 memory_atoms.mark_used(mem["notes"], used_notes)
             if not notes_str:
                 notes_str = "初次接触"
+
+            # 检索历史深层关联记忆（BM25 + 时间衰减召回，借鉴自 DSH）
+            recalled_mem_str = ""
+            try:
+                from services.fish_memory import fish_memory_engine
+                recalled = fish_memory_engine.recall(str(group_id or "private"), str(target_uid), latest_line, top_k=2)
+                if recalled:
+                    items_str = "；".join([f"[{r['type']}]: {r['content']}" for r in recalled])
+                    recalled_mem_str = f"【唤醒的过往具体旧事与偏好（若与当前话题相关可自然接梗，严禁死板复读）】：{items_str}\n"
+            except Exception as e:
+                logger.debug("召回深层记忆异常: %s", e)
+
             user_mem_prompt = (
                 f"【当前交谈群友信息】：昵称: {mem.get('nickname')}, 好感度: {mem.get('favor')}/100\n"
                 f"【你对他的背景认知（只影响你跟他说话松不松，不要变成台词，比如「你又来挑我刺」「你又叫我大肥鱼」这种指涉他没做过的事，一句都别说）】：{notes_str}\n"
+                f"{recalled_mem_str}"
             )
 
     # 注入群内焦点互动关系（仅群聊生效）
@@ -414,6 +427,18 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
     else:
         # 1. 委托大模型深度理解真实语境并给出动态判定
         favor_delta, new_note = await evaluate_favor_with_ai(user_id, sender_nick, dialogue_snippet, bot_reply=bot_reply, group_id=group_id)
+
+    # 4. 同步记录持久化流水账并自动捕获事实/偏好（借鉴 DSH）
+    try:
+        from services.fish_memory import fish_memory_engine
+        fish_memory_engine.record_turn(
+            group_id=str(group_id or "private"),
+            person_id=str(user_id),
+            user_text=dialogue_snippet,
+            reply_text=bot_reply
+        )
+    except Exception as e:
+        logger.debug("fish_memory 记录流水与捕获异常: %s", e)
 
     # 主人特殊保护：如果用户是专属主人兼开发者，不录入外部混乱标签，好感度保底 80，保持最高默契
     if user_id == bot.ADMIN_QQ:
