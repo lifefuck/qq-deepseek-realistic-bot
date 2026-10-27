@@ -507,7 +507,8 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in recent_lines]) or (user_text or "")
     else:
         # 群友直接找机器人时也给几行上下文，免得它把一句「乐乐」当成初次见面打招呼
-        recent_lines = list(timeline)[-6:] if timeline else []
+        # 追问态下对方常只丢半句，上下文给宽一点才接得住
+        recent_lines = list(timeline)[-(8 if is_follow_up else 6):] if timeline else []
         dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in recent_lines]) or (user_text or "")
     
     bot.logger.info("[群 %d] 触发轻量会话分析 (is_at=%s, is_follow_up=%s, is_admin=%s), 发言内容: %s", group_id, is_at, is_follow_up, is_admin, dialogue_text[:40])
@@ -537,10 +538,13 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         return
 
     # 旁观插话时（非 @ 且非管理员）：若模型生成的内容属于没搞懂语境的反问、敷衍套话，一律丢弃
-    if not is_at and not is_admin:
+    # 追问态不算旁观：人家就是来找你说话的，「你说啥」这种反问至少是个回应，别拦
+    if not is_at and not is_admin and not is_follow_up:
         confused_patterns = [
             r"你在说[啥什么]", r"什么意思[呀呢啊]?", r"不知道你在说", r"没搞[懂明]",
-            r"没听懂", r"谁进不去", r"哪款游戏", r"发生了什么事[呀呢啊]?", r"你在聊[啥什么]"
+            r"没听懂", r"谁进不去", r"哪款游戏", r"发生了什么事[呀呢啊]?", r"你在聊[啥什么]",
+            # 催问式空话：什么都没接住还占一条屏，比沉默更败好感
+            r"刚问啥了", r"你刚才?说(啥|什么)", r"你倒是(说|问|讲)", r"把问题问出来"
         ]
         if any(re.search(pat, reply) for pat in confused_patterns):
             bot.logger.info("[群 %d] 拦截到旁观插话中没搞懂的困惑反问套话: %s，保持静默直接丢弃", group_id, reply)
