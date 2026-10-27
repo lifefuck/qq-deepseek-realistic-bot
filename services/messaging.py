@@ -272,6 +272,11 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         return ""
 
     segments = split_reply_segments(text)
+    # 切段之后每段再过一遍旁白闸：整句正文里混一句「（发送表情包）」，切出来就是独立一条，
+    # 上面按整条判断的闸门漏掉它，群里就看见模型在自述执行过程
+    segments = [seg for seg in (safety_guard.strip_internal_monologue(s) for s in segments) if seg]
+    if not segments:
+        return ""
     # 图片比表情更抢眼：概率压到 8%，但触发词照旧——群友一说「大肥鱼」「草」就是要图
     should_send_meme = bool(meme_tag) or (random.random() < 0.08) or any(k in text for k in ["大肥鱼", "炸毛", "闹麻了", "草", "无敌了", "才不是", "哼", "气死"])
     # 立绘是另一套：只在真炸毛/真害羞时上，别让「怎么」「为什么」这种口头词也甩一张图

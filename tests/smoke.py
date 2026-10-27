@@ -88,6 +88,15 @@ async def main():
     check("正文不含标签", all("MEME" not in t for t in texts))
     check("配图已发送", imgs >= 1, f"imgs={imgs}")
 
+    # 5.1 切段后混进来的括号执行说明不能单独发出去（群里看见过「（一个打滚的表情包自动发送）」）
+    calls.clear()
+    await bot.send_segmented_group_message(
+        FakeWS(), 123456789, "主人让我滚我就滚 滚到你心里去 🥰\n（一个打滚的表情包自动发送）"
+    )
+    texts = [p.get("message") for a, p in calls if isinstance(p.get("message"), str)]
+    check("括号执行说明不外发", not any("表情包自动发送" in t for t in texts), str(texts))
+    check("正文照常发出", any("滚到你心里去" in t for t in texts), str(texts))
+
     # 6. 戳一戳不消耗模型
     before = bot.token_tracker.data["total"]["requests"]
     quip = await bot.call_deepseek_poke("测试", is_admin=False, group_id=123456789)
