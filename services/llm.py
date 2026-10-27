@@ -119,18 +119,24 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 f"他说要睡要忙要走，就痛快放人，别拦着讨价还价"
                 f"（20~35 字，绝不用句号）："
             )
-    elif is_at or is_mention:
+    elif is_at or is_mention or is_follow_up:
         follow_up_note = (
             "他刚 @ 过你，这句是接着上面那茬往下说，不是新话题。不许沉默、不许输出 [PASS]，"
             "看不懂就直接问他这句什么意思。\n"
             if is_follow_up else ""
         )
+        # 时间线只当背景，必须把当前这句单独钉出来：只丢上下文时模型常抓上一句来答
+        #（群里「不要」被答成上一轮的「可爱」就是这毛病）
         user_prompt = (
             f"{identity_note}"
-            f"群友「{sender_nick}」发来消息：\n{timeline_text}\n\n"
+            f"群友「{sender_nick}」在群里说了这些：\n{timeline_text}\n\n"
             f"{user_mem_prompt}"
             f"{follow_up_note}"
-            f"顺着群里正在聊的事接他的话，别把他当成刚认识的人重新打招呼（默认1句，最多2句，绝不用句号，别写小作文）："
+            f"【他最后这句】：「{latest_line}」\n"
+            f"上面的记录只是前情，你只对他最后这句作反应，别去答前面别人说过的话；"
+            f"他要是只回你半句（「不要」「对的」这种），先接住这半句，再联系前情把话接圆；"
+            f"要是拿具体问题考你（算术、常识、时间、数字），先把答案说出来再损他，别用「这还要问我」糊弄过去；"
+            f"别把他当成刚认识的人重新打招呼，也别复述他的问题、别催他重说、别问「你刚说啥」（默认1句，最多2句，绝不用句号，别写小作文）："
         )
     else:
         user_prompt = (
@@ -139,9 +145,10 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"【旁观规则（最高优先级）】：\n"
             f"1. 你正在旁观。若群友是在私聊互动、打游戏开黑/组队、讨论内部黑话、或你没有十足把握理解其前因后果，【必须直接且仅输出 [PASS] 彻底闭嘴】；\n"
             f"2. 严禁不懂装懂、严禁答非所问、严禁发出反问套话（如「你在说什么呀」、「我也打不开」）；\n"
-            f"3. 只有当你完全搞懂话题并能给出极其一针见血的 1 句短接话时才说；插不上话输出 [PASS]："
+            f"3. 只有当你完全搞懂话题并能给出极其一针见血的 1 句短接话时才说；插不上话输出 [PASS]；\n"
+            f"4. 严禁催问式空话（「你倒是把问题问出来」「刚问啥了」这种），宁可 [PASS] 也别拿废话占屏："
         )
-    
+
     # 联网检索增强：当对话涉及最新时效词且群开启搜索时，自动注入轻量网页搜索上下文
     web_search_context = ""
     cfg = bot.get_group_config(group_id)
