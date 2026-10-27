@@ -1,6 +1,6 @@
 {
-  "updated_at": 1793005888.273609,
-  "total_count": 1862,
+  "updated_at": 1793128555.6569235,
+  "total_count": 1931,
   "memes": [
     {
       "name": "treetree的",
@@ -8697,6 +8697,12 @@
       "type": "引用"
     },
     {
+      "name": "爱上雷神",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
       "name": "澳门",
       "desc": "",
       "source": "sogou_popular",
@@ -8727,13 +8733,13 @@
       "type": "近期流行词"
     },
     {
-      "name": "白姐",
+      "name": "鲅鱼王",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
     },
     {
-      "name": "柏太阳神",
+      "name": "白姐",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -8752,12 +8758,6 @@
     },
     {
       "name": "北京大学",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "北京电影学院",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -8836,6 +8836,18 @@
     },
     {
       "name": "草台班子",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
+      "name": "长征精神",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
+      "name": "陈学冬",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -8937,12 +8949,6 @@
       "type": "近期流行词"
     },
     {
-      "name": "东北大学",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "东部战区融媒体中心",
       "desc": "",
       "source": "sogou_popular",
@@ -8967,12 +8973,6 @@
       "type": "近期流行词"
     },
     {
-      "name": "疯狂小杨哥",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "封神榜",
       "desc": "",
       "source": "sogou_popular",
@@ -8985,12 +8985,6 @@
       "type": "近期流行词"
     },
     {
-      "name": "复学",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "高等数学",
       "desc": "",
       "source": "sogou_popular",
@@ -8998,6 +8992,12 @@
     },
     {
       "name": "哥大",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
+      "name": "哥德堡",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -9051,19 +9051,7 @@
       "type": "近期流行词"
     },
     {
-      "name": "贵州商学院",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "棍哥",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "国家癌症中心",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -9111,19 +9099,7 @@
       "type": "近期流行词"
     },
     {
-      "name": "航神",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "荷兰鹿特丹体操世锦赛",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "贺龙体育场",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -9159,18 +9135,6 @@
       "type": "近期流行词"
     },
     {
-      "name": "湖南大学",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "花姐美肤日记",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "化学",
       "desc": "",
       "source": "sogou_popular",
@@ -9183,13 +9147,7 @@
       "type": "近期流行词"
     },
     {
-      "name": "魂天帝",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "吉林建筑大学",
+      "name": "吉林大学",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -9202,6 +9160,18 @@
     },
     {
       "name": "酱爆",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
+      "name": "姜大哥",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
+      "name": "姜哥",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -9286,12 +9256,6 @@
     },
     {
       "name": "开门战",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "凯特王妃",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -9477,6 +9441,12 @@
       "type": "近期流行词"
     },
     {
+      "name": "幂姐",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
       "name": "米姐",
       "desc": "",
       "source": "sogou_popular",
@@ -9519,7 +9489,13 @@
       "type": "近期流行词"
     },
     {
-      "name": "南京梦之蓝青奥体育馆",
+      "name": "南京奥体中心",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
+      "name": "南京航空航天大学",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -9538,12 +9514,6 @@
     },
     {
       "name": "内战幻神",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "你的眼神",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -9579,18 +9549,6 @@
       "type": "近期流行词"
     },
     {
-      "name": "胖哥俩肉蟹煲",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "批复",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "披哥",
       "desc": "",
       "source": "sogou_popular",
@@ -9621,19 +9579,7 @@
       "type": "近期流行词"
     },
     {
-      "name": "钱学森",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "秦始皇帝陵博物院",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "青奥体育公园站",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -9693,6 +9639,12 @@
       "type": "近期流行词"
     },
     {
+      "name": "三冠王",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
       "name": "三位一体",
       "desc": "",
       "source": "sogou_popular",
@@ -9700,12 +9652,6 @@
     },
     {
       "name": "山东大学",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "山神",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -9736,12 +9682,6 @@
     },
     {
       "name": "神剑",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "神君",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -9813,19 +9753,19 @@
       "type": "近期流行词"
     },
     {
-      "name": "深圳大学",
+      "name": "神像",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
+      "name": "神相",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
     },
     {
       "name": "深圳体育中心",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "神之八秒",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -9909,12 +9849,6 @@
       "type": "近期流行词"
     },
     {
-      "name": "四川师范大学",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "四大天王",
       "desc": "",
       "source": "sogou_popular",
@@ -9945,12 +9879,6 @@
       "type": "近期流行词"
     },
     {
-      "name": "腾讯体育",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "体彩",
       "desc": "",
       "source": "sogou_popular",
@@ -9958,6 +9886,12 @@
     },
     {
       "name": "体操",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
+      "name": "体操世锦赛",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -10095,6 +10029,12 @@
       "type": "近期流行词"
     },
     {
+      "name": "王楚琪",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
       "name": "王楚钦",
       "desc": "",
       "source": "sogou_popular",
@@ -10120,12 +10060,6 @@
     },
     {
       "name": "王队",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "王多多",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -10185,18 +10119,6 @@
       "type": "近期流行词"
     },
     {
-      "name": "王虹",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "王欢",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "王辉",
       "desc": "",
       "source": "sogou_popular",
@@ -10209,12 +10131,6 @@
       "type": "近期流行词"
     },
     {
-      "name": "王佳佳",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "王佳琦",
       "desc": "",
       "source": "sogou_popular",
@@ -10222,12 +10138,6 @@
     },
     {
       "name": "王进健",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "王劲松",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -10252,12 +10162,6 @@
     },
     {
       "name": "王俊凯",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "王俊凯演唱会",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -10419,12 +10323,6 @@
       "type": "近期流行词"
     },
     {
-      "name": "王轩",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "王艳",
       "desc": "",
       "source": "sogou_popular",
@@ -10521,19 +10419,7 @@
       "type": "近期流行词"
     },
     {
-      "name": "王者荣耀共创之夜",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "王者世界",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "王者万象棋",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -10672,12 +10558,6 @@
     },
     {
       "name": "西藏交通部门",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "厦门队",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -10929,6 +10809,12 @@
       "type": "近期流行词"
     },
     {
+      "name": "狱神",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
       "name": "雨神",
       "desc": "",
       "source": "sogou_popular",
@@ -10972,12 +10858,6 @@
     },
     {
       "name": "站姐",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "诏安英才学校",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -11037,18 +10917,6 @@
       "type": "近期流行词"
     },
     {
-      "name": "植物学",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "中国人民外交学会",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "中国体操女队",
       "desc": "",
       "source": "sogou_popular",
@@ -11061,25 +10929,7 @@
       "type": "近期流行词"
     },
     {
-      "name": "中国体育代表团",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
       "name": "中国学联",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "中南财经政法大学",
-      "desc": "",
-      "source": "sogou_popular",
-      "type": "近期流行词"
-    },
-    {
-      "name": "中南大学",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -11092,6 +10942,12 @@
     },
     {
       "name": "助学贷",
+      "desc": "",
+      "source": "sogou_popular",
+      "type": "近期流行词"
+    },
+    {
+      "name": "朱学巍",
       "desc": "",
       "source": "sogou_popular",
       "type": "近期流行词"
@@ -11115,64 +10971,718 @@
       "type": "近期流行词"
     },
     {
+      "name": "固态硬盘渠道价大面积下跌",
+      "desc": "存储设备价格暴跌引发装机潮讨论",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "西甲就姆巴佩不当言论道歉",
+      "desc": "球星争议言论引发联赛官方回应",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "锐评LPL瑞士轮Day4表现",
+      "desc": "英雄联盟职业联赛阶段赛表现点评",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "凯恩获金球奖是否实至名归",
+      "desc": "足球先生奖项得主实力争议",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "AL止步S16十六强单曲",
+      "desc": "电竞战队淘汰后粉丝创作应援曲",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "热火双塔阵容为何1+1小于2",
+      "desc": "NBA球队阵容搭配效果不佳分析",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "北京JDG战胜广州TTG KPL年总",
+      "desc": "王者荣耀职业联赛年度总决赛战报",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "以色列大选具体在选些什么",
+      "desc": "中东国家政治选举议题解析",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "勇士新秀伦德伯格有多强",
+      "desc": "NBA新秀球员实力评估",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "中国U17女足小组第一出线",
+      "desc": "青少年女足国际赛事晋级消息",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "自媒体人举报电诈遇害始末",
+      "desc": "反诈博主遭报复事件调查",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "如何加入大肥鱼对抗赛",
+      "desc": "网络流行梗活动参与方式",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "00后的时代红利是什么",
+      "desc": "年轻世代发展机遇探讨",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "刘晓艳回应刘晓艳渲染大赛",
+      "desc": "同名教师回应网络话题争议",
+      "source": "bilibili-hot-search",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "皇马等30个吧发布抵制声明",
+      "desc": "足球俱乐部粉丝抵制平台新规",
+      "source": "tieba",
+      "type": "社区热搜",
+      "desc_generated": true
+    },
+    {
+      "name": "吧友攻陷姆巴佩评论区",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "姆巴佩辱华,金主集体切割",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "out!姆巴佩曾暴力肘击门将",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "5924票!Hope位列背锅榜第一",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "表情包大赛,滑稽出征寸草不生",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "冤家路窄,TES生死战BLG",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "耻辱!AL全败告别S16",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "图吧垃圾佬",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "凯恩荣膺金球,十年球迷告白",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "舰R铃兰大王离世,吧友痛别",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "胶佬炫技,高达爆改房车",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "BLG斩KC连胜,ON神钩定乾坤",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "百变奶蛙,万物皆可奶蛙",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "留学遇失足学姐,吧友忆东京往事",
+      "desc": "近期贴吧热议高频热点事件/讨论话题",
+      "source": "tieba",
+      "type": "社区热搜"
+    },
+    {
+      "name": "在稻城亚丁看一场秋日童话",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "祖国大地一片丰收景象",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "德国总统抵达安徽开启访华行程",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "想要秋天不烧心就去山里野",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "抖音娃改时装周",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "今人重走玉门关",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "10月29日晚国内油价将调整",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "“蛟龙”号迭代升级",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "河头老街NPC唱歌太牛了",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "辽宁舰编队绕菲律宾远洋训练",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "4名诺奖得主将亮相大湾区科学论坛",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "“四价流感疫苗消失”传言有误",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "是谁还没看过谢帝的女装分享啊",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "Insomnia越听越清醒",
+      "desc": "近期抖音热点高频热点事件/讨论话题",
+      "source": "douyin",
+      "type": "社区热搜"
+    },
+    {
+      "name": "[写了全国所有省份的love me！",
+      "desc": "近期B站高频二创热点/爆款内容：1. [写了全国所有省份的love me！](https://b23.",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[旗舰手机芯片大横评：苹果高通发哥玄",
+      "desc": "近期B站高频二创热点/爆款内容：1. [旗舰手机芯片大横评：苹果高通发哥玄戒谁最强？](https:/",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[马尔芙小姐，我能请你共舞一曲吗？｜",
+      "desc": "近期B站高频二创热点/爆款内容：1. [马尔芙小姐，我能请你共舞一曲吗？｜PV](https://b2",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[张麻子《鹅城FUNK",
+      "desc": "近期B站高频二创热点/爆款内容：1. [张麻子《鹅城FUNK》](https://b23.tv/BV1",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[《鸣潮",
+      "desc": "近期B站高频二创热点/爆款内容：1. [《鸣潮》世界观PV | 超验TRANSCENDO](https",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[双人抬棺]",
+      "desc": "近期B站高频二创热点/爆款内容：1. [双人抬棺](https://b23.tv/BV1c5HK6CE",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[《绝区零",
+      "desc": "近期B站高频二创热点/爆款内容：1. [《绝区零》先导演示丨挽昼](https://b23.tv/BV",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[我花了3个月！把MC爆改成别的游戏",
+      "desc": "近期B站高频二创热点/爆款内容：1. [我花了3个月！把MC爆改成别的游戏！！](https://b2",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[愚蠢鬼]",
+      "desc": "近期B站高频二创热点/爆款内容：1. [愚蠢鬼](https://b23.tv/BV1q5HV6dEz",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[《罗德岛学院",
+      "desc": "近期B站高频二创热点/爆款内容：1. [《罗德岛学院》——早八！](https://b23.tv/BV",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[中国90%的人都听过的童年阴影BG",
+      "desc": "近期B站高频二创热点/爆款内容：1. [中国90%的人都听过的童年阴影BGM！20年后我终于扒出了它的",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[名片交换]",
+      "desc": "近期B站高频二创热点/爆款内容：1. [名片交换](https://b23.tv/BV19pn86hE",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[花4毛钱让1000个蓝色大肥鱼建造",
+      "desc": "近期B站高频二创热点/爆款内容：1. [花4毛钱让1000个蓝色大肥鱼建造故宫](https://b2",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[《话术博弈",
+      "desc": "近期B站高频二创热点/爆款内容：1. [《话术博弈》如何优雅的套出对方的真心话？](https://b",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[【2026全球总决赛",
+      "desc": "近期B站高频二创热点/爆款内容：1. [【2026全球总决赛】10月26日 IG vs HLE](ht",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[【导演作/官方授权",
+      "desc": "近期B站高频二创热点/爆款内容：1. [【导演作/官方授权】用半年! 制作「脑洞学生会」片尾影像](h",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[羌塘无人区失踪一年多后，自行车意外",
+      "desc": "近期B站高频二创热点/爆款内容：1. [羌塘无人区失踪一年多后，自行车意外被人发现，李聪明](http",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[动态视频｜子弹时间再升级，70台i",
+      "desc": "近期B站高频二创热点/爆款内容：1. [动态视频｜子弹时间再升级，70台iPhone造了个捕捉时空的球",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[生命起源：四十亿年前，地球如何诞生",
+      "desc": "近期B站高频二创热点/爆款内容：1. [生命起源：四十亿年前，地球如何诞生第一个生命？](https:",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[【司凤TV",
+      "desc": "近期B站高频二创热点/爆款内容：1. [【司凤TV】司凤音乐270个视频14小时合集 看完这辈子都通透",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[日本人吃自助不好意思多要跟我外国人",
+      "desc": "近期B站高频二创热点/爆款内容：1. [日本人吃自助不好意思多要跟我外国人有什么关系？读鸡毛空气啊，我",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[新角色：大肥鱼]",
+      "desc": "近期B站高频二创热点/爆款内容：1. [新角色：大肥鱼](https://b23.tv/BV1gVHA",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[“我不再迷茫……”下次再唱起这首歌",
+      "desc": "近期B站高频二创热点/爆款内容：1. [“我不再迷茫……”下次再唱起这首歌，还会是我们吗……](htt",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[史密斯先生在学说话]",
+      "desc": "近期B站高频二创热点/爆款内容：1. [史密斯先生在学说话](https://b23.tv/BV1Qe",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[【IGN",
+      "desc": "近期B站高频二创热点/爆款内容：1. [【IGN】10分，《影之刃零》评测： 武侠朋克传奇](http",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[陕视评：判决未至，定论先入教材 武",
+      "desc": "近期B站高频二创热点/爆款内容：1. [陕视评：判决未至，定论先入教材 武大图书馆事件反思：公共出版物",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[二十国混战：速通复盘中土网友对线大",
+      "desc": "近期B站高频二创热点/爆款内容：1. [二十国混战：速通复盘中土网友对线大战](https://b23",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[被人买凶杀死的自媒体人徽剑【热点详",
+      "desc": "近期B站高频二创热点/爆款内容：1. [被人买凶杀死的自媒体人徽剑【热点详解01】](https://",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[消防车路权大还是校车路权更大？]",
+      "desc": "近期B站高频二创热点/爆款内容：1. [消防车路权大还是校车路权更大？](https://b23.tv",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[200万合成玉，803颗源石，67",
+      "desc": "近期B站高频二创热点/爆款内容：1. [200万合成玉，803颗源石，672张单抽卷，54张十连卷，我",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[万重山河皆侠骨！剑网3新50级版本",
+      "desc": "近期B站高频二创热点/爆款内容：1. [万重山河皆侠骨！剑网3新50级版本MV《万重山》上线](htt",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[恭喜Asuka荣获本届歌手争霸赛歌",
+      "desc": "近期B站高频二创热点/爆款内容：1. [恭喜Asuka荣获本届歌手争霸赛歌王称号！！【bilibili",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[穿越战锤24年，你终靠实力拿下星球",
+      "desc": "近期B站高频二创热点/爆款内容：1. [穿越战锤24年，你终靠实力拿下星球总督王座，你的余生会如何度过",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[吴站长携天津站男团激情演唱《Upt",
+      "desc": "近期B站高频二创热点/爆款内容：1. [吴站长携天津站男团激情演唱《Uptown Funk》](htt",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[一线明星参演、高成本制作、高市早苗",
+      "desc": "近期B站高频二创热点/爆款内容：1. [一线明星参演、高成本制作、高市早苗点名要看？热播日剧背后的认知",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[装X翻车全网群嘲？医学界有自己的翟",
+      "desc": "近期B站高频二创热点/爆款内容：1. [装X翻车全网群嘲？医学界有自己的翟天临！深扒李子祺事变](ht",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[《一把长椅卡俩头",
+      "desc": "近期B站高频二创热点/爆款内容：1. [《一把长椅卡俩头》](https://b23.tv/BV1Vy",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[“鸣人 其实我也没有考上中忍”",
+      "desc": "近期B站高频二创热点/爆款内容：1. [“鸣人 其实我也没有考上中忍”（完整版）](https://b",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[【头文字F4",
+      "desc": "近期B站高频二创热点/爆款内容：1. [【头文字F4】德彪~德彪~得意的彪](https://b23.",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[AI不会告诉你，王虹到底证明了什么",
+      "desc": "近期B站高频二创热点/爆款内容：1. [AI不会告诉你，王虹到底证明了什么](https://b23.",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[三角洲行动 手把手教你解锁阿萨拉挂",
+      "desc": "近期B站高频二创热点/爆款内容：1. [三角洲行动 手把手教你解锁阿萨拉挂坠，131万大红，能招募阿萨",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[⚡️瑞士轮恰恰舞⚡️]",
+      "desc": "近期B站高频二创热点/爆款内容：1. [⚡️瑞士轮恰恰舞⚡️](https://b23.tv/BV1S",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[《阴阳师",
+      "desc": "近期B站高频二创热点/爆款内容：1. [《阴阳师》UR大天狗·高天铁羽CG丨飞羽凌云（CV：前野智昭）",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[挑战川普在美国的一天]",
+      "desc": "近期B站高频二创热点/爆款内容：1. [挑战川普在美国的一天](https://b23.tv/BV1p",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "[你需要多少钱，才能财富自由？]",
+      "desc": "近期B站高频二创热点/爆款内容：1. [你需要多少钱，才能财富自由？](https://b23.tv/",
+      "source": "github_hot_hub",
+      "type": "二创热梗"
+    },
+    {
+      "name": "打瓦",
+      "desc": "指玩射击游戏《无畏契约》(Valorant)，常伴随瓦学弟/叫妈妈/笨蛋奶妈等抽象逆天二创梗",
+      "source": "classic",
+      "type": "游戏梗",
+      "category": "game",
+      "aliases": [
+        "达瓦",
+        "我要打瓦",
+        "瓦罗兰特",
+        "valorant",
+        "打瓦叫妈",
+        "贤者"
+      ]
+    },
+    {
+      "name": "三角洲堵桥",
+      "desc": "《三角洲行动》航天基地发射桥玩法，乌鲁鲁/狙击手卡桥头封锁撤离点只杀人不吃包",
+      "source": "classic",
+      "type": "游戏梗",
+      "category": "game",
+      "aliases": [
+        "发射桥",
+        "航天基地堵桥",
+        "三角洲封桥"
+      ]
+    },
+    {
+      "name": "堵桥",
+      "desc": "战术撤离或吃鸡游戏中守在必经桥头截杀撤离玩家（三角洲航天基地乌鲁鲁堵桥最出名）",
+      "source": "classic",
+      "type": "游戏梗",
+      "category": "game",
+      "aliases": [
+        "守桥",
+        "卡桥头",
+        "桥头战神"
+      ]
+    },
+    {
+      "name": "乌鲁鲁",
+      "desc": "《三角洲行动》工程干员，因巡飞弹技能在发射桥堵桥极其恶心闻名",
+      "source": "classic",
+      "type": "游戏梗",
+      "category": "game",
+      "aliases": [
+        "巡飞弹",
+        "大胖子",
+        "三角洲乌鲁鲁"
+      ]
+    },
+    {
       "name": "电子布洛芬",
       "desc": "指看了让人治愈开心、缓解疲惫的视频或段子",
       "source": "classic",
-      "type": "修辞"
+      "type": "修辞",
+      "category": "acg",
+      "aliases": [
+        "精神布洛芬"
+      ]
     },
     {
       "name": "硬控",
       "desc": "形容被某事物深深吸引或震撼，完全动弹不得",
       "source": "classic",
-      "type": "现象"
+      "type": "现象",
+      "category": "general",
+      "aliases": [
+        "硬控我",
+        "被硬控"
+      ]
     },
     {
       "name": "水灵灵地",
       "desc": "调侃某人毫无预兆、理直气壮地做出某事",
       "source": "classic",
-      "type": "现象"
+      "type": "现象",
+      "category": "general",
+      "aliases": [
+        "水灵灵"
+      ]
     },
     {
       "name": "疯狂星期四",
-      "desc": "肯德基特惠活动演变出的各种离谱反转求请客文案",
+      "desc": "肯德基特惠活动演变出的各种离谱反转求请客文案（v我50）",
       "source": "classic",
-      "type": "梗"
+      "type": "梗",
+      "category": "general",
+      "aliases": [
+        "v我50",
+        "狂四",
+        "肯德基星期四"
+      ]
     },
     {
       "name": "CPU/KTV",
       "desc": "调侃PUA的代称（“你在CPU我吗”）",
       "source": "classic",
-      "type": "谐音"
+      "type": "谐音",
+      "category": "abstract",
+      "aliases": [
+        "cpu我",
+        "你在cpu我"
+      ]
     },
     {
       "name": "牛头人(NTR)",
       "desc": "调侃被横刀夺爱、绿帽背叛情节",
       "source": "classic",
-      "type": "二次元"
+      "type": "二次元",
+      "category": "acg",
+      "aliases": [
+        "ntr",
+        "牛头人"
+      ]
     },
     {
       "name": "发癫/发疯文学",
       "desc": "情绪饱满、逻辑混乱却极具感染力的情绪发泄对话",
       "source": "classic",
-      "type": "文风"
+      "type": "文风",
+      "category": "abstract",
+      "aliases": [
+        "发癫",
+        "发疯"
+      ]
     },
     {
       "name": "赛博菩萨",
       "desc": "在网上无偿分享资源、攻略或解决疑难的好心人",
       "source": "classic",
-      "type": "网络赞誉"
+      "type": "网络赞誉",
+      "category": "general",
+      "aliases": [
+        "网络菩萨"
+      ]
     },
     {
       "name": "义父",
       "desc": "对送福利、借账号、请客大佬的尊称调侃",
       "source": "classic",
-      "type": "群聊称呼"
+      "type": "群聊称呼",
+      "category": "abstract",
+      "aliases": [
+        "请客义父",
+        "活义父"
+      ]
     },
     {
       "name": "老登/小登",
       "desc": "对群内老油条与新人群友的调侃称呼",
       "source": "classic",
-      "type": "称呼"
+      "type": "称呼",
+      "category": "abstract",
+      "aliases": [
+        "老登",
+        "小登"
+      ]
+    },
+    {
+      "name": "红温",
+      "desc": "源自电竞选手Uzi比赛失利脸色涨红，引申为情绪急躁、破防、愤怒",
+      "source": "classic",
+      "type": "游戏梗",
+      "category": "game",
+      "aliases": [
+        "红温了",
+        "急了急了",
+        "破大防"
+      ]
     }
   ]
 }

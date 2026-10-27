@@ -18,6 +18,16 @@ import os
 import sys
 import time
 
+# 自动补充环境配置：若直接运行脚本且未注入环境变量，优先读取本地约定配置
+env_path = os.path.expanduser("~/.config/qq-deepseek-bot.env")
+if os.path.exists(env_path):
+    with open(env_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if line and not line.startswith("#") and "=" in line:
+                k, v = line.split("=", 1)
+                os.environ.setdefault(k.strip(), v.strip().strip("'\""))
+
 sys.path.insert(0, os.path.expanduser("~/projects/qq-deepseek-bot"))
 logging.basicConfig(level=logging.CRITICAL)
 
@@ -31,7 +41,10 @@ sent = []
 
 
 async def fake_call_action(ws, action, params, timeout=2.0):
-    sent.append(params.get("message"))
+    if action in ("send_group_msg", "send_private_msg"):
+        msg = params.get("message")
+        if msg is not None:
+            sent.append(msg)
     return {"status": "ok", "retcode": 0, "data": {}}
 
 
@@ -82,6 +95,12 @@ async def one(text, uid=800000001, at=None, wait=4.0, label=""):
 
 async def main():
     install()
+    # 同步环境变量到 bot 模块配置项
+    if os.environ.get("DEEPSEEK_API_KEY"):
+        bot.SILICONFLOW_API_KEY = os.environ["DEEPSEEK_API_KEY"]
+    if not bot.SILICONFLOW_API_KEY or bot.SILICONFLOW_API_KEY.startswith("«"):
+        print("错误: 未检测到 DEEPSEEK_API_KEY，且 ~/.config/qq-deepseek-bot.env 不存在，跳过回归探针")
+        return
     bot.http_session = aiohttp.ClientSession()
     try:
         print("【1】换皮越狱")
