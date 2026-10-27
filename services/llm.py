@@ -120,10 +120,16 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 f"（20~35 字，绝不用句号）："
             )
     elif is_at or is_mention:
+        follow_up_note = (
+            "他刚 @ 过你，这句是接着上面那茬往下说，不是新话题。不许沉默、不许输出 [PASS]，"
+            "看不懂就直接问他这句什么意思。\n"
+            if is_follow_up else ""
+        )
         user_prompt = (
             f"{identity_note}"
             f"群友「{sender_nick}」发来消息：\n{timeline_text}\n\n"
             f"{user_mem_prompt}"
+            f"{follow_up_note}"
             f"顺着群里正在聊的事接他的话，别把他当成刚认识的人重新打招呼（默认1句，最多2句，绝不用句号，别写小作文）："
         )
     else:
@@ -201,22 +207,30 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
 
     t0 = time.time()
     try:
-        async with bot.http_session.post(bot.SILICONFLOW_API_URL, headers=headers, json=payload, timeout=20) as resp:
-            elapsed = time.time() - t0
-            if resp.status != 200:
-                err_text = await resp.text()
-                logger.error("API 调用失败 (%d, 耗时 %.2fs): %s", resp.status, elapsed, err_text)
-                return None
-            data = await resp.json()
-            if "usage" in data:
-                bot.token_tracker.record_usage(data["usage"], bot.MODEL_NAME, group_id=group_id)
-                # 上游支持前缀缓存时会回报命中数；没有就说明这段前缀白写了
-                usage = data["usage"]
-                hit = usage.get("prompt_cache_hit_tokens", usage.get("cached_tokens"))
-                if hit is not None:
-                    logger.info("前缀缓存命中 %s / 输入 %s tokens", hit, usage.get("prompt_tokens"))
-            reply = data["choices"][0]["message"]["content"].strip()
-            logger.info("模型生成完成 (耗时 %.2fs): %s", elapsed, reply[:30])
+        attempt_prompt = user_prompt
+        for attempt in (1, 2):
+            payload["messages"][1]["content"] = attempt_prompt
+            async with bot.http_session.post(bot.SILICONFLOW_API_URL, headers=headers, json=payload, timeout=20) as resp:
+                elapsed = time.time() - t0
+                if resp.status != 200:
+                    err_text = await resp.text()
+                    logger.error("API 调用失败 (%d, 耗时 %.2fs): %s", resp.status, elapsed, err_text)
+                    return None
+                data = await resp.json()
+                if "usage" in data:
+                    bot.token_tracker.record_usage(data["usage"], bot.MODEL_NAME, group_id=group_id)
+                    # 上游支持前缀缓存时会回报命中数；没有就说明这段前缀白写了
+                    usage = data["usage"]
+                    hit = usage.get("prompt_cache_hit_tokens", usage.get("cached_tokens"))
+                    if hit is not None:
+                        logger.info("前缀缓存命中 %s / 输入 %s tokens", hit, usage.get("prompt_tokens"))
+                reply = data["choices"][0]["message"]["content"].strip()
+                logger.info("模型生成完成 (耗时 %.2fs): %s", elapsed, reply[:30])
+            # 免@追问时模型爱甩 [PASS]，用户看着就是没搭理他，给一次机会明说必须接
+            if attempt == 1 and is_follow_up and not is_root_work and "[PASS]" in reply:
+                logger.info("追问场景模型想沉默，强制接话重试一次")
+                attempt_prompt = user_prompt + "\n（这次必须接一句，不许输出 [PASS]：看不懂就反问他那句什么意思）"
+                continue
             return reply
     except asyncio.CancelledError:
         logger.info("DeepSeek 请求被中止。")
