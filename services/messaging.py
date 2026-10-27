@@ -53,7 +53,7 @@ def thin_emoji(text: str, keep_ratio: float = 0.15) -> str:
     return _tidy(text[:first.start()] + first.group() + rest)
 
 
-_SEG_END_RE = re.compile(r'[!！?？~。；\n]{1,3}')
+_SEG_END_RE = re.compile(r'[!！?？~。；…\n]{1,3}')
 
 
 def _merge_fragments(parts: list[str]) -> list[str]:
@@ -70,8 +70,8 @@ def _merge_fragments(parts: list[str]) -> list[str]:
 
 
 def split_reply_segments(text: str) -> list[str]:
-    """按句末标点切成 1~3 条短消息，像真人连续打字。
-    只认中文句末标点，不拿空格当分隔符——「部署写在 README 里」被切成两条的锅就是它。"""
+    """按强标点（！？”。~）、换行切成 1~3 条短消息，像真人连续打字。
+    不拿空格当分隔符，也不把中英混排切断。若回复包含换行则优先按行分段发。"""
     clean = bot.strip_markdown(text).strip()
     clean = bot.remove_trailing_period(clean)
     if not clean:
@@ -81,6 +81,7 @@ def split_reply_segments(text: str) -> list[str]:
         return lines[:3]
     if len(clean) <= 16:
         return [clean]
+
     parts = []
     buf = ''
     pos = 0
@@ -251,25 +252,16 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     bot.recent_bot_replies[group_id].append(text)
     bot.group_last_bot_reply_time[group_id] = time.time()
 
-    if is_command_report or len(text) > 120 or channel_mode == "root":
-        await send_group_message(ws, group_id, text, is_command_report=is_command_report, at_user_id=at_user_id)
-        return text
-        
-    # 单群限频检查（防腾讯风控）
-    if not bot.check_and_record_group_rate_limit(group_id):
-        now = time.time()
-        last_warn = bot.group_rate_limit_warned.get(group_id, 0.0)
-        if now - last_warn > 30.0:
-            bot.group_rate_limit_warned[group_id] = now
-            logger.warning("[群 %d] 60s 内已发 %d 条，触发风控红线冷静期", group_id, bot.GROUP_MAX_MESSAGES_PER_WINDOW)
-            await send_group_message(ws, group_id, "别排队艾特我啦，缓口气再说", is_command_report=False)
-        return ""
-        
-    # 安全护栏过滤
+    # 安全护栏过滤与旁白剥离（无论单句还是分段，必须先过清洗闸）
     is_safe, text = safety_guard.sanitize_outgoing_text(text)
     text = safety_guard.strip_internal_monologue(text)
     if not text:
         return ""
+
+    # 只有超长汇报类指令才不分段；普通群聊与 root 模式均走分段，像真人连发打字
+    if is_command_report or len(text) > 300:
+        await send_group_message(ws, group_id, text, is_command_report=is_command_report, at_user_id=at_user_id)
+        return text
 
     segments = split_reply_segments(text)
     # 切段之后每段再过一遍旁白闸：整句正文里混一句「（发送表情包）」，切出来就是独立一条，
@@ -296,19 +288,19 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         target_at = at_user_id if i == 0 else None
         await send_group_message(ws, group_id, seg, is_command_report=False, at_user_id=target_at)
         if i < len(segments) - 1:
-            delay = min(1.4, max(0.6, len(seg) * 0.05))
+            delay = min(0.6, max(0.2, len(seg) * 0.02))
             await asyncio.sleep(delay)
             
-    # 文字发完后，如果触发了立绘或表情包，延迟 0.5s 单独甩出一张真实图片
+    # 文字发完后，如果触发了立绘或表情包，延迟 0.2s 单独甩出一张真实图片
     if final_pic_b64:
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(0.2)
         await send_meme_message(ws, group_id=group_id, b64_data=final_pic_b64)
 
     return text
 
 
 async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int, text: str, is_command_report: bool = False):
-    """向 NapCat 发送私聊消息并捕获发送状态"""
+    """向 NapCat 发送私聊消息并捕获发送状态（支持多句拆分连发，像真人聊天）"""
     if "[PASS]" in text:
         return
     # 私聊没有群号，用 -1 当独立槽位，别和任何群混在一起
@@ -318,21 +310,44 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
     text = _limit_combo(text, private_key)
     bot.recent_bot_replies[private_key].append(text)
 
-    clean_text = bot.strip_markdown(text).strip()
-    clean_text = bot.obfuscate_urls_for_qq(clean_text)
-    # 过滤末尾句号
-    clean_text = bot.remove_trailing_period(clean_text)
-    if not is_command_report:
-        clean_text = thin_emoji(clean_text)
-    max_len = 2000 if is_command_report else 200
-    if len(clean_text) > max_len:
-        clean_text = clean_text[:max_len - 3] + "..."
-    if not clean_text:
+    # 旁白清洗
+    is_safe, text = safety_guard.sanitize_outgoing_text(text)
+    text = safety_guard.strip_internal_monologue(text)
+    if not text:
         return
-        
-    res = await bot.call_action(ws, "send_private_msg", {"user_id": user_id, "message": clean_text}, timeout=3.0)
-    if res and res.get("status") == "ok":
-        logger.info("[私聊 %d] 私信已发送: %s", user_id, clean_text[:40])
-    else:
-        logger.warning("[私聊 %d] 私信发送可能失败: %s | 响应: %s", user_id, clean_text[:40], res)
+
+    # 指令汇报或超长文本直接单发
+    if is_command_report or len(text) > 300:
+        clean_text = bot.strip_markdown(text).strip()
+        clean_text = bot.obfuscate_urls_for_qq(clean_text)
+        clean_text = bot.remove_trailing_period(clean_text)
+        max_len = 2000 if is_command_report else 200
+        if len(clean_text) > max_len:
+            clean_text = clean_text[:max_len - 3] + "..."
+        if not clean_text:
+            return
+        await bot.call_action(ws, "send_private_msg", {"user_id": user_id, "message": clean_text}, timeout=3.0)
+        return
+
+    # 普通私聊消息：按标点分段发送
+    segments = split_reply_segments(text)
+    segments = [seg for seg in (safety_guard.strip_internal_monologue(s) for s in segments) if seg]
+    if not segments:
+        return
+
+    for i, seg in enumerate(segments):
+        clean_seg = bot.strip_markdown(seg).strip()
+        clean_seg = bot.obfuscate_urls_for_qq(clean_seg)
+        clean_seg = bot.remove_trailing_period(clean_seg)
+        clean_seg = thin_emoji(clean_seg)
+        if not clean_seg:
+            continue
+        res = await bot.call_action(ws, "send_private_msg", {"user_id": user_id, "message": clean_seg}, timeout=3.0)
+        if res and res.get("status") == "ok":
+            logger.info("[私聊 %d] 私信已发送: %s", user_id, clean_seg[:40])
+        else:
+            logger.warning("[私聊 %d] 私信发送可能失败: %s | 响应: %s", user_id, clean_seg[:40], res)
+        if i < len(segments) - 1:
+            delay = min(1.2, max(0.5, len(clean_seg) * 0.05))
+            await asyncio.sleep(delay)
 

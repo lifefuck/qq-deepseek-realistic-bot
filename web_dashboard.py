@@ -1176,7 +1176,13 @@ def create_session() -> str:
 
 def validate_session(token: Optional[str]) -> bool:
     """校验随机会话有效性并自动滑动续期"""
-    if not token or token not in ACTIVE_SESSIONS:
+    if not token:
+        return False
+    if token not in ACTIVE_SESSIONS:
+        # 兼容重启或外部初始化的 sessions 文件
+        disk_sessions = load_sessions()
+        ACTIVE_SESSIONS.update(disk_sessions)
+    if token not in ACTIVE_SESSIONS:
         return False
     now = time.time()
     if now > ACTIVE_SESSIONS[token]:
@@ -1276,10 +1282,15 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
     """构建 aiohttp web 实例，支持加固鉴权与配置热写入"""
     app = web.Application(middlewares=[session_auth_middleware])
 
-    # 挂载构建后的静态资源目录
-    assets_dir = os.path.join(DIST_DIR, "assets")
-    if os.path.exists(assets_dir):
-        app.router.add_static("/assets", assets_dir)
+    # 静态资源在请求时按需解析：前端重新构建后不必重启服务也能立刻生效
+    async def handle_asset(request: web.Request):
+        rel = request.match_info.get("path", "")
+        assets_root = os.path.realpath(os.path.join(DIST_DIR, "assets"))
+        target = os.path.realpath(os.path.join(assets_root, rel))
+        # 路径穿越防护：解析后必须仍在 assets 目录内
+        if not target.startswith(assets_root + os.sep) or not os.path.isfile(target):
+            raise web.HTTPNotFound()
+        return web.FileResponse(target)
 
     async def handle_login(request: web.Request):
         client_ip = get_client_ip(request)
@@ -1359,6 +1370,7 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
             return web.json_response({"error": str(e)}, status=500)
 
     app.router.add_get("/", handle_index)
+    app.router.add_get("/assets/{path:.*}", handle_asset)
     app.router.add_post("/api/login", handle_login)
     app.router.add_post("/api/logout", handle_logout)
     app.router.add_get("/api/status", handle_status)

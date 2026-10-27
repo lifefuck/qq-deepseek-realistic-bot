@@ -8,6 +8,8 @@ import meme_catalog
 import re
 import time
 from services import trace
+from services import vision
+import media_resolver
 
 # 由 bot.py 在启动时注入自己。直接 import bot 在 `python bot.py` 下会拿到
 # 另一个模块实例（__main__ 与 bot 各一份），全局状态就分裂了。
@@ -33,8 +35,33 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
     reply_prefix = await bot.extract_reply_context(ws, event, raw_message)
     raw_message = await bot.expand_forward_messages(ws, raw_message)
     
+    # 捕获私聊中的图片，若有图片则通过 Gemini 转录画面内容
+    m_imgs = re.findall(r'\[CQ:image,[^\]]*?url=([^,\]]+)', raw_message)
+    vision_desc = None
+    session = bot.get_http_session()
+    if m_imgs:
+        target_img_url = m_imgs[0].replace("&amp;", "&")
+        bot.logger.info("[私聊] 收到图片，正在调用 Gemini 识图: %s", target_img_url[:60])
+        vision_desc = await vision.describe_image(session, target_img_url)
+        if vision_desc:
+            bot.logger.info("[私聊] Gemini 识图成功: %s", vision_desc[:60])
+
+    # 媒体与通用网页链接解析
+    media_info = None
+    if session:
+        try:
+            media_info = await media_resolver.parse_media_content(session, raw_message)
+        except Exception as e:
+            bot.logger.warning("[私聊] 链接解析异常: %s", e)
+
     clean_body = bot.clean_cq_codes(raw_message).strip()
     clean_body = re.sub(r"\[CQ:reply,id=-?\d+\]", "", clean_body).strip()
+
+    if media_info:
+        clean_body = f"{clean_body}\n{media_info['summary']}".strip()
+    
+    if vision_desc:
+        clean_body = f"{clean_body}\n[用户发送/附带的图片/表情包内容]: {vision_desc}".strip()
     
     if not clean_body:
         return

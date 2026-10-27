@@ -161,4 +161,31 @@ async def parse_media_content(session: aiohttp.ClientSession, text: str) -> Opti
                 "summary": f"[小红书笔记] 标题: {title[:80]}"
             }
 
+    # 4. 通用网页链接解析 (http/https)，提取 title 与 meta description 参与讨论
+    m_url = re.search(r"https?://[^\s<>\"'，。！？（）\[\]]+", text)
+    if m_url:
+        target_url = m_url.group(0).rstrip(".,;:!?，。！？")
+        fetched = await safe_fetch(session, target_url, timeout=5.0)
+        if fetched:
+            html = fetched[1]
+            m_title = re.search(r'<title[^>]*>([^<]+)</title>', html, re.IGNORECASE)
+            title = m_title.group(1).strip() if m_title else ""
+            m_desc = re.search(r'<meta\s+[^>]*name=["\']description["\']\s+content=["\']([^"\']*)["\']', html, re.IGNORECASE)
+            if not m_desc:
+                m_desc = re.search(r'<meta\s+[^>]*property=["\']og:description["\']\s+content=["\']([^"\']*)["\']', html, re.IGNORECASE)
+            desc = m_desc.group(1).strip() if m_desc else ""
+            if title or desc:
+                clean_title = re.sub(r'[\r\n\t]+', ' ', title)[:100]
+                summary_parts = []
+                if clean_title:
+                    summary_parts.append(f"标题: {clean_title}")
+                if desc:
+                    clean_desc = re.sub(r'[\r\n\t]+', ' ', desc)[:120]
+                    summary_parts.append(f"摘要: {clean_desc}")
+                return {
+                    "type": "webpage",
+                    "title": clean_title,
+                    "summary": f"[分享网页] {' | '.join(summary_parts)}"
+                }
+
     return None
