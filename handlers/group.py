@@ -267,11 +267,6 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             await bot.send_group_message(ws, group_id, "你要搜哪张图？先把图发出来我才能看", at_user_id=sender_id)
             return
 
-    # 被 @ 还甩了张图过来，当斗图处理，直接从库存里挑一张回去，不浪费模型调用
-    if is_at and m_imgs and not re.search(r"(?:什么番|哪部番|出处|搜番|搜截图)", clean_body):
-        if await fun_features.meme_battle(ws, group_id, sender_id, clean_body):
-            return
-
     # 管理员快捷指令检测（忽略大小写，兼容全角斜杠与常用刹车词）
     if is_admin and (
         norm_lower.startswith(("/new", "/stop", "/root", "/user", "/on", "/off"))
