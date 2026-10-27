@@ -272,9 +272,10 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         return ""
 
     segments = split_reply_segments(text)
-    # 图片比表情更抢眼：默认 8% 概率，模型自己要图（[MEME:xx]）或踩到强情绪词才发
-    should_send_meme = bool(meme_tag) or (random.random() < 0.08) or any(k in text for k in ["炸毛", "闹麻了", "无敌了", "气死"])
-    # 情绪立绘只在真的炸毛/害羞时才上，别让「怎么」「为什么」这种口头词也甩一张图
+    # 图片比表情更抢眼：概率压到 8%，但触发词照旧——群友一说「大肥鱼」「草」就是要图
+    should_send_meme = bool(meme_tag) or (random.random() < 0.08) or any(k in text for k in ["大肥鱼", "炸毛", "闹麻了", "草", "无敌了", "才不是", "哼", "气死"])
+    # 立绘是另一套：只在真炸毛/真害羞时上，别让「怎么」「为什么」这种口头词也甩一张图
+
     status_avatar = None
     if any(k in text for k in ["气死", "滚", "闭嘴", "炸毛", "火大"]):
         status_avatar = bot.get_status_avatar_b64("angry")
