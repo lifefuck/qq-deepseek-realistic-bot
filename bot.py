@@ -603,7 +603,7 @@ DEFAULT_GROUP_CONFIG = {
     "mode": "user",            # "user" (拟真闲聊) 或 "root" (技术老搭档)
     "muted": False,             # /off 一键静音的总闸：群友说什么都不回，管理员指令照旧
     "enable_interject": True,   # 是否允许主动插话
-    "interject_prob": 0.10,     # 主动插话基准概率 (0.0 ~ 1.0，调降至 10%)
+    "interject_prob": 0.30,     # 主动插话基准概率 (0.0 ~ 1.0，调至 30%)
     "enable_sleep": True,       # 是否启用 01:00~07:00 拟真作息
     "enable_poke": True,        # 是否开启戳一戳互动与回戳
     "enable_games": True,       # 是否开启数字炸弹/掷骰子等文字游戏
@@ -1099,9 +1099,9 @@ def calculate_interject_probability(group_id: int, base_prob: float) -> tuple[fl
     last_msg = group_last_msg_time.get(group_id, 0.0)
     last_reply = group_last_bot_reply_time.get(group_id, 0.0)
 
-    # 冷场降权：若本条之前群里沉寂超过 10 分钟 (600s)，大幅降权至 0.25x，绝不当破冰显眼包
+    # 冷场降权：若本条之前群里沉寂超过 10 分钟 (600s)，适度降权至 0.6x，保持一定活跃度
     if last_msg > 0 and (now - last_msg) >= 600.0:
-        return base_prob * 0.25, "冷场降权(0.25x)"
+        return base_prob * 0.6, "冷场适度降权(0.6x)"
 
     # 热场提权：若机器人在 10 分钟内刚在该群说过话，说明参与热聊，提权 1.5x 积极接话
     if last_reply > 0 and (now - last_reply) < 600.0:
@@ -1133,6 +1133,16 @@ def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int =
 
     # 1. 命中日常私聊/开黑/组队黑名单词汇，坚决不瞎插话打扰群友
     if any(nkw in text for nkw in INTERJECT_NOISE_KEYWORDS):
+        return False, False
+
+    # 1.5 过滤常见的组队喊人正则（如 1=3, 2缺1, 来个打野/上单/法师/奶妈 等）
+    team_patterns = (
+        r"[1-4]\s*[=＝]\s*[1-4]",
+        r"[1-4]\s*缺\s*[1-4]",
+        r"来个?(?:打野|上单|中单|ad|辅助|奶妈|输出|坦克|c位|大爹|高手|猛男|人)",
+        r"(?:拉|进|建)个?房间",
+    )
+    if any(re.search(pat, text, re.IGNORECASE) for pat in team_patterns):
         return False, False
 
     # 2. 只要是有实质内容（非纯水、长度>=4）的群消息，结合冷热场动态概率送入大模型自主思考
@@ -1529,18 +1539,34 @@ def weekly_favor_decay() -> int:
 
 
 async def _favor_keeper():
-    """每周一凌晨跑一次好感衰减。只挂一次，扔在重连循环外面。"""
+    """每周一凌晨跑一次好感衰减，并定期清理过期的追问与好感打分缓冲状态。"""
     last_mark = ""
+    last_cleanup_ts = 0.0
     while True:
         try:
             await asyncio.sleep(300)
-            now = datetime.datetime.now()
-            mark = now.strftime("%Y-%W")
-            if now.weekday() == 0 and now.hour == 0 and mark != last_mark:
+            now_dt = datetime.datetime.now()
+            now_ts = time.time()
+            mark = now_dt.strftime("%Y-%W")
+            if now_dt.weekday() == 0 and now_dt.hour == 0 and mark != last_mark:
                 last_mark = mark
                 n = weekly_favor_decay()
                 if n:
                     logger.info("[好感] 一周没露面，%d 人回落 1 点", n)
+
+            # 每 30 分钟清理一次已过期的临时会话与节流映射表，防止常驻内存泄漏
+            if now_ts - last_cleanup_ts >= 1800.0:
+                last_cleanup_ts = now_ts
+                # 1. 清理过期追问窗口
+                exp_followup = [k for k, v in list(user_follow_up_state.items()) if now_ts >= v.get("expire", 0.0)]
+                for k in exp_followup:
+                    user_follow_up_state.pop(k, None)
+
+                # 2. 清理超过 1 小时未活动的 favor 打分节流时间戳
+                exp_favor = [k for k, t in list(_favor_last_run.items()) if now_ts - t > 3600.0]
+                for k in exp_favor:
+                    _favor_last_run.pop(k, None)
+                    _favor_pending.pop(k, None)
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -1561,7 +1587,7 @@ async def _cold_group_activator():
             now_ts = time.time()
             for gid in list(ALLOWED_GROUPS):
                 cfg = get_group_config(gid)
-                if cfg.get("muted") or not cfg.get("enable_active_reply", True):
+                if cfg.get("muted") or not cfg.get("enable_interject", True):
                     continue
                 # 静默保护
                 if now_ts < group_silence_until.get(gid, 0.0):

@@ -1,6 +1,6 @@
 {
   "updated_at": 1793219429.1422515,
-  "total_count": 1902,
+  "total_count": 1903,
   "memes": [
     {
       "name": "treetree的",
@@ -11493,6 +11493,19 @@
         "红温了",
         "急了急了",
         "破大防"
+      ]
+    },
+    {
+      "name": "mj",
+      "desc": "抖音/群聊热门彩蛋梗：MJ是蜘蛛侠女朋友(玛丽简)，聊天框发mj会掉落迷你蜘蛛侠送爱心特效，引发全网跟风刷屏或调侃“在QQ发mj有毛用”",
+      "source": "curated",
+      "type": "网络热梗",
+      "category": "general",
+      "aliases": [
+        "MJ",
+        "蜘蛛侠mj",
+        "发mj",
+        "召唤蜘蛛侠"
       ]
     }
   ]
