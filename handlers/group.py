@@ -165,11 +165,11 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 移除 reply 的 CQ 码残留
     clean_body = re.sub(r"\[CQ:reply,id=-?\d+\]", "", clean_body).strip()
 
-    # 如果有图片内容但用户没有附加文本，将内容作为描述体（显式标记发图人，杜绝多人群聊混淆）
+    # 如果有图片内容但用户没有附加文本，将内容作为描述体（紧凑表达，由时间线统一提供发送人 QQ）
     if vision_desc and not clean_body:
-        clean_body = f"[【发送人: {sender_nick}】发送了图片/表情包]: {vision_desc}"
+        clean_body = f"[发送了图片/表情包]: {vision_desc}"
     elif vision_desc:
-        clean_body = f"{clean_body}\n[【发送人: {sender_nick}】附带的图片/表情包画面描述]: {vision_desc}".strip()
+        clean_body = f"{clean_body}\n[附带图片/表情包画面描述]: {vision_desc}".strip()
 
     # 如果用户只 @ 了机器人，没有附带文字也没有图片
     if is_at and not clean_body:
@@ -410,7 +410,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     
     prefix = "[管理员] " if is_admin else ""
     record_item = {
-        "sender": f"{prefix}{sender_display}",
+        "sender": f"{prefix}{sender_display}(QQ {sender_id})",
+        "sender_id": sender_id,
         "content": full_content,
         "time": now
     }
@@ -418,7 +419,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     bot.group_history_pool[group_id].append(record_item)
     # 异步非阻塞推入跨群公共话题（仅内存+脏标记）
     cross_memory.cross_group_mgr.record_topic(group_id, sender_display, full_content)
-    bot.logger.info("[群 %d][%s] %s%s: %s", group_id, "被@" if is_at else "群聊", prefix, sender_display, full_content)
+    bot.logger.info("[群 %d][%s] %s%s(QQ %d): %s", group_id, "被@" if is_at else "群聊", prefix, sender_display, sender_id, full_content)
     
     # 检查是否明确 @ 了群里的其他人（非机器人）
     at_other_match = re.findall(r"\[CQ:at,[^\]]*qq=(\d+)[^\]]*\]", raw_message)
@@ -437,23 +438,20 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             if reply_sender == bot.ADMIN_QQ:
                 is_reply_to_admin = True
 
-    # 针对主人的攻击/挑衅/还嘴的主动护短检测
+    # 针对主人的恶意辱骂/恶性攻击的主动护短检测（仅限指名道姓恶性人身攻击，日常调侃/水群词绝不误伤）
     is_attacking_admin = False
     if not is_admin and (is_at_admin or is_reply_to_admin or any(kw in clean_body for kw in ("life", "主人", "管理员"))):
-        # 简单攻击/嘲讽词快速特征检测
-        hostile_keywords = (
-            "菜", "傻", "笨", "蠢", "装", "狗", "滚", "死", "废物", "垃圾", "逆天", "大病", 
-            "煞笔", "sb", "弱智", "脑瘫", "红温", "急了", "急了急了", "叫什么", "什么玩意", 
-            "恶心", "服了", "典", "乐", "笑死", "破防", "你算什么", "下头", "闭嘴", "爬",
-            "病娇", "小丑", "孤儿", "下头男", "什么成分", "装什么"
+        # 仅恶性脏话/人身攻击词才触发护短，彻底剔除日常水群词（如菜、笨、服了、恶心、典、乐、笑死等）
+        severe_hostile_keywords = (
+            "煞笔", "sb", "傻逼", "脑瘫", "弱智", "死全家", "孤儿", "下贱", "废物玩意"
         )
-        if any(hk in clean_body.lower() for hk in hostile_keywords):
+        if any(hk in clean_body.lower() for hk in severe_hostile_keywords):
             is_attacking_admin = True
-            bot.logger.info("[群 %d] 发现群友 %s 疑似对主人(life) 进行攻击/阴阳怪气，触发自动护短护卫模式！", group_id, sender_nick)
-            # 扣除攻击主人的群友 5 点好感度
+            bot.logger.info("[群 %d] 发现群友 %s 恶性攻击主人(life)，触发护短护卫模式！", group_id, sender_nick)
+            # 扣除恶性攻击主人的群友 10 点好感度
             mem = bot.get_or_create_user_memory(sender_id, sender_nick, group_id=group_id)
-            mem["favor"] = max(0, mem.get("favor", 50) - 5)
-            bot.logger.info("[群 %d] 攻击主人行为惩罚：群友 %s 好感度降至 %d", group_id, sender_nick, mem["favor"])
+            mem["favor"] = max(0, mem.get("favor", 50) - 10)
+            bot.logger.info("[群 %d] 恶性攻击主人行为惩罚：群友 %s 好感度降至 %d", group_id, sender_nick, mem["favor"])
 
     # 检查是否处于连续对话追问窗口（5分钟内免 @ 回答 5 次，有新的 @ 则重置）
     user_conv_key = (group_id, sender_id)
@@ -545,9 +543,14 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 意图门控：结合冷热场动态权重送入大模型自主思考判定插话；若本条带有识别到的图片画面，且有一定信息量，也交由大模型自主评判
     should_trigger, is_mention_bot = bot.should_active_interrupt(clean_body, group_id=group_id, msg_count_since=bot.group_msg_count_since_bot[group_id])
     if vision_desc and len(vision_desc) >= 5:
-        # 群友发了图片/表情包，允许进入大模型自主判断（AI 会自行决定是回梗还是 [PASS] 静默）
-        should_trigger = True
-        bot.logger.info("[群 %d] 捕获到群友发图/表情包，送入大模型自主决策是否插话评价", group_id)
+        # 群友发了图片/表情包：纯表情/连环斗图由本地概率轻量抽样送入大模型，避免群友连环发图时次次调用模型判 [PASS] 烧钱
+        # 带有明显文字讨论或@的走正常门控，纯图按 35% 抽样放行
+        import random
+        if clean_body.strip() or random.random() < 0.35:
+            should_trigger = True
+            bot.logger.info("[群 %d] 捕获到群友发图/表情包，抽样送入大模型自主决策是否插话评价", group_id)
+        else:
+            bot.logger.debug("[群 %d] 群友纯发图，未命中旁观插话抽样，静默略过省 token", group_id)
 
     # 如果检测到群友分享了多媒体/视频/GitHub/图文卡片，且不是问项目自身地址，则自动触发插话进行省流与锐评
     is_media_share = bool(media_info and media_info.get("summary"))
@@ -675,7 +678,8 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
     clean_reply_record = bot.remove_trailing_period(bot.strip_markdown(sent_text or "")).strip()
     if clean_reply_record:
         bot_record = {
-            "sender": "小鲸鱼",
+            "sender": f"小鲸鱼(QQ {bot.BOT_QQ})",
+            "sender_id": bot.BOT_QQ,
             "content": clean_reply_record,
             "time": time.time()
         }
