@@ -56,7 +56,11 @@ def _load() -> None:
         return
 
     for it in items:
-        if not it.get("file_path") or not os.path.exists(it["file_path"]):
+        fpath = it.get("file_path") or ""
+        if fpath and not os.path.isabs(fpath):
+            fpath = os.path.join(_SCRIPT_DIR, fpath)
+            it["file_path"] = fpath
+        if not fpath or not os.path.exists(fpath):
             continue
         emo = (it.get("emotion") or "").strip()
         if emo:

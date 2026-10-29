@@ -103,10 +103,10 @@ async def main():
     check("括号执行说明不外发", not any("表情包自动发送" in t for t in texts), str(texts))
     check("正文照常发出", any("滚到你心里去" in t for t in texts), str(texts))
 
-    # 6. 戳一戳不消耗模型
+    # 6. 戳一戳触发 Agent 动态思考生成
     before = bot.token_tracker.data["total"]["requests"]
     quip = await bot.call_deepseek_poke("测试", is_admin=False, group_id=123456789)
-    check("戳一戳走本地", bool(quip) and bot.token_tracker.data["total"]["requests"] == before)
+    check("戳一戳走动态Agent生成", bool(quip))
 
     # 6.5 表情抽稀：该摘的时候必须摘干净，不能留下双空格或断句
     check("表情能摘掉", bot.thin_emoji("在啊 咋了 😅", keep_ratio=0) == "在啊 咋了")

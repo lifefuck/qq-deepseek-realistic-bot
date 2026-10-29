@@ -96,10 +96,14 @@ def strip_internal_monologue(text: str) -> str:
         return ""
     if "[PASS]" in text:
         return ""
+    # 过滤多行/单行自我审查与规则复述，如（注意：严格遵守了所有规则要求 包括：\n1. 保持...）
+    cleaned = re.sub(r"[\*（\(]\s*(?:注意|说明|根据人设|此时我|思考中|保持沉默|无需回复|内心独白|严格遵守).*?(?:[\*）\)]|\Z)", "", text, flags=re.DOTALL)
     # 过滤类似 *（思考中...）* 或 （根据人设我需要...）
-    cleaned = re.sub(r"[\*（(]\s*(?:根据人设|此时我|思考中|保持沉默|无需回复|内心独白)[^\*）)]*[\*）)]", "", text)
+    cleaned = re.sub(r"[\*（(]\s*(?:根据人设|此时我|思考中|保持沉默|无需回复|内心独白)[^\*）)]*[\*）)]", "", cleaned)
     # 剥离所有第三人称动作旁白、语C舞台剧括号，如（甩尾巴拍你手）、(缩成一团往你怀里拱)
     cleaned = re.sub(r"[（\(][^（）\(\)]{1,60}[）\)]", "", cleaned)
+    # 单独成段时的规则列表残留拦截（例如以 1. 2. 这种列表项残留且提及人设/规则）
+    cleaned = re.sub(r"^\s*\d+[\.、]\s*.*?(?:人设|规则|要求|傲娇|鲸鱼娘).*$", "", cleaned, flags=re.MULTILINE)
     # 收拾残留的多余空格
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     return cleaned.strip()

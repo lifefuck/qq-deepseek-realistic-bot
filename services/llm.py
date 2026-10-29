@@ -194,7 +194,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"上面的记录只是前情，你只对他最后这句作反应，别去答前面别人说过的话；"
             f"他要是只回你半句（「不要」「对的」这种），先接住这半句，再联系前情把话接圆；"
             f"【态度与好感铁律】：你的语气和互动必须严格服从上方【好感度状态】的指示！好感高（80+）时必须明显展现亲切偏爱、包容热络；好感低（<40）时必须冷淡戒备；"
-            f"【对线骂人反击铁律】：平时聊天和和气气，但一旦对方主动挑衅找茬、辱骂你（如骂傻逼/弱智/脑瘫/废物等）或攻击主人，立刻撕掉伪装迎头痛击！坚决杜绝文绉绉的拐弯抹角阴阳怪气，用真实老网民的力道迎头喷回去，用常用骂人谐音或网络嘴替狠狠回击（如「脑子进水了是吧」「煞笔玩意叫什么叫」「小脑萎缩就去挂号」），寸步不让骂到对方闭嘴；"
+            f"【对线骂人阶梯反击铁律（严禁迁怒、严禁越级急眼）】：谁惹你你就回谁！严禁把日常打趣当人身攻击：1.面对日常调侃互损（「傻鱼」「菜」「人机」等），只用傲娇斗嘴或翻白眼还嘴，绝不真急眼；2.面对阴阳挑衅找茬，嘴硬毒舌戳破其逻辑；3.唯独对方指着鼻子严重辱骂（「傻逼/脑瘫/废物」等恶性人身攻击）或攻击主人时，才彻底放开迎头喷回去！正常聊天绝不迁怒于无辜群友；"
             f"遇到不确定、没听过或没看懂的，严禁瞎猜胡编，直接坦荡说不知道/看不懂；"
             f"要是拿具体问题考你（算术、常识、时间、数字），先把答案说出来，别糊弄过去；"
             f"严禁输出任何动作括号，随手打字（默认1句，最多2句，绝不用句号，别写小作文）："
@@ -361,70 +361,68 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         return None
 
 async def call_deepseek_poke(sender_nick: str, is_admin: bool, group_id: Optional[int] = None, user_id: Optional[int] = None) -> Optional[str]:
-    """戳一戳的回应。
+    """戳一戳的回应：通过 Agent 大模型动态思考生成，拒绝生硬固定词库，实现每次互动千人千面。"""
+    favor = 50
+    if user_id:
+        mem = bot.get_or_create_user_memory(user_id, sender_nick, group_id=group_id)
+        favor = int(mem.get("favor", 50))
 
-    为了让一句「戳我干嘛」不背着两千多字的 System Prompt 去烧一次 API，
-    普通群友直接按好感度阶梯取本地语料；只有 root 模式才真的问模型（那里要判断有没有活干）。
-    """
-    channel_mode = bot.get_channel_mode(group_id)
-    is_root_work = bool(is_admin and channel_mode == "root")
+    if is_admin:
+        role_hint = "对方是你的至尊主人（开发者/最高管理员）。你在他面前是活泼粘人、傲娇调皮的鲸鱼娘/猫娘属性。被主人戳了，你可以撒娇、假装吃痛、要零食、要零花钱、傲娇假装咬他，或者好奇主人要带你玩什么。"
+    elif favor >= 75:
+        role_hint = f"对方是跟你关系极好的老朋友「{sender_nick}」（好感度高达 {favor}）。互动要亲切热络、喜欢逗他玩、开玩笑打趣，像熟人朋友随手闹着玩。"
+    elif favor >= 40:
+        role_hint = f"对方是普通群友「{sender_nick}」（好感度正常 {favor}）。互动像真人老群友一样接招，可以吐槽他手欠、说他戳你头、开玩笑要扫码收费、傲娇甩尾巴，好玩逗趣。"
+    else:
+        role_hint = f"对方是关系生疏或之前惹过你的群友「{sender_nick}」（好感度仅 {favor}）。冷淡戒备、嫌弃他手欠、让他离你远点别戳你。"
 
-    if not is_root_work:
-        if is_admin:
-            corpus = bot._POKE_ADMIN_QUIPS
-        else:
-            favor = 50
-            if user_id:
-                mem = bot.get_or_create_user_memory(user_id, sender_nick, group_id=group_id)
-                favor = int(mem.get("favor", 50))
-            if favor >= 75:
-                corpus = bot._POKE_FAVOR_HIGH
-            elif favor >= 40:
-                corpus = bot._POKE_FAVOR_MID
-            else:
-                corpus = bot._POKE_FAVOR_LOW
-
-        quip = random.choice(corpus)
-        logger.info("戳一戳回应（好感分层命中）: %s", quip)
-        return quip
+    user_prompt = (
+        f"【互动场景】：群友「{sender_nick}」在 QQ 群里戳了戳你（戳一戳/拍了拍）。\n"
+        f"【关系与互动要求】：\n{role_hint}\n\n"
+        f"【输出铁律】：\n"
+        f"1. 绝不使用客服腔、机械助手腔或汇报工作腔（严禁出现「请问有什么任务安排」「请问需要什么帮助」等）。\n"
+        f"2. 口吻完全贴合拟真老群友/傲娇大肥鱼，极具娱乐性和互动感。\n"
+        f"3. 极其简短自然！严格限 1 句话（8~20 字以内），绝不用句号，绝不带动作括号（如严禁输出「（揉揉头）」等）："
+    )
 
     headers = {
         "Authorization": f"Bearer {bot.SILICONFLOW_API_KEY}",
         "Content-Type": "application/json"
     }
-    user_prompt = (
-        "主人在群里戳了你一下。当前是 root 工作模式，简明回应主人有什么任务要安排（1 句，10~20 字，严禁演戏）："
-    )
-    sys_content = bot.ROOT_SYSTEM_PROMPT
+    sys_content = bot.SYSTEM_PROMPT
     payload = {
         "model": bot.MODEL_NAME,
         "messages": [
             {"role": "system", "content": sys_content},
             {"role": "user", "content": user_prompt}
         ],
-        "max_tokens": 60,
-        "temperature": 0.7
+        "max_tokens": 40,
+        "temperature": 0.9
     }
-    
+
     if bot.http_session is None or bot.http_session.closed:
         bot.http_session = aiohttp.ClientSession()
 
     t0 = time.time()
     try:
-        async with bot.http_session.post(bot.SILICONFLOW_API_URL, headers=headers, json=payload, timeout=15) as resp:
+        async with bot.http_session.post(bot.SILICONFLOW_API_URL, headers=headers, json=payload, timeout=12) as resp:
             elapsed = time.time() - t0
             if resp.status != 200:
                 logger.error("戳一戳 API 调用失败 (%d, 耗时 %.2fs)", resp.status, elapsed)
-                return None
+                # 仅在 API 异常时作兜底退避
+                return "干嘛呀，手痒啦～" if is_admin else "戳我干嘛，手痒是吧"
             data = await resp.json()
             if "usage" in data:
                 bot.token_tracker.record_usage(data["usage"], bot.MODEL_NAME, group_id=group_id)
             reply = data["choices"][0]["message"]["content"].strip()
-            logger.info("戳一戳动态响应完成 (耗时 %.2fs): %s", elapsed, reply[:30])
+            # 净化动作括号和独白
+            reply = re.sub(r"[（\(][^（）\(\)]*[）\)]", "", reply).strip()
+            reply = reply.strip("。！!~") + random.choice(["～", "", "！"])
+            logger.info("戳一戳 Agent 动态思考生成 (耗时 %.2fs): %s", elapsed, reply)
             return reply
     except Exception as e:
         logger.error("戳一戳调用大模型异常: %s", e)
-        return None
+        return "干嘛呀，手痒啦～" if is_admin else "戳我干嘛，手痒是吧"
 
 async def evaluate_favor_with_ai(user_id: int, sender_nick: str, dialogue_snippet: str, bot_reply: str = "", group_id: Optional[int] = None) -> Tuple[int, str]:
     """请求 SiliconFlow 大模型动态分析群友真实态度并给出好感变化 delta 与印象"""
@@ -501,6 +499,18 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
     if not _is_favor_worthy(dialogue_snippet) and dialogue_snippet != "戳了戳小鲸鱼":
         return
 
+    # 0. 特殊固定动作快速通道：戳一戳（只要是戳一戳互动，跳过 120s 冷却直接硬性 +1，绝不送进 AI 判定器，防止低好感成见死锁）
+    if dialogue_snippet == "戳了戳小鲸鱼":
+        mem = bot.get_or_create_user_memory(user_id, sender_nick, group_id=group_id)
+        old_favor = mem.get("favor", 50)
+        new_favor = min(100, old_favor + 1)
+        mem["favor"] = new_favor
+        mem["updated_at"] = time.time()
+        logger.info("[好感判定] 戳一戳直达通道: 群 %s 用户 %s(%s) 好感度: %d -> %d/100", group_id, sender_nick, user_id, old_favor, new_favor)
+        async with bot.memory_write_lock:
+            bot.save_user_memories()
+        return
+
     key = (group_id, user_id)
     now_ts = time.time()
     # 冷却周期内不重复跑，省 token（从 60 秒提升至 120 秒，且短句直接忽略）
@@ -516,13 +526,8 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
 
     mem = bot.get_or_create_user_memory(user_id, sender_nick, group_id=group_id)
     
-    # 0. 特殊固定动作快速通道：戳一戳
-    if dialogue_snippet == "戳了戳小鲸鱼":
-        favor_delta = 1
-        new_note = "喜欢戳小鲸鱼尾巴互动"
-    else:
-        # 1. 委托大模型深度理解真实语境并给出动态判定
-        favor_delta, new_note = await evaluate_favor_with_ai(user_id, sender_nick, dialogue_snippet, bot_reply=bot_reply, group_id=group_id)
+    # 1. 委托大模型深度理解真实语境并给出动态判定
+    favor_delta, new_note = await evaluate_favor_with_ai(user_id, sender_nick, dialogue_snippet, bot_reply=bot_reply, group_id=group_id)
 
     # 4. 同步记录持久化流水账并自动捕获事实/偏好（借鉴 DSH）
     try:

@@ -178,7 +178,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         return
 
     # 游戏指令或云崽生态专用指令，交给云崽等扩展插件处理，AI 机器人主动跳过，彻底避免抢答与刷屏
-    if bot.is_game_or_yunzai_command(clean_body):
+    # 注意：明确 @ 或引用回复机器人时，属于直接找 AI 对话（如 @机器人 抱抱/摸摸头/兑换码），不转交云崽
+    if not (is_at or is_reply_to_bot) and bot.is_game_or_yunzai_command(clean_body):
         bot.logger.debug("[群 %d] 识别为游戏指令: %r，主动转交云崽处理，跳过 AI 回复", group_id, clean_body)
         return
 
@@ -236,8 +237,10 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             await bot.send_group_message(ws, group_id, bomb_reply, at_user_id=sender_id)
             return
 
-    # 3. 两段式搜番/搜动画截图出处拦截
-    if re.search(r"(?:什么番|哪部番|谁画的|出处|搜番|搜截图|找番)", clean_body):
+    # 3. 两段式搜番/搜动画截图出处拦截（必须是主动问番/查出处，排除带图描述的误触）
+    if is_at or is_reply_to_bot or not is_admin:
+        pass
+    if re.search(r"(?:什么番|哪部番|谁画的|搜番|搜截图|找番|查出处|求出处)", clean_body) or re.search(r"(?:这|那|发|张|个)图?的出处", clean_body):
         # 寻找群内 90 秒内的有效图片（优先匹配提问者自己发过的图）
         now_ts = time.time()
         target_img_url = None
