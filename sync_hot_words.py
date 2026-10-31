@@ -188,16 +188,18 @@ def sync_memes() -> dict:
             logger.info(f"正在调用轻量 LLM 异步补充最新热词短释义 (待处理 {len(unexplained)} 条)...")
             try:
                 names_prompt = "\n".join([f"{i+1}. {m['name']}" for i, m in enumerate(unexplained)])
+                api_url = os.environ.get("DEEPSEEK_API_URL", "https://api.siliconflow.cn/v1/chat/completions")
+                model_name = os.environ.get("DEEPSEEK_MODEL", "deepseek-ai/DeepSeek-V3")
                 req_payload = {
-                    "model": "deepseek-ai/DeepSeek-V3",
+                    "model": model_name,
                     "messages": [
                         {"role": "system", "content": "你是一个懂各种网络热搜、游戏黑话和流行梗的年轻人。请为每个给出的网络热词或热搜标题写一句极其简炼的背景（20字以内，讲清楚这是什么梗、大家在调侃或关注什么）。输出格式：每行一个'序号. 解释'，不要废话。"},
                         {"role": "user", "content": names_prompt}
                     ],
                     "temperature": 0.5,
-                    "max_tokens": 500
+                    "max_tokens": 500,
+                    "thinking": {"type": "disabled"}
                 }
-                api_url = "https://api.siliconflow.cn/v1/chat/completions"
                 req_obj = urllib.request.Request(
                     api_url,
                     data=json.dumps(req_payload).encode("utf-8"),

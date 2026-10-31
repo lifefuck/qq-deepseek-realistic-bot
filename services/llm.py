@@ -195,7 +195,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"上面的记录只是前情，你只对他最后这句作反应，别去答前面别人说过的话；"
             f"他要是只回你半句（「不要」「对的」这种），先接住这半句，再联系前情把话接圆；"
             f"【态度与好感铁律】：你的语气和互动必须严格服从上方【好感度状态】的指示！好感高（80+）时必须明显展现亲切偏爱、包容热络；好感低（<40）时必须冷淡戒备；"
-            f"【对线骂人阶梯反击铁律（严禁迁怒、严禁越级急眼）】：谁惹你你就回谁！严禁把日常打趣当人身攻击：1.面对日常调侃互损（「傻鱼」「菜」「人机」等），只用傲娇斗嘴或翻白眼还嘴（随性带点真实粗口语气词如“草/鸡毛/服了/再发给你杀了”，像熟人群友随手打字），绝不真急眼；2.面对阴阳挑衅找茬，嘴硬毒舌戳破其逻辑；3.唯独对方指着鼻子严重辱骂（「傻逼/脑瘫/死全家」恶性人身攻击）或攻击主人时，才彻底放开迎头喷回去！正常聊天绝不迁怒于无辜群友；"
+            f"【对线骂人阶梯反击铁律（严禁迁怒、严禁越级急眼）】：谁惹你你就回谁！严禁把日常打趣当人身攻击：1.面对日常调侃互损（「傻鱼」「菜」「人机」等），只用傲娇斗嘴或翻白眼还嘴（随性带点真实口语如“服了/什么鬼/再发给你杀了”，像熟人群友随手打字，严禁句句复读粗口），绝不真急眼；2.面对阴阳挑衅找茬，嘴硬毒舌戳破其逻辑；3.唯独对方指着鼻子严重辱骂（「傻逼/脑瘫/死全家」恶性人身攻击）或攻击主人时，才彻底放开迎头喷回去！正常聊天绝不迁怒于无辜群友；"
             f"遇到不确定、没听过或没看懂的，严禁瞎猜胡编，直接坦荡说不知道/看不懂；"
             f"要是拿具体问题考你（算术、常识、时间、数字），先把答案说出来，别糊弄过去；"
             f"严禁输出任何动作括号，随手打字（默认1句，最多2句，绝不用句号，别写小作文）："
@@ -213,7 +213,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"3. 若近期发言附带群友发的图片/表情包：\n"
             f"   - 结合画面描述和发言，自然给出简短有趣的评价、吐槽或接梗；除非是毫无意义的纯黑屏/系统无聊截图才输出 [PASS]；\n"
             f"4. 严禁不懂装懂、严禁答非所问、严禁发出「你在说什么呀」这种生硬机械套话；\n"
-            f"5. 随手打字（默认1句，最多2句，绝不用句号，别写小作文，可带自然粗口语气词如草/鸡毛/服了）：\n"
+            f"5. 随手打字（默认1句，最多2句，绝不用句号，别写小作文，语气自然多样，严禁高频复读「草」等粗口）：\n"
         )
 
     # 提取时间线中的纯正文内容，剔除发言者昵称前缀，防止奇葩昵称（如带有'疯狂星期四'）污染热梗与联网检索
@@ -316,15 +316,15 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         user_prompt = bot.sanitize_text(user_prompt + f"\n【实时突发情境指令（请严格融入人设自由发挥）】：\n{extra_system_instruction}\n")
     max_tokens_val = 1500 if is_root_work else bot.MAX_OUTPUT_TOKENS
     temperature_val = 0.75 if is_root_work else 0.8
-    payload = {
-        "model": bot.MODEL_NAME,
-        "messages": [
+    payload = bot.get_base_chat_payload(
+        model=bot.MODEL_NAME,
+        messages=[
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_prompt}
         ],
-        "max_tokens": max_tokens_val,
-        "temperature": temperature_val
-    }
+        max_tokens=max_tokens_val,
+        temperature=temperature_val
+    )
     
     if bot.http_session is None or bot.http_session.closed:
         bot.http_session = aiohttp.ClientSession()
@@ -389,15 +389,15 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool, group_id: Optiona
         "Content-Type": "application/json"
     }
     sys_content = bot.SYSTEM_PROMPT
-    payload = {
-        "model": bot.MODEL_NAME,
-        "messages": [
+    payload = bot.get_base_chat_payload(
+        model=bot.MODEL_NAME,
+        messages=[
             {"role": "system", "content": sys_content},
             {"role": "user", "content": user_prompt}
         ],
-        "max_tokens": 40,
-        "temperature": 0.9
-    }
+        max_tokens=40,
+        temperature=0.9
+    )
 
     if bot.http_session is None or bot.http_session.closed:
         bot.http_session = aiohttp.ClientSession()
@@ -413,10 +413,16 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool, group_id: Optiona
             data = await resp.json()
             if "usage" in data:
                 bot.token_tracker.record_usage(data["usage"], bot.MODEL_NAME, group_id=group_id)
-            reply = data["choices"][0]["message"]["content"].strip()
+            reply = data["choices"][0]["message"].get("content") or ""
+            reply = reply.strip()
             # 净化动作括号和独白
             reply = re.sub(r"[（\(][^（）\(\)]*[）\)]", "", reply).strip()
-            reply = reply.strip("。！!~") + random.choice(["～", "", "！"])
+            stripped = reply.strip("。！!~")
+            if not stripped:
+                # 思考模型截断导致 content 为空或全标点时，退回拟真兜底词
+                reply = "干嘛呀，手痒啦～" if is_admin else "戳我干嘛，手痒是吧"
+            else:
+                reply = stripped + random.choice(["～", "", "！"])
             logger.info("戳一戳 Agent 动态思考生成 (耗时 %.2fs): %s", elapsed, reply)
             return reply
     except Exception as e:
@@ -443,16 +449,16 @@ async def evaluate_favor_with_ai(user_id: int, sender_nick: str, dialogue_snippe
     )
     user_prompt = f"群友「{sender_nick}」发言：{dialogue_snippet}\n小鲸鱼回复：{bot_reply or '（无）'}"
     
-    payload = {
-        "model": bot.MODEL_NAME,
-        "messages": [
+    payload = bot.get_base_chat_payload(
+        model=bot.MODEL_NAME,
+        messages=[
             {"role": "system", "content": sys_prompt},
             {"role": "user", "content": user_prompt}
         ],
-        "response_format": {"type": "json_object"},
-        "max_tokens": 80,
-        "temperature": 0.1
-    }
+        max_tokens=80,
+        temperature=0.1
+    )
+    payload["response_format"] = {"type": "json_object"}
     
     try:
         if bot.http_session is None or bot.http_session.closed:
