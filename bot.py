@@ -75,6 +75,29 @@ SILICONFLOW_API_URL = os.environ.get("DEEPSEEK_API_URL", "https://api.siliconflo
 # 密钥只从环境变量读，仓库里只有占位符；本地放 ~/.config/qq-deepseek-bot.env，由 systemd 注入
 SILICONFLOW_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-your-key-here")
 MODEL_NAME = os.environ.get("DEEPSEEK_MODEL", "deepseek-ai/DeepSeek-V3")
+DISABLE_THINKING = os.environ.get("DISABLE_THINKING", "1").lower() in ("1", "true", "yes")
+
+def get_base_chat_payload(model: str, messages: list, max_tokens: int, temperature: float = 0.8) -> dict:
+    """构建统一请求载荷，自适应关闭思考或为思考模型预留安全 token 配额"""
+    # 思考/推理模型判定
+    is_reasoning_model = any(k in model.lower() for k in ("r1", "reasoner", "flash", "pro", "cot"))
+    
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": temperature
+    }
+    
+    if DISABLE_THINKING:
+        # 主动关闭思考协议（TaoToken / NewAPI / OpenAI 扩展格式）
+        payload["thinking"] = {"type": "disabled"}
+        payload["max_tokens"] = max_tokens
+    else:
+        # 若开启思考，针对短文本互动动态放大 max_tokens，避免 reasoning 耗尽配额导致 content 截断为空
+        safe_tokens = max(max_tokens, 240) if is_reasoning_model else max_tokens
+        payload["max_tokens"] = safe_tokens
+
+    return payload
 
 # 行为与节奏参数
 TIMELINE_MAX_LEN = 8            # 群时间线保留最近消息条数
@@ -156,6 +179,12 @@ DEEPSEEK_MODELS_PRICING: Dict[str, Dict[str, Any]] = {
         "provider": "DeepSeek 官方",
         "offpeak": {"input": 4.0, "output": 16.0},
         "peak": {"input": 8.0, "output": 32.0}
+    },
+    "deepseek-v4.1-flash-1017": {
+        "name": "DeepSeek-V4.1-Flash (TaoToken)",
+        "provider": "TaoToken / 中转",
+        "offpeak": {"input": 0.27, "output": 1.35},
+        "peak": {"input": 0.27, "output": 1.35}
     },
     "deepseek-v4-flash": {
         "name": "DeepSeek-V4-Flash",

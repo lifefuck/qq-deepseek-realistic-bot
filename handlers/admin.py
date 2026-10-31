@@ -329,15 +329,15 @@ async def generate_agent_command_reply(action_type: str, detail: str = "", is_pr
             f"请以小鲸鱼俏皮、亲近随性的口吻临场随机给出一句回复（每次措辞自拟，拒绝死板模板，可俏皮可爱、可随性利落，1 句，15~30字以内，绝不用句号）："
         )
 
-    payload = {
-        "model": bot.MODEL_NAME,
-        "messages": [
+    payload = bot.get_base_chat_payload(
+        model=bot.MODEL_NAME,
+        messages=[
             {"role": "system", "content": bot.ROOT_SYSTEM_PROMPT if bot.get_channel_mode(group_id if not is_private else None) == "root" else bot.SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ],
-        "max_tokens": 50,
-        "temperature": 0.85
-    }
+        max_tokens=50,
+        temperature=0.85
+    )
 
     try:
         if bot.http_session is None or bot.http_session.closed:
