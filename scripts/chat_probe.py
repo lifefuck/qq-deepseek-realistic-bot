@@ -98,6 +98,10 @@ async def main():
     # 同步环境变量到 bot 模块配置项
     if os.environ.get("DEEPSEEK_API_KEY"):
         bot.SILICONFLOW_API_KEY = os.environ["DEEPSEEK_API_KEY"]
+    if os.environ.get("DEEPSEEK_API_URL"):
+        bot.SILICONFLOW_API_URL = os.environ["DEEPSEEK_API_URL"]
+    if os.environ.get("DEEPSEEK_MODEL"):
+        bot.MODEL_NAME = os.environ["DEEPSEEK_MODEL"]
     if not bot.SILICONFLOW_API_KEY or bot.SILICONFLOW_API_KEY.startswith("«"):
         print("错误: 未检测到 DEEPSEEK_API_KEY，且 ~/.config/qq-deepseek-bot.env 不存在，跳过回归探针")
         return

@@ -104,16 +104,18 @@ async def resolve_short_url(session: aiohttp.ClientSession, short_url: str) -> s
 async def parse_media_content(session: aiohttp.ClientSession, text: str) -> Optional[Dict[str, Any]]:
     """检测并解析文本中的主流短视频/图文分享卡片"""
     # 1. 检测 B 站短链 b23.tv 或 bili2233.cn 或直接包含的 BV 号
+    # 兼容 JSON 卡片中的反斜杠转义 (例如 https:\/\/b23.tv\/...)
+    text_normalized = text.replace(r"\/", "/")
     bvid = None
-    m_bili = re.search(r"https?://(?:b23\.tv|bili2233\.cn)/[a-zA-Z0-9]+", text)
+    m_bili = re.search(r"https?://(?:b23\.tv|bili2233\.cn)/([a-zA-Z0-9]+)", text_normalized)
     if m_bili:
-        real_url = await resolve_short_url(session, m_bili.group(0))
+        real_url = await resolve_short_url(session, f"https://b23.tv/{m_bili.group(1)}")
         m_bv = re.search(r"(BV[a-zA-Z0-9]{10})", real_url, re.IGNORECASE)
         if m_bv:
             bvid = m_bv.group(1)
     else:
         # 兼容直接发 bilibili.com/video/BV... 或群友纯发 BV 号
-        m_bv = re.search(r"\b(BV[a-zA-Z0-9]{10})\b", text, re.IGNORECASE)
+        m_bv = re.search(r"\b(BV[a-zA-Z0-9]{10})\b", text_normalized, re.IGNORECASE)
         if m_bv:
             bvid = m_bv.group(1)
 

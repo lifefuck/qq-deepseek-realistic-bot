@@ -147,7 +147,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 注意：如果消息是在询问当前项目的仓库地址，直接交由后面的 repo_ask_reply 处理，不在此处解析，避免刚发完又自我解析
     media_info = None
     is_asking_own_repo = bool((is_at or is_reply_to_bot) and bot.repo_ask_reply(bot.clean_cq_codes(raw_message).strip()))
-    if not is_asking_own_repo and bot.http_session and any(prefix in raw_message for prefix in ("http://", "https://", "b23.tv", "douyin.com", "xhslink.com", "BV", "bv", "github.com")):
+    if not is_asking_own_repo and bot.http_session and any(prefix in raw_message.replace(r"\/", "/") for prefix in ("http://", "https://", "b23.tv", "douyin.com", "xhslink.com", "BV", "bv", "github.com")):
         try:
             media_info = await media_resolver.parse_media_content(bot.http_session, raw_message)
             if media_info and media_info.get("summary"):

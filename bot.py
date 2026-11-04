@@ -186,6 +186,30 @@ DEEPSEEK_MODELS_PRICING: Dict[str, Dict[str, Any]] = {
         "offpeak": {"input": 0.27, "output": 1.35},
         "peak": {"input": 0.27, "output": 1.35}
     },
+    "deepseek-v4.1-flash": {
+        "name": "DeepSeek-V4.1-Flash (api-top)",
+        "provider": "api-top / 国模",
+        "offpeak": {"input": 2.06, "output": 8.23},
+        "peak": {"input": 2.06, "output": 8.23}
+    },
+    "gemini-3.8-flash": {
+        "name": "Gemini 3.8 Flash (api-top)",
+        "provider": "api-top / 中转",
+        "offpeak": {"input": 0.27, "output": 1.35},
+        "peak": {"input": 0.27, "output": 1.35}
+    },
+    "gemini-3.1-flash-lite": {
+        "name": "Gemini 3.1 Flash Lite (api-top)",
+        "provider": "api-top / 中转",
+        "offpeak": {"input": 0.27, "output": 1.35},
+        "peak": {"input": 0.27, "output": 1.35}
+    },
+    "deepseek-flash": {
+        "name": "DeepSeek-V4.1-Flash",
+        "provider": "DeepSeek 官方",
+        "offpeak": {"input": 1.0, "output": 4.0},
+        "peak": {"input": 2.0, "output": 8.0}
+    },
     "deepseek-v4-flash": {
         "name": "DeepSeek-V4-Flash",
         "provider": "DeepSeek 官方",
@@ -828,7 +852,8 @@ def parse_card_content(text: str) -> str:
         bvs = []
         
         # 提取 BV 号
-        bv_match = re.search(r'(BV[0-9A-Za-z]{10})', body)
+        body_norm = body.replace(r"\/", "/")
+        bv_match = re.search(r'(BV[0-9A-Za-z]{10})', body_norm)
         if bv_match:
             bvs.append(bv_match.group(1))
             
