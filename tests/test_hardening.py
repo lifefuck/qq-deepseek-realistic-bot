@@ -125,6 +125,19 @@ async def test_interject_scoring():
         check(f"质量打分 {label}: {text}", got == expect, f"score={score:.2f} why={why}")
 
 
+async def test_addressing():
+    """串人：时间线得写清楚谁对谁说，追问窗口也不能见谁答谁。"""
+    from handlers import group as gh
+    line = gh._timeline_line({"sender": "小明(QQ 1)", "addr": "→@小红", "content": "这题怎么做"})
+    check("时间线带 @ 对象", line == "小明(QQ 1) →@小红: 这题怎么做", line)
+    check("无地址时保持原样", gh._timeline_line({"sender": "小明(QQ 1)", "content": "嗯"}) == "小明(QQ 1): 嗯")
+
+    check("叫你的算接着聊", gh._looks_like_continuation("你在干嘛"))
+    check("问句算接着聊", gh._looks_like_continuation("这个咋整"))
+    check("短半句算接着聊", gh._looks_like_continuation("然后呢"))
+    check("长篇对别人说的不算", not gh._looks_like_continuation("他那个显卡昨天又花屏了，气得直接退货，现在还在等快递上门取件"))
+
+
 async def test_wording():
     """空格当逗号、AI 腔连接词、长句不分段——都是群里一眼看出来的毛病。"""
     np_ = messaging.normalize_punctuation
@@ -146,6 +159,7 @@ async def main():
     await test_json_recovery()
     await test_interject_scoring()
     await test_wording()
+    await test_addressing()
     print()
     if FAILED:
         print(f"失败 {len(FAILED)} 项：")

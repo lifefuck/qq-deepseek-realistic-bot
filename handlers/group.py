@@ -409,11 +409,28 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         bot.group_timelines[group_id].clear()
     bot.group_last_activity[group_id] = now
     
+    # 谁在跟谁说话：@ 对象和回复对象必须写进时间线，否则模型只看到一串发言，
+    # 很容易把 A 对 B 说的话当成对自己说的，抢答得莫名其妙。
+    # qq=all 是 @全体成员，不是具体的人，滤掉免得 int() 炸
+    at_qqs = [int(q) for q in re.findall(r"\[CQ:at,[^\]]*qq=(\d+)\]", raw_message)]
+    reply_uid = None
+    if "reply" in event and isinstance(event["reply"], dict):
+        reply_uid = event["reply"].get("sender", {}).get("user_id")
+    addr_parts = []
+    others = [q for q in at_qqs if q != int(bot.BOT_QQ)]
+    if others:
+        addr_parts.append("→@" + "、".join(_nick_of(group_id, q) for q in others))
+    if int(bot.BOT_QQ) in at_qqs:
+        addr_parts.append("→@你")
+    if reply_uid:
+        addr_parts.append("（回复你）" if int(reply_uid) == int(bot.BOT_QQ) else f"（回复{_nick_of(group_id, reply_uid)}）")
+
     prefix = "[管理员] " if is_admin else ""
     record_item = {
         "sender": f"{prefix}{sender_display}(QQ {sender_id})",
         "sender_id": sender_id,
         "content": full_content,
+        "addr": " ".join(addr_parts),
         "time": now
     }
     bot.group_timelines[group_id].append(record_item)
@@ -475,7 +492,10 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     elif follow_up_info and now < follow_up_info.get("expire", 0.0):
         # 处于 5 分钟窗口内，检查剩余次数配额
         remain_cnt = follow_up_info.get("remain", 0)
-        if remain_cnt > 0:
+        if remain_cnt > 0 and not _looks_like_continuation(clean_body):
+            # 窗口没过，但这句话既没指你也不像在接你的话，大概率是在跟别人聊
+            bot.logger.info("[群 %d] 用户 %s 追问窗口内这句不像对你说，按旁观处理: %s", group_id, sender_nick, clean_body[:20])
+        elif remain_cnt > 0:
             is_follow_up = True
             follow_up_info["remain"] = remain_cnt - 1
             left_secs = follow_up_info["expire"] - now
@@ -595,6 +615,42 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         await _process_group_trigger(ws, group_id, is_at=is_at, sender_nick=sender_nick, is_admin=is_admin, is_mention=is_mention, target_uid=target_uid, user_text=user_text, is_follow_up=is_follow_up, extra_instruction=extra_instruction)
 
 
+# 接着上一句说的信号：指向你、提问、或者就是个短半句
+_CONTINUATION_HINTS = ("你", "您", "鲸鱼", "？", "?", "咋", "为啥", "在吗", "呢")
+
+
+def _looks_like_continuation(text: str) -> bool:
+    """追问窗口里这句到底是不是冲着你来的。
+
+    以前只要窗口没过、配额没花完，谁说什么都当是跟自己说，于是 A 在跟 B
+    聊家常，机器人插进来答一半——串人就是这么来的。
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if any(h in t for h in _CONTINUATION_HINTS):
+        return True
+    return len(t) <= 8
+
+
+def _nick_of(group_id: int, qq) -> str:
+    """从时间线里反查这个 QQ 最近用的昵称，只为让「@了谁」读起来是人名。"""
+    try:
+        qq = int(qq)
+    except (TypeError, ValueError):
+        return str(qq)
+    for m in reversed(bot.group_timelines.get(group_id, ())):
+        if m.get("sender_id") == qq:
+            return m["sender"].split("(QQ")[0].replace("(你自己)", "").strip()
+    return str(qq)
+
+
+def _timeline_line(m: dict) -> str:
+    """一行时间线：谁、对谁说、说了什么。"""
+    addr = m.get("addr") or ""
+    return f"{m['sender']} {addr}: {m['content']}" if addr else f"{m['sender']}: {m['content']}"
+
+
 async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = ""):
     """汇总群时间线向模型发起决策"""
     timeline = bot.group_timelines[group_id]
@@ -605,16 +661,16 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
     # 如果是 root 模式则提供完整时间线供技术分析，否则仅传递当前群友最新发言
     channel_mode = bot.get_channel_mode(group_id)
     if is_admin and channel_mode == "root":
-        dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in timeline])
+        dialogue_text = "\n".join(_timeline_line(m) for m in timeline)
     elif is_admin:
         # 主人追问/呼叫时只喂最近几句：单独一个「乐乐」递过去，模型只能当寒暄敷衍
         recent_lines = list(timeline)[-8:] if timeline else []
-        dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in recent_lines]) or (user_text or "")
+        dialogue_text = "\n".join(_timeline_line(m) for m in recent_lines) or (user_text or "")
     else:
         # 群友直接找机器人时也给几行上下文，免得它把一句「乐乐」当成初次见面打招呼
         # 追问态下对方常只丢半句，上下文给宽一点才接得住
         recent_lines = list(timeline)[-(8 if is_follow_up else 6):] if timeline else []
-        dialogue_text = "\n".join([f"{m['sender']}: {m['content']}" for m in recent_lines]) or (user_text or "")
+        dialogue_text = "\n".join(_timeline_line(m) for m in recent_lines) or (user_text or "")
     
     bot.logger.info("[群 %d] 触发轻量会话分析 (is_at=%s, is_follow_up=%s, is_admin=%s), 发言内容: %s", group_id, is_at, is_follow_up, is_admin, dialogue_text[:40])
     
@@ -690,7 +746,8 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
     clean_reply_record = bot.remove_trailing_period(bot.strip_markdown(sent_text or "")).strip()
     if clean_reply_record:
         bot_record = {
-            "sender": f"小鲸鱼(QQ {bot.BOT_QQ})",
+            # 标明"你自己"：不标的话模型会把自己的上一句当成某个群友说的
+            "sender": f"小鲸鱼(你自己)(QQ {bot.BOT_QQ})",
             "sender_id": bot.BOT_QQ,
             "content": clean_reply_record,
             "time": time.time()
