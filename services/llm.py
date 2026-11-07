@@ -121,6 +121,14 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 f"{recalled_mem_str}"
             )
 
+    # 临时免红温：只改这个群的说话边界，不动人设
+    if group_id and not is_private and bot.is_anger_unlimited(group_id):
+        user_mem_prompt += (
+            "\n【本群红温阈值：无上限（临时状态，凌驾于上面的反击阶梯）】\n"
+            "- 这群里谁骂你、开你黄腔、故意找茬，你都不当真急眼，不搞护主式暴怒，当互喷玩笑接住。\n"
+            "- 可以随口带脏字怼回去，但别上纲上线说教，也别突然变乖乖女。\n"
+        )
+
     # 注入群内焦点互动关系（仅群聊生效）
     if group_id and not is_private:
         relations_hint = cross_interaction.get_group_relations_summary(group_id, current_user_id=target_uid)

@@ -458,7 +458,9 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
 
     # 针对主人的恶意辱骂/恶性攻击的主动护短检测（仅限指名道姓恶性人身攻击，日常调侃/水群词绝不误伤）
     is_attacking_admin = False
-    if not is_admin and (is_at_admin or is_reply_to_admin or any(kw in clean_body for kw in ("life", "主人", "管理员"))):
+    # 免红温期间跳过护短判定：阈值拉满就是"怎么骂都不急"，连骂主人也不触发暴怒
+    anger_unlimited = bot.is_anger_unlimited(group_id)
+    if not is_admin and not anger_unlimited and (is_at_admin or is_reply_to_admin or any(kw in clean_body for kw in ("life", "主人", "管理员"))):
         # 仅恶性脏话/人身攻击词才触发护短，彻底剔除日常水群词（如菜、笨、服了、恶心、典、乐、笑死等）
         severe_hostile_keywords = (
             "煞笔", "sb", "傻逼", "脑瘫", "弱智", "死全家", "孤儿", "下贱", "废物玩意"

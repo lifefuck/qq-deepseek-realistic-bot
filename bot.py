@@ -779,6 +779,27 @@ def spawn(coro, *, track_for_stop: bool = False) -> asyncio.Task:
 
 # ==================== 按群独立配置管理 ====================
 GROUP_CONFIGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "group_configs.json")
+# 临时免红温名单：改这个文件立即生效（按 mtime 热加载），不用重启进程
+ANGER_OVERRIDE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "anger_overrides.json")
+_anger_cache = {"mtime": 0.0, "data": {}}
+
+
+def is_anger_unlimited(group_id) -> bool:
+    """该群是否临时把红温阈值拉满（被骂也不真急眼、不禁骂）。"""
+    try:
+        mt = os.path.getmtime(ANGER_OVERRIDE_FILE)
+    except OSError:
+        return False
+    if mt != _anger_cache["mtime"]:
+        try:
+            with open(ANGER_OVERRIDE_FILE, "r", encoding="utf-8") as f:
+                _anger_cache["data"] = json.load(f)
+            _anger_cache["mtime"] = mt
+        except Exception as e:
+            logger.warning("读取 anger_overrides.json 失败，按正常阈值处理: %s", e)
+            return False
+    cfg = _anger_cache["data"].get(str(group_id)) or {}
+    return bool(cfg.get("unlimited"))
 DEFAULT_GROUP_CONFIG = {
     "mode": "user",            # "user" (拟真闲聊) 或 "root" (技术老搭档)
     "muted": False,             # /off 一键静音的总闸：群友说什么都不回，管理员指令照旧
