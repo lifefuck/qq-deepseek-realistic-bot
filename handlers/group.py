@@ -304,9 +304,9 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 管理员在群里直接下达管理命令拦截 (无需切 root 模式，支持随时修改/清除/重置指定群友的 memory 与好感度)
     if is_admin:
         # 1. 清除/重置某人 memory
-        # 兼容: 重置1000000006memary / 清除 1000000006 memory / 删掉群友 1000000006 记忆 / 清空1000000006
+        # 兼容: 重置123456789memary / 清除 123456789 memory / 删掉群友 123456789 记忆 / 清空123456789
         m_clear = re.search(r"(?:清除|删掉|清空|重置)\s*(?:用户|群友)?\s*(\d{5,11})\s*(?:的)?\s*(?:memory|memary|记忆|档案)?", clean_body, re.IGNORECASE)
-        # 或者反过来匹配: memory 清除 1000000006 / 重置记忆 1000000006
+        # 或者反过来匹配: memory 清除 123456789 / 重置记忆 123456789
         if not m_clear:
             m_clear = re.search(r"(?:memory|memary|记忆|档案)?\s*(?:清除|删掉|清空|重置)\s*(?:用户|群友)?\s*(\d{5,11})", clean_body, re.IGNORECASE)
         if m_clear:
