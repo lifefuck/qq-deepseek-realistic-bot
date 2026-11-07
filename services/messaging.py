@@ -52,14 +52,27 @@ _SLANG_TYPOS = [
 ]
 
 
-def desensitize_commas(text: str) -> str:
-    """去人机感：真人发消息极少使用大量逗号，用空格替代逗号，消除工整翻译腔。"""
+# 语气词后面原本该是停顿，不该是空格
+_PARTICLE_RE = re.compile(r"([啊呀呢吧嘛哦诶欸哈咯啦喔唉诶])\s+")
+# 两个汉字之间的裸空格，基本就是把逗号换没了
+_CJK_GAP_RE = re.compile(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])")
+
+
+def normalize_punctuation(text: str) -> str:
+    """把"空格当逗号"改回中文标点。
+
+    以前这里叫 desensitize_commas，把逗号全换成空格去"去人机感"，结果整条
+    消息变成一串用空格断开的短句，读起来像机器在报单词。真人打字是有停顿的，
+    停顿就该是逗号，不是空格。
+    """
     if not text:
         return text
-    # 将中文逗号和英文逗号替换为空格
-    t = text.replace("，", " ").replace(",", " ")
-    # 收拾连续多余空格
-    return re.sub(r"[ \t]{2,}", " ", t).strip()
+    t = re.sub(r"[ \t]{2,}", " ", text)
+    t = _PARTICLE_RE.sub(r"\1，", t)      # 「好啊 那就这样」→「好啊，那就这样」
+    t = _CJK_GAP_RE.sub("，", t)           # 「显卡没用 认命吧」→「显卡没用，认命吧」
+    t = re.sub(r"，{2,}", "，", t)          # 别叠出「，，」
+    t = t.replace(" ，", "，").replace("， ", "，")
+    return t.strip(" ，")
 
 
 def inject_casual_typo(text: str, prob: float = 0.04) -> str:
@@ -104,6 +117,27 @@ def _merge_fragments(parts: list[str]) -> list[str]:
     return [p for p in out if p.strip()]
 
 
+def _split_long_clause(s: str, min_len: int = 34) -> Optional[list[str]]:
+    """整条只憋出一长句时，在最靠中间的逗号处断成两条。
+
+    真人遇到长句是打完半句先发出去，不是一口气顶一大段；只在没有强标点可切时兜底。
+    """
+    if len(s) <= min_len:
+        return None
+    cuts = [m.start() for m in re.finditer("，", s)]
+    best = None
+    best_gap = None
+    mid = len(s) / 2
+    for c in cuts:
+        left, right = s[:c].strip(), s[c + 1:].strip()
+        if len(left) < 6 or len(right) < 6:
+            continue
+        gap = abs(c - mid)
+        if best_gap is None or gap < best_gap:
+            best, best_gap = [left, right], gap
+    return best
+
+
 def split_reply_segments(text: str) -> list[str]:
     """按强标点（！？”。~）、换行切成 1~3 条短消息，像真人连续打字。
     不拿空格当分隔符，也不把中英混排切断。若回复包含换行则优先按行分段发。"""
@@ -133,6 +167,9 @@ def split_reply_segments(text: str) -> list[str]:
     parts = _merge_fragments(parts)
     if len(parts) >= 2:
         return parts[:3]
+    longer = _split_long_clause(clean)
+    if longer:
+        return longer
     return [clean]
 
 
@@ -159,7 +196,7 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
     # 普通聊天里的表情抽稀与去逗号、真人随手打字质感注入，指令汇报/卡片不掺和
     if not is_command_report:
         clean_text = thin_emoji(clean_text)
-        clean_text = desensitize_commas(clean_text)
+        clean_text = normalize_punctuation(clean_text)
         clean_text = inject_casual_typo(clean_text)
 
     # 普通聊天强控 200 字防水群；管理汇报与 memory 概览解除字数硬截断限制（放宽至 2000 字）
@@ -267,7 +304,11 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     返回实际发出去的正文（已削平、已剥标签），调用方拿它写回上下文，
     别再把没削过的原始回复存进去。
     """
-    # 经过反模板闸削平套路，避免句式坍塌
+    # 先削 AI 腔再走反模板闸：书面连接词留着会被 skeleton 当成句式特征
+    if not is_command_report:
+        text = bot.scrub_ai_flavor(text)
+        # 先归一标点再切段：空格断句的回复会被整条发出去，看着最像机器
+        text = normalize_punctuation(text)
     channel_mode = bot.get_channel_mode(group_id)
     if not is_command_report and channel_mode != "root":
         text = bot.de_template(text, group_id)
@@ -336,6 +377,9 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
         return
     # 私聊没有群号，用 -1 当独立槽位，别和任何群混在一起
     private_key = -1
+    if not is_command_report:
+        text = bot.scrub_ai_flavor(text)
+        text = normalize_punctuation(text)
     if not is_command_report and bot.get_channel_mode(None) != "root":
         text = bot.de_template(text, private_key)
     text = _limit_combo(text, private_key)
@@ -371,7 +415,7 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
         clean_seg = bot.obfuscate_urls_for_qq(clean_seg)
         clean_seg = bot.remove_trailing_period(clean_seg)
         clean_seg = thin_emoji(clean_seg)
-        clean_seg = desensitize_commas(clean_seg)
+        clean_seg = normalize_punctuation(clean_seg)
         clean_seg = inject_casual_typo(clean_seg)
         if not clean_seg:
             continue

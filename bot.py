@@ -1249,6 +1249,40 @@ def get_anti_repeat_hint(group_id: int = 0) -> str:
     return "【你刚在群里说过这些话，别原样重复，换个说法】:\n" + "\n".join(f"- {r}" for r in recent)
 
 
+# 书面连接词和客服式收尾，是"AI 味"最明显的来源；群里没人这么说话
+# 前一组是固定书面套话，删掉不影响语义；后一组只有后面跟逗号时才是连接词，
+# 否则「另外一个人」「首先我得说清楚」里的词是真内容，不能动。
+_AI_OPENERS = (
+    "总的来说", "总而言之", "综上所述", "需要注意的是", "值得一提的是", "值得注意的是",
+    "换句话说", "简而言之", "简单来说",
+)
+_AI_CONNECTIVES = ("首先", "其次", "另外", "此外", "所以说")
+_AI_TAILS = (
+    "希望对你有帮助", "希望能帮到你", "希望这能帮到你", "如果还有其他问题",
+    "还有其他问题的话", "有什么需要随时说", "随时可以问我",
+)
+
+
+def scrub_ai_flavor(text: str) -> str:
+    """削掉 AI 腔：段首书面连接词、客服式收尾、破折号硬转折。
+
+    只删词不删意思，剩下的句子还是模型自己的话。
+    """
+    if not text:
+        return text
+    t = text
+    for w in _AI_OPENERS:
+        t = re.sub(rf"(^|[，。！？\n])\s*{w}[，,]?\s*", r"\1", t)
+    for w in _AI_CONNECTIVES:
+        # 必须带逗号才算连接词：「另外，说个事」删，「另外一个人」留着
+        t = re.sub(rf"(^|[，。！？\n])\s*{w}\s*[，,]\s*", r"\1", t)
+    for w in _AI_TAILS:
+        t = re.sub(rf"[，,]?\s*{w}[。！？]?\s*$", "", t)
+    t = re.sub(r"[—–]{2,}", "，", t)
+    t = re.sub(r"，{2,}", "，", t)
+    return t.strip(" ，\n")
+
+
 def de_template(reply: str, group_id: int = 0) -> str:
     """只干一件事：同一句话原样再发一次就挡掉。说话风格交给模型自己判断。"""
     text = reply.strip()

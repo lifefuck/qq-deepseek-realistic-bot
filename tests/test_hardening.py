@@ -18,6 +18,7 @@ from aiohttp.test_utils import TestServer, TestClient
 
 import bot
 import web_dashboard
+from services import messaging
 
 PASSED = 0
 FAILED = []
@@ -124,10 +125,27 @@ async def test_interject_scoring():
         check(f"质量打分 {label}: {text}", got == expect, f"score={score:.2f} why={why}")
 
 
+async def test_wording():
+    """空格当逗号、AI 腔连接词、长句不分段——都是群里一眼看出来的毛病。"""
+    np_ = messaging.normalize_punctuation
+    check("语气词后空格变逗号", np_("知道啦 这不就来了") == "知道啦，这不就来了", np_("知道啦 这不就来了"))
+    check("汉字间空格变逗号", np_("显卡没用 认命吧") == "显卡没用，认命吧", np_("显卡没用 认命吧"))
+    check("中英之间的空格不动", np_("部署写在 README 里") == "部署写在 README 里", np_("部署写在 README 里"))
+    check("不叠逗号", np_("行吧，，，就这样") == "行吧，就这样", np_("行吧，，，就这样"))
+
+    check("AI 腔开篇被削", bot.scrub_ai_flavor("首先，这事不怪你") == "这事不怪你")
+    check("客服收尾被削", bot.scrub_ai_flavor("这样改就行，希望对你有帮助") == "这样改就行", bot.scrub_ai_flavor("这样改就行，希望对你有帮助"))
+    check("句中另外不误伤", "另外" in bot.scrub_ai_flavor("另外一个人也这么说"), bot.scrub_ai_flavor("另外一个人也这么说"))
+
+    s = messaging.split_reply_segments("这条路我走过很多次了是真的挺远的你自己看着办吧别硬撑着啊，非要硬来我也拦不住你")
+    check("长单句在逗号处断开", len(s) == 2 and "，" not in s[0], repr(s))
+
+
 async def main():
     await test_dashboard()
     await test_json_recovery()
     await test_interject_scoring()
+    await test_wording()
     print()
     if FAILED:
         print(f"失败 {len(FAILED)} 项：")
