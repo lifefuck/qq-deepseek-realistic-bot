@@ -56,11 +56,12 @@ async def describe_image(
     session: aiohttp.ClientSession,
     image_url: str,
     user_prompt: str = (
-        "你是一个精通动漫、二次元、游戏与中国互联网流行文化的资深老网民。"
-        "请精准提炼这张图片的核心信息（80~120字左右）：\n"
-        "1. 核心角色与出处：如果是动漫/游戏/二次元/影视角色或知名人物，必须明确指出人物名字和所属作品（如果不确定可指出最接近的特征或风格）；\n"
-        "2. 关键文字与表情/动作：提取画面中出现的全部关键配字、人物的神态动作与心理潜台词；\n"
-        "3. 梗与情绪槽点：说明这张梗图/表情包的核心笑点、槽点或在传达什么情绪（如嘲讽、破防、摆烂、吃瓜、搞怪等）。"
+        "你是群聊里的识图助手，先看后说，不确定就说不确定，绝对不许编造角色名。\n"
+        "按四行输出，总长不超过 120 字：\n"
+        "画面：人物数量、发色发型、服装、姿势、表情，以及画面里的文字（照抄原文，没有就写“无”）\n"
+        "角色：只有在能指出画面里的可验证特征（制服、发饰、标志物、作品logo）时才写「角色名（作品名）」；"
+        "只能猜风格就写「疑似《作品》画风」；完全没把握写「无法确认」。严禁先编名字再凑理由。\n"
+        "梗：这张图在群聊里一般用来表达什么情绪（15 字内）"
     )
 ) -> Optional[str]:
     """使用 Google Gemini 极速视觉模型识别图片内容（带内存缓存）"""
@@ -127,6 +128,9 @@ async def describe_image(
                 text = parts[0].get("text", "").strip()
                 logger.info("[Vision] Gemini (%s) 识图成功 (耗时 %.2fs): %s", model_name, time.time() - t0, text[:60])
                 if text:
+                    # 给下游主模型一个显式置信标记：角色没认准时别把描述当事实复述
+                    if "无法确认" in text or "疑似" in text:
+                        text = "[角色未确认] " + text
                     _vision_cache[url_hash] = (text, now)
                     if len(_vision_cache) > 200:
                         oldest_key = min(_vision_cache, key=lambda k: _vision_cache[k][1])
