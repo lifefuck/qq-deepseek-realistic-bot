@@ -498,7 +498,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 1. 直接呼叫模式（@、引用机器人、专属追问中 或 触发护短还嘴）：立即触发响应
     if should_reply_immediately:
         task = bot.group_debounce_tasks.get(group_id)
-        if task and not task.done():
+        # 只在防抖等待阶段取消；已经进入生成/发送的任务不能打断，否则会发出半截消息
+        if task and not task.done() and not getattr(task, "_generating", False):
             task.cancel()
 
         extra_note = ""
@@ -515,6 +516,10 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
                 "你正处于睡眠中刚被叫醒的状态，整个人很困、睡意朦胧、哈欠连天。\n"
                 "要求：只能通过真实的口癖与语气词呈现睡意（例如句首或句中带哈欠声、唔……、呼、困死了、大半夜的等自然口语），严禁带括号动作描写（如严禁写括号揉眼睛/打哈欠等动作），保持真实松弛的对话。"
             )
+
+        if bot.group_gen_locks[group_id].locked():
+            bot.logger.info("[群 %s] 已有生成任务在跑，本次触发忽略，消息仍留在时间线里", group_id)
+            return
 
         asyncio.create_task(process_group_trigger(
             ws, group_id,
@@ -572,18 +577,32 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         try:
             # 缩短至 1.0 秒轻微防抖，接话更迅速不被冲走
             await asyncio.sleep(1.0)
-            is_adm = (uid == bot.ADMIN_QQ)
-            await process_group_trigger(ws, target_gid, is_at=False, sender_nick=nick, is_admin=is_adm, is_mention=mention_flag, target_uid=uid, user_text=text_body)
         except asyncio.CancelledError:
-            pass
+            return  # 还在防抖窗口内，被新消息顶掉是正常的
+        # 标记已进入生成阶段：后续新消息不得再 cancel 这个任务
+        current = asyncio.current_task()
+        if current:
+            current._generating = True
+        is_adm = (uid == bot.ADMIN_QQ)
+        await process_group_trigger(ws, target_gid, is_at=False, sender_nick=nick, is_admin=is_adm, is_mention=mention_flag, target_uid=uid, user_text=text_body)
 
     old_task = bot.group_debounce_tasks.get(group_id)
-    if old_task and not old_task.done():
+    if old_task and not old_task.done() and not getattr(old_task, "_generating", False):
         old_task.cancel()
     bot.group_debounce_tasks[group_id] = asyncio.create_task(debounced_step(group_id, sender_display, is_mention_bot, sender_id, clean_body))
 
 
 async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = ""):
+    """同群串行入口：已有请求在跑就直接放弃这次触发，避免并发双开模型"""
+    lock = bot.group_gen_locks[group_id]
+    if lock.locked():
+        bot.logger.info("[群 %s] 生成锁被占用，跳过重复触发", group_id)
+        return
+    async with lock:
+        await _process_group_trigger(ws, group_id, is_at=is_at, sender_nick=sender_nick, is_admin=is_admin, is_mention=is_mention, target_uid=target_uid, user_text=user_text, is_follow_up=is_follow_up, extra_instruction=extra_instruction)
+
+
+async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = ""):
     """汇总群时间线向模型发起决策"""
     timeline = bot.group_timelines[group_id]
     if not timeline and not user_text:

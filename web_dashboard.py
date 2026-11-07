@@ -5,8 +5,12 @@
 import collections
 import datetime
 import html
+import json
 import logging
 import time
+
+# 模块级 logger：面板各处理函数都要用它记录异常
+logger = logging.getLogger("qqbot.dashboard")
 import base64
 import collections
 import datetime
@@ -538,6 +542,11 @@ INDEX_HTML = """<!DOCTYPE html>
     let currentTab = "";
     let latestData = null;
 
+    // 群名、昵称、印象标签全是群友可控内容，拼 innerHTML 前必须转义
+    function esc(v) {
+      return String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    }
+
     function formatRelative(secondsAgo) {
       if (!secondsAgo || secondsAgo < 0) return "从未";
       if (secondsAgo < 60) return Math.floor(secondsAgo) + " 秒前";
@@ -679,13 +688,13 @@ INDEX_HTML = """<!DOCTYPE html>
           <div class="group-card">
             <div class="group-card-header">
               <span class="group-id">
-                ${gName} <span style="font-size:12px; color:var(--text-muted); font-weight:normal;">(${g.group_id})</span>
+                ${esc(gName)} <span style="font-size:12px; color:var(--text-muted); font-weight:normal;">(${esc(g.group_id)})</span>
                 <button class="btn-mode-toggle ${isRoot ? 'btn-mode-root' : 'btn-mode-user'}"
                   onclick="setGroupConfig('${g.group_id}', 'mode', '${isRoot ? 'user' : 'root'}')">
                   ${isRoot ? 'root 模式 (点切闲聊)' : '闲聊模式 (点切 root)'}
                 </button>
               </span>
-              <span class="badge ${badgeClass}">${g.interject_why}</span>
+              <span class="badge ${badgeClass}">${esc(g.interject_why)}</span>
             </div>
 
             <!-- 独立调节控制区 -->
@@ -813,7 +822,7 @@ INDEX_HTML = """<!DOCTYPE html>
           label = `${nameMap[String(g)]} (${g})`;
         }
         const active = g === currentTab ? "active" : "";
-        html += `<button class="tab-btn ${active}" onclick="switchTab('${g}')">${label} (${Object.keys(data.memories[g]).length})</button>`;
+        html += `<button class="tab-btn ${active}" onclick="switchTab('${esc(g)}')">${esc(label)} (${Object.keys(data.memories[g]).length})</button>`;
       }
       tabsContainer.innerHTML = html;
     }
@@ -852,7 +861,7 @@ INDEX_HTML = """<!DOCTYPE html>
           barColor = "linear-gradient(90deg, #94a3b8, #64748b)";
         }
 
-        const tags = (u.notes || []).map(t => `<span class="user-tag">${t}</span>`).join("");
+        const tags = (u.notes || []).map(t => `<span class="user-tag">${esc(t)}</span>`).join("");
 
         html += `
           <div class="user-card ${isMaster ? 'is-master' : ''}">
@@ -860,7 +869,7 @@ INDEX_HTML = """<!DOCTYPE html>
               <img class="user-avatar" src="https://q1.qlogo.cn/g?b=qq&nk=${u.uid}&s=100" onerror="this.src='https://dummyimage.com/100x100/cbd5e1/475569?text=Q'">
               <div class="user-meta">
                 <div class="user-name">
-                  ${isMaster ? '' : ''}${u.nickname || '神秘群友'}
+                  ${isMaster ? '' : ''}${esc(u.nickname || '神秘群友')}
                   ${isMaster ? '<span class="badge badge-gold" style="font-size:10px; padding:2px 6px;">专属主人</span>' : ''}
                 </div>
                 <div class="user-qq">QQ: ${u.uid}</div>
@@ -877,7 +886,7 @@ INDEX_HTML = """<!DOCTYPE html>
               </div>
             </div>
 
-            ${u.traits ? `<div style="font-size:12px; color:var(--text-muted);">特质: <span style="color:var(--text-main); font-weight:500;">${u.traits}</span></div>` : ''}
+            ${u.traits ? `<div style="font-size:12px; color:var(--text-muted);">特质: <span style="color:var(--text-main); font-weight:500;">${esc(u.traits)}</span></div>` : ''}
 
             <div class="user-tags">
               ${tags || '<span class="user-tag" style="color:#94a3b8;">暂无标签</span>'}
@@ -897,11 +906,12 @@ INDEX_HTML = """<!DOCTYPE html>
       }
 
       const formatted = logs.map(line => {
-        let esc = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        if (esc.includes("[ERROR]")) return `<span class="log-err">${esc}</span>`;
-        if (esc.includes("[WARNING]")) return `<span class="log-warn">${esc}</span>`;
-        if (esc.includes("[INFO]")) return `<span class="log-info">${esc}</span>`;
-        return esc;
+        // 局部变量别叫 esc，避免和上面的全局转义函数重名
+        const safeLine = line.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        if (safeLine.includes("[ERROR]")) return `<span class="log-err">${safeLine}</span>`;
+        if (safeLine.includes("[WARNING]")) return `<span class="log-warn">${safeLine}</span>`;
+        if (safeLine.includes("[INFO]")) return `<span class="log-info">${safeLine}</span>`;
+        return safeLine;
       }).join("\\n");
 
       box.innerHTML = formatted;
@@ -1056,7 +1066,7 @@ LOGIN_HTML = """<!DOCTYPE html>
 # 会话与防爆破安全存储
 AUTH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dashboard_auth")
 SESSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dashboard_sessions.json")
-SESSION_LIFETIME = 30 * 86400          # 30 天持久化免密免验证
+SESSION_LIFETIME = 30 * 86400          # 30 天持久化免密（用户明确要求保持 30 天）
 
 def load_sessions() -> Dict[str, float]:
     """从磁盘加载持久化会话，杜绝服务重启/重载丢会话"""
@@ -1071,14 +1081,18 @@ def load_sessions() -> Dict[str, float]:
     return {}
 
 def save_sessions():
-    """将会话持久化保存至磁盘"""
+    """将会话持久化保存至磁盘（先写临时文件再替换，进程被杀也不会留半截 JSON）"""
     try:
         now = time.time()
         valid = {k: v for k, v in ACTIVE_SESSIONS.items() if v > now}
-        with open(SESSION_FILE, "w", encoding="utf-8") as f:
+        tmp = f"{SESSION_FILE}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(valid, f)
-    except Exception:
-        pass
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, SESSION_FILE)
+    except Exception as e:
+        logger.warning("保存面板会话失败: %s", e)
 
 ACTIVE_SESSIONS: Dict[str, float] = load_sessions()
 LOGIN_FAILURES: Dict[str, list[float]] = collections.defaultdict(list)  # ip -> fail timestamps
@@ -1127,19 +1141,38 @@ def get_auth_credentials() -> tuple[str, str, str]:
         except Exception:
             pass
 
-    # 默认兜底
-    salt, h = hash_password("admin")
-    return "admin", salt, h
+    # 没有凭据文件时生成随机密码并落盘，只在日志里提示一次。
+    # 以前回落到 admin/admin，等于所有误删凭据的部署都对全网敞开。
+    user = "admin"
+    random_pwd = secrets.token_urlsafe(12)
+    salt, h = hash_password(random_pwd)
+    try:
+        with open(AUTH_FILE, "w", encoding="utf-8") as f:
+            f.write(f"{user}:{salt}:{h}\n")
+        os.chmod(AUTH_FILE, 0o600)
+        logger.warning("未找到面板凭据，已生成随机密码：%s（账号 %s），请立即记录，此消息只打印一次", random_pwd, user)
+    except Exception as e:
+        logger.error("生成面板随机凭据失败: %s", e)
+    return user, salt, h
+
+TRUSTED_PROXIES = {"127.0.0.1", "::1"}
 
 def get_client_ip(request: web.Request) -> str:
-    """提取真实客户端 IP，支持 Cloudflare Tunnel 与反向代理链"""
-    cf_ip = request.headers.get("CF-Connecting-IP")
-    if cf_ip:
-        return cf_ip.strip()
-    x_forwarded = request.headers.get("X-Forwarded-For")
-    if x_forwarded:
-        return x_forwarded.split(",")[0].strip()
-    return request.remote or "unknown"
+    """提取客户端 IP。
+
+    只有请求确实来自本机（cloudflared 回源就是 127.0.0.1）时才采信代理头；
+    否则任何人自己写一个 CF-Connecting-IP 就能绕过登录封禁，或者伪造别人的 IP 把对方锁死。
+    """
+    remote = request.remote or "unknown"
+    if remote in TRUSTED_PROXIES:
+        cf_ip = request.headers.get("CF-Connecting-IP")
+        if cf_ip and cf_ip.strip():
+            return cf_ip.strip()
+        x_forwarded = request.headers.get("X-Forwarded-For")
+        if x_forwarded:
+            # 取最右侧一跳，那才是直连代理写入的值
+            return x_forwarded.split(",")[-1].strip()
+    return remote
 
 def check_rate_limit(ip: str) -> Optional[int]:
     """检查 IP 是否正处于密码爆破封禁期，若封禁返回剩余锁定秒数"""
@@ -1166,6 +1199,14 @@ def record_login_attempt(ip: str, success: bool):
     LOGIN_FAILURES[ip] = recent
     if len(recent) >= 5:
         LOCKED_IPS[ip] = now + 900  # 封禁 15 分钟
+    # 顺手清理过期条目，避免 LOGIN_FAILURES 无限膨胀
+    if len(LOGIN_FAILURES) > 500:
+        for stale_ip, stamps in list(LOGIN_FAILURES.items()):
+            if not stamps or now - stamps[-1] > 3600:
+                LOGIN_FAILURES.pop(stale_ip, None)
+        for stale_ip, unlock_at in list(LOCKED_IPS.items()):
+            if unlock_at <= now:
+                LOCKED_IPS.pop(stale_ip, None)
 
 def create_session() -> str:
     """生成高熵随机会话令牌并登记内存与磁盘"""
@@ -1199,7 +1240,15 @@ def revoke_session(token: Optional[str]):
         del ACTIVE_SESSIONS[token]
         save_sessions()
 
-def set_safe_cookie(resp: web.Response, session_token: str):
+def request_is_https(request: web.Request) -> bool:
+    """判断外部访问是否走 HTTPS（cloudflared 回源是 http，只能看转发头）"""
+    if request.secure:
+        return True
+    if (request.remote or "") in TRUSTED_PROXIES:
+        return (request.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+    return False
+
+def set_safe_cookie(resp: web.Response, session_token: str, secure: bool = False):
     """下发具备 HttpOnly 保护的随机会话 Cookie，杜绝 XSS 读取与密码暴露"""
     resp.set_cookie(
         "dashboard_session",
@@ -1207,16 +1256,16 @@ def set_safe_cookie(resp: web.Response, session_token: str):
         max_age=SESSION_LIFETIME,
         path="/",
         httponly=True,  # 强制禁止客户端 JavaScript 访问，防凭据窃取
-        samesite="Lax"
+        samesite="Lax",
+        secure=secure
     )
 
 def check_authenticated(request: web.Request) -> bool:
-    """多通道严格鉴权：支持 Cloudflare Zero Trust 云端直通 / 服务端随机 Session / HTTP Basic"""
-    # 0. 检查 Cloudflare Zero Trust (Access) 认证放行标识
-    cf_email = request.headers.get("Cf-Access-Authenticated-User-Email")
-    if cf_email and cf_email.strip():
-        return True
+    """严格鉴权：只认服务端 Session 与 HTTP Basic。
 
+    以前凭 Cf-Access-Authenticated-User-Email 非空就放行，这个头没有签名校验，
+    没配 Cloudflare Access 策略时任何人都能自己带一个头进来，属于纯后门。
+    """
     # 1. 检查客户端 HttpOnly Cookie 随机会话
     cookie_token = request.cookies.get("dashboard_session")
     if validate_session(cookie_token):
@@ -1246,34 +1295,14 @@ async def session_auth_middleware(request: web.Request, handler):
     if request.path.startswith("/assets/") or request.path in ("/api/login", "/api/logout"):
         return await handler(request)
 
-    # 访问根页面：若是 URL 带 ?key= 显式直登，校验后自动 302 净化地址栏并种 Cookie
+    # 根页面不校验，交给前端渲染登录框；真正的密钥只能走 /api/login POST，
+    # 不再支持 ?key= 直登——明文口令会留在浏览器历史和代理日志里。
     if request.path == "/" and request.method in ("GET", "HEAD"):
-        q_key = request.query.get("key") or request.query.get("token")
-        if q_key:
-            client_ip = get_client_ip(request)
-            remaining_ban = check_rate_limit(client_ip)
-            if not remaining_ban:
-                _, salt, expected_hash = get_auth_credentials()
-                if verify_password(q_key, salt, expected_hash):
-                    record_login_attempt(client_ip, True)
-                    token = create_session()
-                    # 302 重定向到洁净根路径，抹除 URL 上的明文密钥与历史记录
-                    redirect_resp = web.HTTPFound("/")
-                    set_safe_cookie(redirect_resp, token)
-                    return redirect_resp
-                else:
-                    record_login_attempt(client_ip, False)
         return await handler(request)
 
     # 后台管理 API 严格校验会话有效性
     if check_authenticated(request):
-        response = await handler(request)
-        # 若来自 Cloudflare Access 云端认证通过但本地无 Session Cookie，自动无感补发
-        cf_email = request.headers.get("Cf-Access-Authenticated-User-Email")
-        if cf_email and isinstance(response, web.Response) and not request.cookies.get("dashboard_session"):
-            token = create_session()
-            set_safe_cookie(response, token)
-        return response
+        return await handler(request)
 
     # 未认证的 API 轮询直接返回 401 JSON，严禁弹出浏览器底层密码弹窗
     return web.json_response({"error": "unauthorized", "message": "控制台已锁定，请先完成身份验证"}, status=401)
@@ -1312,13 +1341,14 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
                 record_login_attempt(client_ip, True)
                 token = create_session()
                 resp = web.json_response({"status": "ok"})
-                set_safe_cookie(resp, token)
+                set_safe_cookie(resp, token, secure=request_is_https(request))
                 return resp
 
             record_login_attempt(client_ip, False)
             return web.json_response({"error": "密钥错误，请重新输入"}, status=403)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.error("面板登录接口异常: %s", e)
+            return web.json_response({"error": "服务端处理失败"}, status=500)
 
     async def handle_logout(request: web.Request):
         cookie_token = request.cookies.get("dashboard_session")
@@ -1343,7 +1373,15 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
             data["logs"] = list(recent_web_logs)
             return web.json_response(data)
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.error("面板状态接口异常: %s", e)
+            return web.json_response({"error": "服务端处理失败"}, status=500)
+
+    # 面板能改的字段白名单：key 随便传会把任意脏数据写进 group_configs.json
+    BOOL_CONFIG_KEYS = {
+        "muted", "enable_interject", "enable_sleep", "enable_poke", "enable_games",
+        "enable_search", "enable_bilibili_push", "enable_yunzai", "enable_fun",
+        "enable_link_resolver",
+    }
 
     async def handle_update_config(request: web.Request):
         if not update_config_func:
@@ -1354,20 +1392,34 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
             key = body.get("key")
             val = body.get("value")
 
-            if not key:
+            if not isinstance(key, str) or not key:
                 return web.json_response({"error": "缺少 key 参数"}, status=400)
+
+            if key == "mode":
+                if val not in ("user", "root"):
+                    return web.json_response({"error": "mode 只能是 user 或 root"}, status=400)
+            elif key in BOOL_CONFIG_KEYS:
+                if not isinstance(val, bool):
+                    return web.json_response({"error": f"{key} 必须是布尔值"}, status=400)
+            elif key == "interject_prob":
+                if isinstance(val, bool) or not isinstance(val, (int, float)) or not (0.0 <= float(val) <= 1.0):
+                    return web.json_response({"error": "interject_prob 必须是 0~1 的数字"}, status=400)
+                val = float(val)
+            else:
+                return web.json_response({"error": f"不支持的配置项: {key}"}, status=400)
 
             gid = None
             if raw_gid and str(raw_gid).lower() != "private":
                 try:
                     gid = int(raw_gid)
-                except ValueError:
-                    gid = None
+                except (TypeError, ValueError):
+                    return web.json_response({"error": "group_id 必须是数字"}, status=400)
 
             ok = update_config_func(gid, key, val)
             return web.json_response({"status": "ok" if ok else "fail"})
         except Exception as e:
-            return web.json_response({"error": str(e)}, status=500)
+            logger.error("面板配置写入异常: %s", e)
+            return web.json_response({"error": "服务端处理失败"}, status=500)
 
     app.router.add_get("/", handle_index)
     app.router.add_get("/assets/{path:.*}", handle_asset)

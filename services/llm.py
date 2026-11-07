@@ -50,7 +50,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
     if target_uid and target_uid != bot.BOT_QQ:
         mem = bot.get_or_create_user_memory(target_uid, sender_nick, group_id=group_id)
         if target_uid == bot.ADMIN_QQ:
-            user_mem_prompt = f"【当前交谈者身份】：专属主人兼创造者 life（QQ {bot.ADMIN_QQ}），拥有绝对最高权限与天然极高好感度。\n"
+            user_mem_prompt = f"【当前交谈者身份】：专属主人兼创造者 life（QQ {bot.ADMIN_QQ}），拥有最高权限，当前好感度 {mem.get('favor', 50)}/100。\n"
         else:
             # 印象按「还剩多少分量 + 有多新」排序取，装进字数预算就停。
             # 老数据里的字符串会自动拆成原子，不用手动迁移。
@@ -191,12 +191,9 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"{user_mem_prompt}"
             f"{follow_up_note}"
             f"【他最后这句】：「{latest_line}」\n"
-            f"【防认错人与多人群聊铁律】：历史记录中每一行的 (QQ 号码) 是发言人的唯一物理身份！你只对眼前正在找你的这位「{sender_nick}」(QQ {target_uid}) 说话，严禁张冠李戴把其他群友发的消息或图片当成他的！谁发的就是谁发的；\n"
-            f"上面的记录只是前情，你只对他最后这句作反应，别去答前面别人说过的话；"
-            f"他要是只回你半句（「不要」「对的」这种），先接住这半句，再联系前情把话接圆；"
-            f"【态度与好感铁律】：你的语气和互动必须严格服从上方【好感度状态】的指示！好感高（80+）时必须明显展现亲切偏爱、包容热络；好感低（<40）时必须冷淡戒备；"
-            f"【对线骂人阶梯反击铁律（严禁迁怒、严禁越级急眼）】：谁惹你你就回谁！严禁把日常打趣当人身攻击：1.面对日常调侃互损（「傻鱼」「菜」「人机」等），只用傲娇斗嘴或翻白眼还嘴（随性带点真实口语如“服了/什么鬼/再发给你杀了”，像熟人群友随手打字，严禁句句复读粗口），绝不真急眼；2.面对阴阳挑衅找茬，嘴硬毒舌戳破其逻辑；3.唯独对方指着鼻子严重辱骂（「傻逼/脑瘫/死全家」恶性人身攻击）或攻击主人时，才彻底放开迎头喷回去！正常聊天绝不迁怒于无辜群友；"
-            f"遇到不确定、没听过或没看懂的，严禁瞎猜胡编，直接坦荡说不知道/看不懂；"
+            f"【防认错人】：每行括号里的 QQ 号是唯一身份，你只回「{sender_nick}」({target_uid}) 的最后这句，别把别人的话算他头上；他只回半句就先接住再联系前情。\n"
+            f"【态度】：严格服从上方好感度，80+ 亲切热络，<40 冷淡戒备。对线分级按人设铁律执行，只回惹你的人，不迁怒无辜。\n"
+            f"拿不准的直接说不知道/看不懂，别编；"
             f"要是拿具体问题考你（算术、常识、时间、数字），先把答案说出来，别糊弄过去；"
             f"严禁输出任何动作括号，随手打字（默认1句，最多2句，绝不用句号，别写小作文）："
         )
@@ -326,32 +323,59 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         temperature=temperature_val
     )
     
-    if bot.http_session is None or bot.http_session.closed:
-        bot.http_session = aiohttp.ClientSession()
-
+    bot.get_http_session()
+    session = bot.http_session
     t0 = time.time()
+    timeout = aiohttp.ClientTimeout(total=45, connect=8, sock_read=40)
     try:
-        attempt_prompt = user_prompt
-        for attempt in (1, 2):
-            payload["messages"][1]["content"] = attempt_prompt
-            async with bot.http_session.post(bot.SILICONFLOW_API_URL, headers=headers, json=payload, timeout=20) as resp:
-                elapsed = time.time() - t0
-                if resp.status != 200:
-                    err_text = await resp.text()
-                    logger.error("API 调用失败 (%d, 耗时 %.2fs): %s", resp.status, elapsed, err_text)
-                    return None
-                data = await resp.json()
-                if "usage" in data:
-                    bot.token_tracker.record_usage(data["usage"], bot.MODEL_NAME, group_id=group_id)
-                    # 上游支持前缀缓存时会回报命中数；没有就说明这段前缀白写了
-                    usage = data["usage"]
-                    hit = usage.get("prompt_cache_hit_tokens", usage.get("cached_tokens"))
-                    if hit is not None:
-                        logger.info("前缀缓存命中 %s / 输入 %s tokens", hit, usage.get("prompt_tokens"))
-                reply = data["choices"][0]["message"]["content"].strip()
-                logger.info("模型生成完成 (耗时 %.2fs): %s", elapsed, reply[:30])
-            # 免@追问时若模型选择沉默，尊重其决定静默，不重复重试烧 token
-            return reply
+        # 真重试：429 和 5xx 是上游临时抖动，退避后再试；4xx 重试也不会变好，直接放弃。
+        # 以前这里写的是个假循环（attempt_prompt 从不更新、非 200 立刻 return），等于零重试。
+        for attempt in range(3):
+            try:
+                async with bot.llm_semaphore:
+                    async with bot.http_session.post(
+                        bot.SILICONFLOW_API_URL, headers=headers, json=payload, timeout=timeout
+                    ) as resp:
+                        elapsed = time.time() - t0
+                        if resp.status != 200:
+                            err_text = (await resp.text())[:300]
+                            if (resp.status == 429 or resp.status >= 500) and attempt < 2:
+                                backoff = 1.5 * (2 ** attempt) + random.uniform(0, 0.5)
+                                logger.warning("模型接口 %d，%.1fs 后重试 (%d/3)", resp.status, backoff, attempt + 1)
+                                await asyncio.sleep(backoff)
+                                continue
+                            logger.error("API 调用失败 (%d, 耗时 %.2fs): %s", resp.status, elapsed, err_text)
+                            return None
+                        data = await resp.json()
+                        if "usage" in data:
+                            bot.token_tracker.record_usage(data["usage"], bot.MODEL_NAME, group_id=group_id)
+                            # 上游支持前缀缓存时会回报命中数；没有就说明这段前缀白写了
+                            usage = data["usage"]
+                            hit = usage.get("prompt_cache_hit_tokens", usage.get("cached_tokens"))
+                            if hit is not None:
+                                logger.info("前缀缓存命中 %s / 输入 %s tokens", hit, usage.get("prompt_tokens"))
+                        choices = data.get("choices") or []
+                        content = (choices[0].get("message") or {}).get("content") if choices else ""
+                        reply = (content or "").strip()
+                        if not reply:
+                            # 推理模型偶尔只回 thinking 不回 content，空回复不该当成正常结果发出去
+                            if attempt < 2:
+                                logger.warning("模型返回空内容，重试 (%d/3)", attempt + 1)
+                                await asyncio.sleep(0.8)
+                                continue
+                            logger.error("模型连续返回空内容，放弃本次回复")
+                            return None
+                        logger.info("模型生成完成 (耗时 %.2fs): %s", elapsed, reply[:30])
+                        return reply
+            except (asyncio.TimeoutError, aiohttp.ClientError) as e:
+                if attempt < 2:
+                    backoff = 1.5 * (2 ** attempt) + random.uniform(0, 0.5)
+                    logger.warning("模型请求异常 %s，%.1fs 后重试 (%d/3)", type(e).__name__, backoff, attempt + 1)
+                    await asyncio.sleep(backoff)
+                    continue
+                logger.error("调用大模型失败（已重试 3 次）: %s", e)
+                return None
+        return None
     except asyncio.CancelledError:
         logger.info("DeepSeek 请求被中止。")
         raise
@@ -399,35 +423,35 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool, group_id: Optiona
         temperature=0.9
     )
 
-    if bot.http_session is None or bot.http_session.closed:
-        bot.http_session = aiohttp.ClientSession()
+    session = bot.get_http_session()
 
+    fallback = "干嘛呀，手痒啦～" if is_admin else "戳我干嘛，手痒是吧"
     t0 = time.time()
     try:
-        async with bot.http_session.post(bot.SILICONFLOW_API_URL, headers=headers, json=payload, timeout=12) as resp:
-            elapsed = time.time() - t0
-            if resp.status != 200:
-                logger.error("戳一戳 API 调用失败 (%d, 耗时 %.2fs)", resp.status, elapsed)
-                # 仅在 API 异常时作兜底退避
-                return "干嘛呀，手痒啦～" if is_admin else "戳我干嘛，手痒是吧"
-            data = await resp.json()
-            if "usage" in data:
-                bot.token_tracker.record_usage(data["usage"], bot.MODEL_NAME, group_id=group_id)
-            reply = data["choices"][0]["message"].get("content") or ""
-            reply = reply.strip()
-            # 净化动作括号和独白
-            reply = re.sub(r"[（\(][^（）\(\)]*[）\)]", "", reply).strip()
-            stripped = reply.strip("。！!~")
-            if not stripped:
-                # 思考模型截断导致 content 为空或全标点时，退回拟真兜底词
-                reply = "干嘛呀，手痒啦～" if is_admin else "戳我干嘛，手痒是吧"
-            else:
+        async with bot.llm_semaphore:
+            async with session.post(bot.SILICONFLOW_API_URL, headers=headers, json=payload, timeout=12) as resp:
+                elapsed = time.time() - t0
+                if resp.status != 200:
+                    logger.error("戳一戳 API 调用失败 (%d, 耗时 %.2fs)，本次使用兜底话术", resp.status, elapsed)
+                    # 兜底话术和正常生成走同一个返回值，日志必须标清楚，不然故障被伪装成正常回复
+                    return fallback
+                data = await resp.json()
+                if "usage" in data:
+                    bot.token_tracker.record_usage(data["usage"], bot.MODEL_NAME, group_id=group_id)
+                reply = (data.get("choices") or [{}])[0].get("message", {}).get("content") or ""
+                reply = reply.strip()
+                # 净化动作括号和独白
+                reply = re.sub(r"[（\(][^（）\(\)]*[）\)]", "", reply).strip()
+                stripped = reply.strip("。！!~")
+                if not stripped:
+                    # 思考模型截断导致 content 为空或全标点时，退回拟真兜底词
+                    return fallback
                 reply = stripped + random.choice(["～", "", "！"])
-            logger.info("戳一戳 Agent 动态思考生成 (耗时 %.2fs): %s", elapsed, reply)
-            return reply
+                logger.info("戳一戳 Agent 动态思考生成 (耗时 %.2fs): %s", elapsed, reply)
+                return reply
     except Exception as e:
-        logger.error("戳一戳调用大模型异常: %s", e)
-        return "干嘛呀，手痒啦～" if is_admin else "戳我干嘛，手痒是吧"
+        logger.error("戳一戳调用大模型异常，本次使用兜底话术: %s", e)
+        return fallback
 
 async def evaluate_favor_with_ai(user_id: int, sender_nick: str, dialogue_snippet: str, bot_reply: str = "", group_id: Optional[int] = None) -> Tuple[int, str]:
     """请求 SiliconFlow 大模型动态分析群友真实态度并给出好感变化 delta 与印象"""
@@ -461,14 +485,23 @@ async def evaluate_favor_with_ai(user_id: int, sender_nick: str, dialogue_snippe
     payload["response_format"] = {"type": "json_object"}
     
     try:
-        if bot.http_session is None or bot.http_session.closed:
-            bot.http_session = aiohttp.ClientSession()
-        async with bot.http_session.post(bot.SILICONFLOW_API_URL, headers=headers, json=payload, timeout=8) as resp:
-            if resp.status == 200:
-                data = await resp.json()
-                if "usage" in data:
-                    bot.token_tracker.record_usage(data["usage"], bot.MODEL_NAME, group_id=group_id)
-                raw_text = data["choices"][0]["message"]["content"].strip()
+        session = bot.get_http_session()
+        async with bot.llm_semaphore:
+            async with session.post(bot.SILICONFLOW_API_URL, headers=headers, json=payload, timeout=15) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    if "usage" in data:
+                        bot.token_tracker.record_usage(data["usage"], bot.MODEL_NAME, group_id=group_id)
+                    raw_text = ((data.get("choices") or [{}])[0].get("message", {}).get("content") or "").strip()
+                    m = re.search(r"\{.*?\}", raw_text, re.DOTALL)
+                    if m:
+                        res_json = json.loads(m.group(0))
+                        delta = int(res_json.get("delta", 0))
+                        delta = max(-8, min(8, delta))
+                        impression = str(res_json.get("impression") or "").strip()
+                        if impression.lower() in ["null", "none", "无"]:
+                            impression = ""
+                        return delta, impression
                 m = re.search(r"\{.*?\}", raw_text, re.DOTALL)
                 if m:
                     res_json = json.loads(m.group(0))
@@ -546,19 +579,8 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
     except Exception as e:
         logger.debug("fish_memory 记录流水与捕获异常: %s", e)
 
-    # 主人特殊保护：如果用户是专属主人兼开发者，不录入外部混乱标签，好感度保底 80，保持最高默契
-    if user_id == bot.ADMIN_QQ:
-        mem["nickname"] = "life"
-        mem["traits"] = "主人兼创造者"
-        mem["notes"] = memory_atoms.migrate(["专属主人兼创造者 life"])
-        old_favor = mem.get("favor", 80)
-        mem["favor"] = max(80, min(100, old_favor + max(0, favor_delta)))
-        mem["updated_at"] = time.time()
-        logger.info("[好感判定] 主人(%s) 好感维持: %d/100 (免脏标签污染)", bot.ADMIN_QQ, mem["favor"])
-        async with bot.memory_write_lock:
-            bot.save_user_memories()
-        return
-
+    # 主人不再有保底/只升不降的锁死逻辑，跟普通群友一样按互动涨落；
+    # 只保留身份标记，免得自家号被当成陌生群友。
     old_favor = mem.get("favor", 50)
     new_favor = max(0, min(100, old_favor + favor_delta))
     mem["favor"] = new_favor

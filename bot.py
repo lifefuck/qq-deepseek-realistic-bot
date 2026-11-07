@@ -23,6 +23,8 @@ import sys
 import time
 import datetime
 import uuid
+import glob
+import shutil
 from typing import Any, Deque, Dict, Optional, Set, Tuple
 import aiohttp
 import web_dashboard
@@ -241,6 +243,8 @@ class TokenTracker:
     def __init__(self, file_path: str = TOKEN_USAGE_FILE):
         self.file_path = file_path
         self.data: Dict[str, Any] = self._load()
+        self._last_save = 0.0
+        self._unknown_models: Set[str] = set()
 
     def _default_data(self) -> Dict[str, Any]:
         cst_tz = datetime.timezone(datetime.timedelta(hours=8))
@@ -266,7 +270,8 @@ class TokenTracker:
                 "cost_cny": 0.0
             },
             "by_model": {},
-            "by_group": {}
+            "by_group": {},
+            "history": {}
         }
 
     def _load(self) -> Dict[str, Any]:
@@ -285,10 +290,7 @@ class TokenTracker:
 
     def save(self):
         try:
-            tmp = self.file_path + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
-                json.dump(self.data, f, ensure_ascii=False, indent=2)
-            os.replace(tmp, self.file_path)
+            atomic_write_json(self.file_path, self.data)
         except Exception as e:
             logger.error("保存 Token 消耗记录失败: %s", e)
 
@@ -321,7 +323,13 @@ class TokenTracker:
         today_str = now_dt.strftime("%Y-%m-%d")
         period = self.get_period(now_dt)
 
-        pricing = DEEPSEEK_MODELS_PRICING.get(model_name) or DEEPSEEK_MODELS_PRICING["deepseek-ai/DeepSeek-V3"]
+        pricing = DEEPSEEK_MODELS_PRICING.get(model_name)
+        if pricing is None:
+            # 没登记的模型按 V3 估价，但必须留下告警，否则账目会悄悄失真
+            if model_name not in self._unknown_models:
+                self._unknown_models.add(model_name)
+                logger.warning("模型 %s 未配置定价，暂按 DeepSeek-V3 单价估算，请补 PRICING 表", model_name)
+            pricing = DEEPSEEK_MODELS_PRICING["deepseek-ai/DeepSeek-V3"]
         rates = pricing[period]
         cost = (p_tokens / 1_000_000.0) * rates["input"] + (c_tokens / 1_000_000.0) * rates["output"]
 
@@ -340,6 +348,11 @@ class TokenTracker:
 
         today_data = self.data["today"]
         if today_data.get("date") != today_str:
+            # 跨天前先把昨天整块归档，不然“今日”一重置，历史账单就永远查不到了
+            if today_data.get("date"):
+                self.data.setdefault("history", {})[today_data["date"]] = dict(today_data)
+                for old_day in sorted(self.data["history"])[:-30]:
+                    self.data["history"].pop(old_day, None)
             self.data["today"] = {
                 "date": today_str,
                 "prompt_tokens": p_tokens,
@@ -374,7 +387,11 @@ class TokenTracker:
         g_data["requests"] += 1
         g_data["cost_cny"] = round(g_data["cost_cny"] + cost, 6)
 
-        self.save()
+        # 每次调用都重写账本纯属浪费，攒 5 秒批量落盘
+        now_ts = time.time()
+        if now_ts - self._last_save >= 5.0:
+            self.save()
+            self._last_save = now_ts
 
     def get_status_summary(self) -> Dict[str, Any]:
         """导出提供给 Web 仪表盘的实时状态"""
@@ -406,49 +423,130 @@ MEMORY_FILE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "use
 # 私聊的 group_id 为 "private"
 user_memories: Dict[str, Dict[str, dict]] = {}
 
-def load_user_memories():
-    """从磁盘加载按群隔离的群友记忆库"""
-    global user_memories
-    if os.path.exists(MEMORY_FILE_PATH):
-        try:
-            with open(MEMORY_FILE_PATH, "r", encoding="utf-8") as f:
-                raw_data = json.load(f)
-                # 兼容旧版本平铺结构，如果是平铺则自动迁移或初始化
-                if raw_data and not any(isinstance(v, dict) and any(isinstance(sub_v, dict) for sub_v in v.values()) for v in raw_data.values() if isinstance(v, dict)):
-                    user_memories = {"default": raw_data}
-                else:
-                    user_memories = raw_data
-            total_users = sum(len(users) for users in user_memories.values() if isinstance(users, dict))
-            # 老档案的 notes 是字符串列表，进内存前统一拆成原子（拆串/去重/补等级），
-            # 不然第一轮注入就会因为类型不对炸掉
-            cleaned = 0
-            for scope in user_memories.values():
-                if not isinstance(scope, dict):
-                    continue
-                for mem in scope.values():
-                    if not isinstance(mem, dict) or "notes" not in mem:
-                        continue
-                    before = len(mem["notes"]) if isinstance(mem["notes"], list) else 0
-                    mem["notes"] = memory_atoms.migrate(mem.get("notes"))
-                    cleaned += max(0, before - len(mem["notes"]))
-            if cleaned:
-                logger.info("记忆原子化完成，合并/拆分了 %d 条重复印象", cleaned)
-            logger.info("已成功加载按群隔离记忆库，共 %d 个分区，%d 位群友档案！", len(user_memories), total_users)
-        except Exception as e:
-            logger.error("加载群友记忆库失败: %s", e)
-            user_memories = {}
-    else:
-        user_memories = {}
+def atomic_write_json(path: str, data: Any, *, pretty: bool = True) -> None:
+    """唯一临时名 + fsync + 原子替换。
 
-def save_user_memories():
-    """将群友记忆库安全写回磁盘"""
+    固定 .tmp 名字在两次写入重叠时会互相踩；断电时也可能把半截文件 replace 上去。
+    临时名带 pid 和随机串，写完强制刷盘再替换，坏文件的概率能压到最低。
+    """
+    tmp_path = f"{path}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
     try:
-        tmp_path = MEMORY_FILE_PATH + ".tmp"
         with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(user_memories, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, MEMORY_FILE_PATH)
+            if pretty:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+            else:
+                json.dump(data, f, ensure_ascii=False, separators=(",", ":"))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def backup_json(path: str, keep: int = 3, min_interval: float = 600.0) -> None:
+    """覆盖前留快照，同一条文件 10 分钟内只留一份，防止刷出一堆备份"""
+    if not os.path.exists(path):
+        return
+    try:
+        olds = sorted(glob.glob(f"{path}.bak-*"))
+        if olds and time.time() - os.path.getmtime(olds[-1]) < min_interval:
+            return
+        stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        shutil.copy2(path, f"{path}.bak-{stamp}")
+        for old in sorted(glob.glob(f"{path}.bak-*"))[:-keep]:
+            os.remove(old)
     except Exception as e:
+        logger.warning("备份 %s 失败: %s", os.path.basename(path), e)
+
+
+def load_json_with_recovery(path: str) -> Optional[dict]:
+    """读 JSON，主文件坏了就回退最近的备份。
+
+    读不出来必须返回 None，绝不能返回空字典：调用方拿空字典一保存，
+    磁盘上的整库档案就被抹掉了。
+    """
+    for candidate in [path] + sorted(glob.glob(f"{path}.bak-*"), reverse=True):
+        try:
+            with open(candidate, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if not isinstance(data, dict):
+                logger.error("%s 结构异常（不是对象），跳过", os.path.basename(candidate))
+                continue
+            if candidate != path:
+                logger.warning("主文件 %s 损坏，已从备份 %s 恢复", os.path.basename(path), os.path.basename(candidate))
+                shutil.copy2(candidate, path)
+            return data
+        except FileNotFoundError:
+            continue
+        except Exception as e:
+            logger.error("读取 %s 失败: %s", os.path.basename(candidate), e)
+    return None
+
+
+user_memories: Dict[str, Dict[str, dict]] = {}
+_memory_load_failed = False       # 读到坏档时置位，本次运行禁止覆盖磁盘
+_mem_dirty = False
+_mem_last_save = 0.0
+MEMORY_SAVE_INTERVAL = 10.0       # 高频事件合并落盘窗口，别每次好感判定都重写整库
+
+def load_user_memories():
+    """从磁盘加载按群隔离的群友记忆库，主档坏了自动吃备份"""
+    global user_memories, _memory_load_failed
+    if not os.path.exists(MEMORY_FILE_PATH):
+        user_memories = {}
+        return
+    raw_data = load_json_with_recovery(MEMORY_FILE_PATH)
+    if raw_data is None:
+        _memory_load_failed = True
+        user_memories = {}
+        logger.error("群友记忆库读不出来，已进入只读保护；本次运行不会覆盖磁盘档案")
+        return
+    # 兼容旧版本平铺结构，如果是平铺则自动迁移或初始化
+    if raw_data and not any(isinstance(v, dict) and any(isinstance(sub_v, dict) for sub_v in v.values()) for v in raw_data.values() if isinstance(v, dict)):
+        user_memories = {"default": raw_data}
+    else:
+        user_memories = raw_data
+    total_users = sum(len(users) for users in user_memories.values() if isinstance(users, dict))
+    # 老档案的 notes 是字符串列表，进内存前统一拆成原子（拆串/去重/补等级），
+    # 不然第一轮注入就会因为类型不对炸掉
+    cleaned = 0
+    for scope in user_memories.values():
+        if not isinstance(scope, dict):
+            continue
+        for mem in scope.values():
+            if not isinstance(mem, dict) or "notes" not in mem:
+                continue
+            before = len(mem["notes"]) if isinstance(mem["notes"], list) else 0
+            mem["notes"] = memory_atoms.migrate(mem.get("notes"))
+            cleaned += max(0, before - len(mem["notes"]))
+    if cleaned:
+        logger.info("记忆原子化完成，合并/拆分了 %d 条重复印象", cleaned)
+    logger.info("已成功加载按群隔离记忆库，共 %d 个分区，%d 位群友档案！", len(user_memories), total_users)
+
+def save_user_memories(force: bool = False):
+    """记忆库落盘：默认攒 10 秒合并写一次，force=True 立即写。"""
+    global _mem_dirty, _mem_last_save
+    if _memory_load_failed:
+        logger.error("记忆库处于只读保护，跳过保存，避免覆盖磁盘原始档案")
+        return
+    now = time.time()
+    if not force and now - _mem_last_save < MEMORY_SAVE_INTERVAL:
+        _mem_dirty = True
+        return
+    try:
+        backup_json(MEMORY_FILE_PATH)
+        atomic_write_json(MEMORY_FILE_PATH, user_memories, pretty=False)
+        _mem_dirty = False
+        _mem_last_save = now
+    except Exception as e:
+        _mem_dirty = True
         logger.error("保存群友记忆库失败: %s", e)
+
+def flush_user_memories():
+    """把攒下来的改动真正写盘，退出和后台循环用"""
+    if _mem_dirty:
+        save_user_memories(force=True)
 
 def get_or_create_user_memory(user_id: int, nickname: str = "", group_id: Optional[int] = None) -> dict:
     """获取或初始化群友记忆（按群隔离）"""
@@ -468,11 +566,9 @@ def get_or_create_user_memory(user_id: int, nickname: str = "", group_id: Option
             "notes": memory_atoms.migrate(["专属主人兼创造者 life"]) if is_admin_user else [],
             "updated_at": time.time()
         }
-    if is_admin_user:
-        group_scope[uid_str]["nickname"] = "life"
-        group_scope[uid_str]["traits"] = "主人兼创造者"
-        group_scope[uid_str]["notes"] = memory_atoms.migrate(["专属主人兼创造者 life"])
-    elif nickname and group_scope[uid_str].get("nickname") != nickname:
+    # 只在首次建档时给主人写默认身份，之后和普通群友一样按真实互动演进；
+    # 以前每次调用都强刷 notes/traits，等于把主人的印象永久锁死在一句话上。
+    if not is_admin_user and nickname and group_scope[uid_str].get("nickname") != nickname:
         group_scope[uid_str]["nickname"] = nickname
     return group_scope[uid_str]
 
@@ -529,35 +625,6 @@ load_user_memories()
 
 memory_write_lock = asyncio.Lock()
 
-# 单群发信速率硬保护 (滑动窗口: 60秒内最多发 9 条，第 10 条触发 AI 自主告警后进入 60 秒冷却，防腾讯单群风控禁言)
-GROUP_RATE_LIMIT_WINDOW = 60.0
-GROUP_MAX_MESSAGES_PER_WINDOW = 9
-group_send_history: Dict[int, Deque[float]] = collections.defaultdict(collections.deque)
-group_rate_limit_warned: Dict[int, float] = {}
-
-def get_group_recent_send_count(group_id: int) -> int:
-    """获取当前群在滑动 60 秒窗口内已发送的消息条数"""
-    now = time.time()
-    dq = group_send_history[group_id]
-    while dq and now - dq[0] > GROUP_RATE_LIMIT_WINDOW:
-        dq.popleft()
-    return len(dq)
-
-def record_group_send_history(group_id: int) -> None:
-    """记录一次群消息发送（戳一戳不计入）"""
-    now = time.time()
-    dq = group_send_history[group_id]
-    while dq and now - dq[0] > GROUP_RATE_LIMIT_WINDOW:
-        dq.popleft()
-    dq.append(now)
-
-def check_and_record_group_rate_limit(group_id: int) -> bool:
-    """检查群发信是否处于允许发送区间。60秒内未达到上限返回 True"""
-    now = time.time()
-    dq = group_send_history[group_id]
-    while dq and now - dq[0] > GROUP_RATE_LIMIT_WINDOW:
-        dq.popleft()
-    return len(dq) < GROUP_MAX_MESSAGES_PER_WINDOW
 
 # ==================== 状态存储（按群隔离） ====================
 # 群聊近期图片缓存池 (用于两段式搜番与以图搜图): group_id -> deque of (image_url, timestamp, sender_id, sender_nick)
@@ -593,6 +660,8 @@ group_last_activity: Dict[int, float] = collections.defaultdict(float)
 group_last_active_reply: Dict[int, float] = collections.defaultdict(float)
 group_msg_count_since_bot: Dict[int, int] = collections.defaultdict(int)
 group_debounce_tasks: Dict[int, Optional[asyncio.Task]] = {}
+# 同群生成互斥：连点两次 @ 不能同时跑两个模型请求，否则会各读一份时间线、重复回复
+group_gen_locks: Dict[int, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
 group_silence_until: Dict[int, float] = {}  # 管理员 /stop 后的群主动插话静默期: group_id -> timestamp
 group_names_cache: Dict[int, str] = {}      # 群号与群名称映射缓存: group_id -> group_name
 # 问答追问配额表：(group_id, user_id) -> {"expire": float, "remain": int}
@@ -609,6 +678,43 @@ user_last_poke_time: Dict[tuple, float] = {}
 group_bot_ban_expire: Dict[int, float] = {}   # group_id -> 机器人解禁时间戳
 group_all_banned: Dict[int, bool] = collections.defaultdict(bool)      # group_id -> 是否全员禁言
 last_active_ban_check: Dict[int, float] = {}   # group_id -> 上次主动通过 API 校验的时间戳
+
+# ==================== 运行时保护状态持久化 ====================
+# /stop 的静默期、禁言熔断、追问窗口都带过期时间，重启清零等于把刚生效的保护也清了，
+# 所以存一份 runtime_state.json，启动时按时间戳过滤恢复。
+RUNTIME_STATE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runtime_state.json")
+
+def save_runtime_state() -> None:
+    try:
+        atomic_write_json(RUNTIME_STATE_FILE, {
+            "silence_until": {str(k): v for k, v in group_silence_until.items()},
+            "follow_up": {f"{k[0]}:{k[1]}": v for k, v in user_follow_up_state.items()},
+            "ban_expire": {str(k): v for k, v in group_bot_ban_expire.items()},
+            "all_banned": {str(k): True for k, v in group_all_banned.items() if v},
+        }, pretty=False)
+    except Exception as e:
+        logger.warning("保存运行时状态失败: %s", e)
+
+def load_runtime_state() -> None:
+    data = load_json_with_recovery(RUNTIME_STATE_FILE)
+    if not data:
+        return
+    now = time.time()
+    for gid, exp in (data.get("silence_until") or {}).items():
+        if isinstance(exp, (int, float)) and exp > now:
+            group_silence_until[int(gid)] = float(exp)
+    for key, state in (data.get("follow_up") or {}).items():
+        if not isinstance(state, dict) or state.get("expire", 0) <= now:
+            continue
+        gid_str, uid_str = key.split(":", 1)
+        user_follow_up_state[(int(gid_str), int(uid_str))] = state
+    for gid, exp in (data.get("ban_expire") or {}).items():
+        if isinstance(exp, (int, float)) and exp > now:
+            group_bot_ban_expire[int(gid)] = float(exp)
+    for gid in (data.get("all_banned") or {}):
+        group_all_banned[int(gid)] = True
+    if group_silence_until or group_bot_ban_expire or group_all_banned:
+        logger.info("已恢复运行时保护状态: 静默 %d 群 / 禁言 %d 群", len(group_silence_until), len(group_bot_ban_expire))
 
 async def check_bot_banned_realtime(ws: aiohttp.ClientWebSocketResponse, group_id: int) -> bool:
     """双重保障检查：优先查内存事件；若处于被动保护期，主动调 OneBot11 API 核实真实禁言状态"""
@@ -649,6 +755,27 @@ admin_private_history: Deque[str] = collections.deque(maxlen=100)
 # WebSocket 请求回调映射与运行中模型任务集合
 pending_requests: Dict[str, asyncio.Future] = {}
 running_tasks: Set[asyncio.Task] = set()
+# 所有后台任务的强引用。create_task 不存引用，任务可能被 GC 提前回收，
+# 异常也只能等解释器退出时才吐一句 never retrieved，等于没日志。
+background_tasks: Set[asyncio.Task] = set()
+
+def _on_background_done(task: asyncio.Task) -> None:
+    background_tasks.discard(task)
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc:
+        logger.error("后台任务异常退出: %s", exc, exc_info=exc)
+
+def spawn(coro, *, track_for_stop: bool = False) -> asyncio.Task:
+    """统一的后台任务入口：留引用、接异常、可选纳入 /stop 的取消范围"""
+    task = asyncio.create_task(coro)
+    background_tasks.add(task)
+    task.add_done_callback(_on_background_done)
+    if track_for_stop:
+        running_tasks.add(task)
+        task.add_done_callback(running_tasks.discard)
+    return task
 
 # ==================== 按群独立配置管理 ====================
 GROUP_CONFIGS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "group_configs.json")
@@ -674,12 +801,13 @@ group_configs: Dict[str, dict] = {}
 def load_group_configs():
     global group_configs
     if os.path.exists(GROUP_CONFIGS_FILE):
-        try:
-            with open(GROUP_CONFIGS_FILE, "r", encoding="utf-8") as f:
-                group_configs = json.load(f)
-        except Exception as e:
-            logger.error("加载群独立配置失败: %s", e)
+        loaded = load_json_with_recovery(GROUP_CONFIGS_FILE)
+        if loaded is None:
+            # 读坏了就用默认值跑，但绝不立刻覆盖原文件——留给人去捞
+            logger.error("群独立配置读取失败，本次以默认配置运行，磁盘文件保持原样")
             group_configs = {}
+        else:
+            group_configs = loaded
     for gid in ALLOWED_GROUPS:
         sgid = str(gid)
         if sgid not in group_configs:
@@ -694,8 +822,8 @@ def load_group_configs():
 
 def save_group_configs():
     try:
-        with open(GROUP_CONFIGS_FILE, "w", encoding="utf-8") as f:
-            json.dump(group_configs, f, ensure_ascii=False, indent=2)
+        backup_json(GROUP_CONFIGS_FILE)
+        atomic_write_json(GROUP_CONFIGS_FILE, group_configs)
     except Exception as e:
         logger.error("保存群独立配置失败: %s", e)
 
@@ -1337,11 +1465,17 @@ async def extract_reply_context(ws: aiohttp.ClientWebSocketResponse, event: dict
 http_session: Optional[aiohttp.ClientSession] = None
 current_ws: Optional[aiohttp.ClientWebSocketResponse] = None
 
+# 模型调用的全局并发闸门：消息再多也不能一次性把上游打满
+LLM_MAX_CONCURRENCY = int(os.environ.get("LLM_MAX_CONCURRENCY", "4"))
+llm_semaphore = asyncio.Semaphore(LLM_MAX_CONCURRENCY)
+
 def get_http_session() -> aiohttp.ClientSession:
-    """获取或初始化全局 aiohttp.ClientSession"""
+    """获取或初始化全局 aiohttp ClientSession（统一连接池与超时）"""
     global http_session
     if http_session is None or http_session.closed:
-        http_session = aiohttp.ClientSession()
+        connector = aiohttp.TCPConnector(limit=32, ttl_dns_cache=300)
+        timeout = aiohttp.ClientTimeout(total=60, connect=8, sock_read=50)
+        http_session = aiohttp.ClientSession(connector=connector, timeout=timeout)
     return http_session
 
 # ==================== 发送消息 ====================
@@ -1384,9 +1518,7 @@ def obfuscate_urls_for_qq(text: str) -> str:
         result += "（链接里的「删」去掉再点）"
     return result
 
-# 群消息发送频率滑动窗口限制（QQ 群官方/NapCat 风控：单群 1 分钟最多 10 条）
-# 为留出管理和紧急指令的余量，单群限制为每 60 秒最多 8 条，超出的自动排队或延时，避免被风控 1200 拦截
-group_sent_times: Dict[int, list[float]] = collections.defaultdict(list)
+# 同群发送串行化：只保证不会两个协程同时写同一个群，不做速率限制
 group_send_locks: Dict[int, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
 
 
@@ -1599,6 +1731,8 @@ async def _favor_keeper():
     while True:
         try:
             await asyncio.sleep(300)
+            flush_user_memories()
+            save_runtime_state()
             now_dt = datetime.datetime.now()
             now_ts = time.time()
             mark = now_dt.strftime("%Y-%W")
@@ -1660,7 +1794,7 @@ async def _cold_group_activator():
                         group_last_msg_time[gid] = now_ts
                         # 委托 process_group_trigger 发起一次冷场唤醒
                         from handlers.group import process_group_trigger
-                        asyncio.create_task(process_group_trigger(
+                        spawn(process_group_trigger(
                             current_ws, gid,
                             is_at=False,
                             sender_nick="小鲸鱼",
@@ -1679,6 +1813,7 @@ async def main():
     logger.info("启动 QQ DeepSeek 群聊 & 私聊机器人...")
     logger.info("白名单群: %s | 机器人 QQ: %d | 模型: %s | 管理员: %d", list(ALLOWED_GROUPS), BOT_QQ, MODEL_NAME, ADMIN_QQ)
 
+    load_runtime_state()
     asyncio.create_task(_favor_keeper())
     asyncio.create_task(_cold_group_activator())
 
@@ -1690,6 +1825,7 @@ async def main():
     except Exception as e:
         logger.error("Web 仪表盘启动异常: %s", e)
     
+    reconnect_fails = 0
     while True:
         try:
             async with aiohttp.ClientSession() as session:
@@ -1700,6 +1836,7 @@ async def main():
                 async with session.ws_connect(NAPCAT_WS_URL, heartbeat=30) as ws:
                     global current_ws
                     current_ws = ws
+                    reconnect_fails = 0
                     logger.info("已连接到 NapCat WebSocket，开始监听消息。")
                     # 异步刷新各群名称
                     async def refresh_group_names():
@@ -1752,24 +1889,43 @@ async def main():
                                 if post_type == "message":
                                     msg_type = event.get("message_type")
                                     if msg_type == "group":
-                                        asyncio.create_task(handle_group_message(ws, event))
+                                        spawn(handle_group_message(ws, event))
                                     elif msg_type == "private":
-                                        asyncio.create_task(handle_private_message(ws, event))
+                                        spawn(handle_private_message(ws, event))
                                 elif post_type in ("notice", "notify"):
                                     # 监听群戳一戳通知
                                     logger.info("收到系统/群通知事件: %s", event)
-                                    asyncio.create_task(handle_notice_event(ws, event))
+                                    spawn(handle_notice_event(ws, event))
                             except Exception as e:
                                 logger.error("解析事件异常: %s", e)
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
                             logger.warning("WebSocket 连接关闭或异常，准备重连...")
                             break
         except Exception as e:
-            logger.error("连接失败或发生错误: %s，5秒后自动重试...", e)
-            await asyncio.sleep(5)
+            logger.error("连接失败或发生错误: %s", e)
+        finally:
+            # 不管正常关闭还是异常退出，都要清掉旧连接句柄和挂起的请求；
+            # 否则调用方会拿着已关闭的 ws 继续发，future 也只能干等超时。
+            current_ws = None
+            for fut in list(pending_requests.values()):
+                if not fut.done():
+                    fut.cancel()
+            pending_requests.clear()
+        # 正常关闭和异常走同一条退避路径，避免服务端一断就变成零间隔重连风暴
+        if reconnect_fails:
+            wait = min(60.0, 2 ** min(reconnect_fails, 5))
+        else:
+            wait = 5.0
+        reconnect_fails += 1
+        logger.warning("连接已断开，%d 秒后重连（第 %d 次）...", wait, reconnect_fails)
+        await asyncio.sleep(wait)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("服务已手动退出。")
+    finally:
+        # 退出前把攒着的记忆和账本落盘，别丢最后几分钟的数据
+        flush_user_memories()
+        token_tracker.save()
