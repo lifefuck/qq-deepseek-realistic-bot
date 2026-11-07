@@ -35,7 +35,8 @@ import aiohttp
 import bot
 import handlers.group as hg
 
-GROUP = 123456787
+# 群号从环境变量取，默认占位值；别把真实群号写进仓库
+GROUP = int(os.environ.get("PROBE_GROUP", "123456789"))
 B = 800000002
 sent = []
 

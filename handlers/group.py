@@ -352,8 +352,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             await bot.send_group_message(ws, group_id, report, is_command_report=True)
             return
 
-        # 3. 绝对值修改某人好感度: 改 123456 的好感度为 80 / 把 123456 好感度调至 0 / 设为 100 / 1000000006 好感度 80 / 调成 0 / 改为 0
-        # 兼容正序与倒序: "把123456786好感度调至0" 或 "把好感度调至0 123456786"
+        # 3. 绝对值修改某人好感度: 改 123456789 的好感度为 80 / 把 123456789 好感度调至 0 / 设为 100 / 调成 0 / 改为 0
+        # 兼容正序与倒序: "把123456789好感度调至0" 或 "把好感度调至0 123456789"
         m_favor = re.search(r"(?:把|将|改|设置)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)\s*(?:的)?\s*(?:好感度|favor)?\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)", clean_body, re.IGNORECASE)
         if m_favor:
             target_qq = int(m_favor.group(1))
