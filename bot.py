@@ -1694,7 +1694,10 @@ async def main():
         try:
             async with aiohttp.ClientSession() as session:
                 logger.info("正在连接 NapCat OneBot 11 (%s)...", NAPCAT_WS_URL)
-                async with session.ws_connect(NAPCAT_WS_URL) as ws:
+                # heartbeat 必不可少：NapCat 侧异常丢弃会话后 TCP 会留下半开连接，
+                # 不主动 ping 就永远卡在 async for 里收不到事件（表现为“在线但不理人”）。
+                # 30 秒无 pong 即抛异常，走下面的重连分支。
+                async with session.ws_connect(NAPCAT_WS_URL, heartbeat=30) as ws:
                     global current_ws
                     current_ws = ws
                     logger.info("已连接到 NapCat WebSocket，开始监听消息。")
@@ -1712,6 +1715,26 @@ async def main():
                         except Exception as ge:
                             logger.debug("获取群列表名称异常: %s", ge)
                     asyncio.create_task(refresh_group_names())
+
+                    # 连接看门狗：半开连接时 async for 会永远静默等待，
+                    # 每分钟主动 get_status 探活，连续两次失败就掐断连接逼外层重连。
+                    async def _conn_watchdog(_ws):
+                        fails = 0
+                        while not _ws.closed:
+                            await asyncio.sleep(60)
+                            if _ws.closed:
+                                return
+                            res = await call_action(_ws, "get_status", {}, timeout=8.0)
+                            if res and res.get("status") in ("ok", "async"):
+                                fails = 0
+                                continue
+                            fails += 1
+                            logger.warning("NapCat 连接探活失败 (%d/2)", fails)
+                            if fails >= 2:
+                                logger.warning("NapCat 连接已失效，主动断开触发重连")
+                                await _ws.close()
+                                return
+                    asyncio.create_task(_conn_watchdog(ws))
 
                     async for msg in ws:
                         if msg.type == aiohttp.WSMsgType.TEXT:
