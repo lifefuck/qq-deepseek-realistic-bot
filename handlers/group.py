@@ -533,12 +533,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         ))
         return
         
-    # 2. 旁观模式（未直接找机器人）：严格门控过滤，绝不乱插嘴
-    # 过滤短语无意义废话
-    if bot.is_low_info_message(clean_body):
-        bot.group_last_msg_time[group_id] = now
-        return
-        
+    # 2. 旁观模式（未直接找机器人）：质量打分决定要不要开口
+    # 不再按"水群词"一刀切，短句/表情交给打分自然压分
     # 检查管理员 /stop 设置的群主动插话静默保护期
     silence_exp = bot.group_silence_until.get(group_id, 0.0)
     if now < silence_exp:
@@ -546,16 +542,12 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         return
 
     # 意图门控：结合冷热场动态权重送入大模型自主思考判定插话；若本条带有识别到的图片画面，且有一定信息量，也交由大模型自主评判
-    should_trigger, is_mention_bot = bot.should_active_interrupt(clean_body, group_id=group_id, msg_count_since=bot.group_msg_count_since_bot[group_id])
-    if vision_desc and len(vision_desc) >= 5:
-        # 群友发了图片/表情包：纯表情/连环斗图由本地概率轻量抽样送入大模型，避免群友连环发图时次次调用模型判 [PASS] 烧钱
-        # 带有明显文字讨论或@的走正常门控，纯图按 35% 抽样放行
-        import random
-        if clean_body.strip() or random.random() < 0.35:
-            should_trigger = True
-            bot.logger.info("[群 %d] 捕获到群友发图/表情包，抽样送入大模型自主决策是否插话评价", group_id)
-        else:
-            bot.logger.debug("[群 %d] 群友纯发图，未命中旁观插话抽样，静默略过省 token", group_id)
+    should_trigger = bot.should_active_interrupt(
+        clean_body,
+        group_id=group_id,
+        msg_count_since=bot.group_msg_count_since_bot[group_id],
+        has_image=bool(vision_desc and len(vision_desc) >= 5),
+    )
 
     # 如果检测到群友分享了多媒体/视频/GitHub/图文卡片，且不是问项目自身地址，则自动触发插话进行省流与锐评
     is_media_share = bool(media_info and media_info.get("summary"))
@@ -589,7 +581,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     old_task = bot.group_debounce_tasks.get(group_id)
     if old_task and not old_task.done() and not getattr(old_task, "_generating", False):
         old_task.cancel()
-    bot.group_debounce_tasks[group_id] = asyncio.create_task(debounced_step(group_id, sender_display, is_mention_bot, sender_id, clean_body))
+    bot.group_debounce_tasks[group_id] = asyncio.create_task(debounced_step(group_id, sender_display, False, sender_id, clean_body))
 
 
 async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = ""):

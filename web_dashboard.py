@@ -677,7 +677,7 @@ INDEX_HTML = """<!DOCTYPE html>
         const isSleepOn = cfg.enable_sleep !== false;
         const isPokeOn = cfg.enable_poke !== false;
         const isMuted = !!cfg.muted;
-        const probPct = Math.round((cfg.interject_prob ?? 0.10) * 100);
+        const probPct = Math.round((cfg.interject_prob ?? 0.25) * 100);
 
         let badgeClass = "badge-slate";
         if (g.interject_why.includes("热场")) badgeClass = "badge-success";

@@ -783,7 +783,7 @@ DEFAULT_GROUP_CONFIG = {
     "mode": "user",            # "user" (拟真闲聊) 或 "root" (技术老搭档)
     "muted": False,             # /off 一键静音的总闸：群友说什么都不回，管理员指令照旧
     "enable_interject": True,   # 是否允许主动插话
-    "interject_prob": 0.30,     # 主动插话基准概率 (0.0 ~ 1.0，调至 30%)
+    "interject_prob": 0.25,     # 主动接话意愿 (0.0~1.0)：越高门槛越低，25 = 中等质量话题就接
     "enable_sleep": True,       # 是否启用 01:00~07:00 拟真作息
     "enable_poke": True,        # 是否开启戳一戳互动与回戳
     "enable_games": True,       # 是否开启数字炸弹/掷骰子等文字游戏
@@ -1181,14 +1181,6 @@ def strip_markdown(text: str) -> str:
     text = re.sub(r"`(.*?)`", r"\1", text)
     return text.strip()
 
-def is_low_info_message(text: str) -> bool:
-    """识别毫无信息量的水群废话"""
-    clean = re.sub(r"[\s\d\W_]+", "", text)
-    if len(clean) < 2:
-        return True
-    low_info_words = {"哈哈", "哈哈哈", "666", "好的", "收到", "确实", "可以", "牛逼", "问号", "点赞"}
-    return clean in low_info_words
-
 def sanitize_text(text: str) -> str:
     """清理非法 Unicode 孤立代理项及残损控制字符，防止发给大模型 API 时报 400"""
     if not text:
@@ -1273,67 +1265,117 @@ def de_template(reply: str, group_id: int = 0) -> str:
     return text
 
 
-def calculate_interject_probability(group_id: int, base_prob: float) -> tuple[float, str]:
+# 接话质量打分用到的词表：只做加权，不再当"命中就闭嘴"的黑白名单。
+# 以前的子串黑名单把「有人吗」这类正常提问整条砍掉，误杀比拦截更伤。
+INTERJECT_SLANG_WORDS = (
+    "笑死", "离谱", "绝了", "卧槽", "绷不住", "破防", "太抽象", "什么鬼",
+    "真的服", "逆天", "抽象", "答辩", "急急急",
+)
+INTERJECT_QUESTION_HINTS = (
+    "吗", "呢", "怎么", "为什么", "为啥", "谁", "哪", "是不是", "有没有",
+    "如何", "求", "知不知道", "干嘛", "干啥", "咋", "？", "?",
+)
+INTERJECT_CODE_HINTS = ("报错", "traceback", "npm", "pip", "git", "docker", "报错", "编译", "配置")
+
+def score_message_quality(text: str, group_id: int = 0, has_image: bool = False,
+                          has_media: bool = False) -> tuple[float, str]:
+    """给一条群消息打 0~1 的"值得接话"分，全部本地规则，零 token。
+
+    取代原来的随机抽样：随机意味着好话题也可能被掷丢，差话题也可能被抽中。
+    这里只看内容本身的信号强度，分数越高越值得开口。
     """
-    计算插话冷热场动态权重 (参考 Estrella Bot interject 活跃提权 + 冷场降权)
-    """
+    t = (text or "").strip()
+    if not t and not has_image and not has_media:
+        return 0.0, "空消息"
+
+    score = 0.30
+    hits = []
+
+    # 信息量：太短的接不上，中长句有内容
+    length = len(t)
+    if length >= 6:
+        score += 0.10
+    if length >= 15:
+        score += 0.10
+        hits.append("有内容")
+    if length > 60:
+        score += 0.05
+        hits.append("长文")
+
+    # 提问天然值得回应
+    if any(h in t for h in INTERJECT_QUESTION_HINTS):
+        score += 0.20
+        hits.append("提问")
+
+    # 带上"你/小鲸鱼/鱼"说明可能在说机器人
+    if any(w in t for w in ("小鲸鱼", "大肥鱼", "肥鱼")):
+        score += 0.25
+        hits.append("点名")
+    elif "你" in t:
+        score += 0.15
+        hits.append("指向自己")
+
+    # 情绪/玩梗，群里最容易接的一类
+    if any(w in t for w in INTERJECT_SLANG_WORDS) or "！" in t or "!" in t:
+        score += 0.20
+        hits.append("有情绪")
+
+    # 技术求助：接得上就很有价值
+    if any(w in t.lower() for w in INTERJECT_CODE_HINTS):
+        score += 0.10
+        hits.append("技术")
+
+    if has_image:
+        score += 0.15
+        hits.append("带图")
+    if has_media:
+        score += 0.20
+        hits.append("带卡片")
+
+    # 纯表情/单字/复读往下压
+    cleaned = re.sub(r"[\s\d\W_]+", "", t)
+    if len(cleaned) <= 1:
+        score -= 0.20
+        hits.append("过短")
+    if re.fullmatch(r"(哈+|6+|草+|啊+|嗯+|哦+|好+)", cleaned or ""):
+        score -= 0.15
+        hits.append("纯水")
+
+    # 冷场时同样的话更值得接；刚聊过则适当收敛
     now = time.time()
     last_msg = group_last_msg_time.get(group_id, 0.0)
     last_reply = group_last_bot_reply_time.get(group_id, 0.0)
-
-    # 冷场降权：若本条之前群里沉寂超过 10 分钟 (600s)，适度降权至 0.6x，保持一定活跃度
     if last_msg > 0 and (now - last_msg) >= 600.0:
-        return base_prob * 0.6, "冷场适度降权(0.6x)"
+        score += 0.10
+        hits.append("冷场")
+    elif last_reply > 0 and (now - last_reply) < 600.0:
+        score += 0.05
+        hits.append("热场")
 
-    # 热场提权：若机器人在 10 分钟内刚在该群说过话，说明参与热聊，提权 1.5x 积极接话
-    if last_reply > 0 and (now - last_reply) < 600.0:
-        return min(0.85, base_prob * 1.5), "热场提权(1.5x)"
+    score = max(0.0, min(1.0, score))
+    return score, "+".join(hits) or "普通闲聊"
 
-    return base_prob, "常规概率"
 
-# 旁观插话防打扰关键词黑名单：群友日常约饭、开黑组队、掉线卡死或特定游戏私聊，机器人绝不主动插嘴
-INTERJECT_NOISE_KEYWORDS = {
-    "开黑", "上号", "上车", "组队", "打本", "吃鸡", "双排", "三排", "五排",
-    "打把", "来把", "打一把", "谁来", "带我", "拉我", "吃啥", "吃什么", "喝啥", "喝什么",
-    "晚饭", "午饭", "夜宵", "有人吗", "谁在", "闪退", "卡死", "掉线", "连不上",
-    "登不上", "进不去", "更新了", "封号", "睡了", "睡觉", "晚安", "下了", "撤了"
-}
+def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int = 0,
+                            has_image: bool = False, has_media: bool = False) -> bool:
+    """旁观接话闸门：只做开关/作息判断，剩下交给质量分。
 
-def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int = 0) -> tuple[bool, bool]:
-    """
-    判断是否应该送入大模型由 AI 自主思考是否接话（结合各群独立开关、黑名单降噪与冷热场动态调节）。
-    彻底废除固定代称/唤醒词列表，完全交由大模型根据上下文思考接梗或输出 [PASS] 静默。
-    返回: (should_trigger: bool, is_mention_bot: bool)
+    interject_prob 的语义从"抽中概率"变成"接话意愿"：越高门槛越低。
+    25（默认）对应门槛 0.65 —— 普通闲聊不接，提问、玩梗、带图、指向机器人才接。
     """
     cfg = get_group_config(group_id if group_id else None)
     if not cfg.get("enable_interject", True):
-        return False, False
+        return False
 
-    # 睡眠期严格禁止任何主动插话
     if is_bot_sleeping(group_id):
-        return False, False
+        return False
 
-    # 1. 命中日常私聊/开黑/组队黑名单词汇，坚决不瞎插话打扰群友
-    if any(nkw in text for nkw in INTERJECT_NOISE_KEYWORDS):
-        return False, False
-
-    # 1.5 过滤常见的组队喊人正则（如 1=3, 2缺1, 来个打野/上单/法师/奶妈 等）
-    team_patterns = (
-        r"[1-4]\s*[=＝]\s*[1-4]",
-        r"[1-4]\s*缺\s*[1-4]",
-        r"来个?(?:打野|上单|中单|ad|辅助|奶妈|输出|坦克|c位|大爹|高手|猛男|人)",
-        r"(?:拉|进|建)个?房间",
-    )
-    if any(re.search(pat, text, re.IGNORECASE) for pat in team_patterns):
-        return False, False
-
-    # 2. 只要是有实质内容（非纯水、长度>=4）的群消息，结合冷热场动态概率送入大模型自主思考
-    # 大模型在旁观模式下拥有最终裁决权：插不上话/未被明确提及/不确定上下文时自动输出 [PASS] 静默
-    base_p = float(cfg.get('interject_prob', 0.15))
-    final_prob, why = calculate_interject_probability(group_id, base_p)
-    logger.debug("[群 %d] 旁观动态思考判定: 基准=%.2f, 调整后=%.2f (%s)", group_id, base_p, final_prob, why)
-    import random
-    return (random.random() < final_prob), False
+    score, why = score_message_quality(text, group_id=group_id, has_image=has_image, has_media=has_media)
+    desire = float(cfg.get("interject_prob", 0.25))
+    threshold = max(0.35, min(0.90, 0.80 - 0.8 * desire))
+    passed = score >= threshold
+    logger.info("[群 %d] 接话质量 %.2f vs 门槛 %.2f (%s) -> %s", group_id, score, threshold, why, "接" if passed else "略过")
+    return passed
 
 # ==================== OneBot11 API 请求包装 ====================
 async def call_action(ws: aiohttp.ClientWebSocketResponse, action: str, params: dict, timeout: float = 2.0) -> Optional[dict]:
@@ -1664,8 +1706,10 @@ def get_bot_dashboard_status() -> Dict[str, Any]:
         last_msg = group_last_msg_time.get(gid, 0.0)
         last_reply = group_last_bot_reply_time.get(gid, 0.0)
         msg_count = group_msg_count_since_bot.get(gid, 0)
-        base_p = float(cfg.get("interject_prob", 0.10))
-        prob, why = calculate_interject_probability(gid, base_p)
+        base_p = float(cfg.get("interject_prob", 0.25))
+        # 面板直接显示当前门槛，方便对着调"意愿"滑块
+        prob = base_p
+        why = f"质量门槛 {max(0.35, min(0.90, 0.80 - 0.8 * base_p)):.2f}"
         g_name = group_names_cache.get(gid, f"群聊 {gid}")
         groups_data.append({
             "group_id": gid,

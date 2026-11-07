@@ -107,9 +107,27 @@ async def test_json_recovery():
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+async def test_interject_scoring():
+    """质量打分取代随机抽样：普通闲聊不接，提问/点名/玩梗才接。"""
+    gate = 0.80 - 0.8 * 0.25  # 默认意愿 25 对应的门槛
+    cases = [
+        ("今天好热啊", False, "普通闲聊"),
+        ("哈哈哈", False, "纯水"),
+        ("上号", False, "开黑喊人（旧黑名单该拦的，现在靠分低自然略过）"),
+        ("这个配置怎么改？", True, "技术提问"),
+        ("小鲸鱼你在干嘛", True, "点名机器人"),
+        ("笑死 这也太抽象了", True, "玩梗吐槽"),
+    ]
+    for text, expect, label in cases:
+        score, why = bot.score_message_quality(text)
+        got = score >= gate
+        check(f"质量打分 {label}: {text}", got == expect, f"score={score:.2f} why={why}")
+
+
 async def main():
     await test_dashboard()
     await test_json_recovery()
+    await test_interject_scoring()
     print()
     if FAILED:
         print(f"失败 {len(FAILED)} 项：")
