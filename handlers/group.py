@@ -167,9 +167,10 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
 
     # 如果有图片内容但用户没有附加文本，将内容作为描述体（紧凑表达，由时间线统一提供发送人 QQ）
     if vision_desc and not clean_body:
-        clean_body = f"[发送了图片/表情包]: {vision_desc}"
+        # 用系统提示词里约定好的标签，否则主模型会把这段描述当成群友的原话复述
+        clean_body = f"[用户发送/附带的图片/表情包内容: {vision_desc}]"
     elif vision_desc:
-        clean_body = f"{clean_body}\n[附带图片/表情包画面描述]: {vision_desc}".strip()
+        clean_body = f"{clean_body}\n[用户发送/附带的图片/表情包内容: {vision_desc}]".strip()
 
     # 如果用户只 @ 了机器人，没有附带文字也没有图片
     if is_at and not clean_body:
