@@ -14,6 +14,7 @@
 import json
 import logging
 import os
+import re
 import random
 import time
 from typing import Dict, List, Optional, Tuple, Any
@@ -22,14 +23,16 @@ logger = logging.getLogger("meme_manager")
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 MEMES_FILE = os.path.join(SCRIPT_DIR, "data", "memes_pool.json")
+CORE_FILE = os.path.join(SCRIPT_DIR, "data", "memes_core.json")
 
 class MemeManager:
-    def __init__(self, pool_size: int = 100, rotation_interval: int = 1800):
+    def __init__(self, pool_size: int = 30, rotation_interval: int = 1800):
         self.pool_size = pool_size
         self.rotation_interval = rotation_interval  # 默认 30 分钟轮换一次 (秒)
         self.last_rotation = 0.0
         self.last_file_mtime = 0.0
 
+        self.core_memes: List[Dict[str, Any]] = []        # 常驻核心梗：每次都注入，不轮换
         self.all_memes: List[Dict[str, Any]] = []
         self.structured_memes: List[Dict[str, Any]] = []  # 带解释的高质量梗
         self.word_only_memes: List[str] = []              # 纯热词
@@ -64,6 +67,15 @@ class MemeManager:
 
             self.all_memes = data.get("memes", [])
             self.last_file_mtime = mtime
+
+            # 核心梗单独一个文件：自动同步会重写 memes_pool.json，手写内容放那儿会被冲掉
+            try:
+                with open(CORE_FILE, "r", encoding="utf-8") as cf:
+                    self.core_memes = json.load(cf).get("core", [])
+            except FileNotFoundError:
+                self.core_memes = []
+            except Exception as ce:
+                logger.warning("核心梗加载失败: %s", ce)
 
             # 重置分类与别名字典
             for k in self.category_pools:
@@ -112,12 +124,12 @@ class MemeManager:
         if not force and (now - self.last_rotation) < self.rotation_interval and self.current_pool:
             return
 
-        # 圈子配比目标：game 40条, acg 20条, abstract 20条, general 20条
+        # 圈子配比目标：跟着 pool_size 走（默认 30 条：游戏 12 / 二创 6 / 抽象 6 / 通用 6）
         targets = [
-            ("game", 40),
-            ("acg", 20),
-            ("abstract", 20),
-            ("general", 20)
+            ("game", 12),
+            ("acg", 6),
+            ("abstract", 6),
+            ("general", 6)
         ]
         
         selected_memes: List[Dict[str, Any]] = []
@@ -131,7 +143,7 @@ class MemeManager:
                 selected_names.add(item["name"])
                 selected_memes.append(item)
                 
-        # 如果不足 100 条，用全部带释义的词补充
+        # 不足 pool_size 就用其余带释义的词补齐
         if len(selected_memes) < self.pool_size and self.structured_memes:
             remain_needed = self.pool_size - len(selected_memes)
             remains = [m for m in self.structured_memes if m["name"] not in selected_names]
@@ -150,85 +162,92 @@ class MemeManager:
         self.last_rotation = now
         logger.debug("动态热词轮换池已刷新，当前选取 %d 条热词/梗", len(self.current_pool))
 
-    def match_user_message(self, message: str) -> List[Dict[str, Any]]:
-        """检测群友发言是否命中了词库中的特定梗词或其别名/变体（优先置顶带释义梗）"""
-        if not message or len(message.strip()) < 2:
-            return []
+    def match_user_message(self, text: str, limit: int = 3) -> List[Dict[str, Any]]:
+        """从这条消息里认出梗：先核心梗，再全库别名，最后才对核心梗做容错召回。
 
-        clean_msg = message.strip().lower()
-        matched = []
-        matched_keys = set()
+        顺序很重要：核心梗是手写的、带接法示范的，命中就该优先占位；
+        容错召回只对核心梗做，全库 1900 条参与模糊匹配会把「牛头人」当成「牢明」。
+        """
+        clean = re.sub(r"\[[^\]]*\]", " ", text or "").lower()
+        matched: List[Dict[str, Any]] = []
+        seen = set()
 
-        # 1. 优先从别名和变体索引精准检测
-        for alias, item in self.alias_map.items():
-            if len(alias) >= 2 and alias in clean_msg:
-                m_name = item["name"]
-                if m_name not in matched_keys:
-                    matched_keys.add(m_name)
-                    matched.append(item)
-                    if len(matched) >= 3:
-                        return matched
+        def add(item: Dict[str, Any]) -> None:
+            if item.get("name") and item["name"] not in seen and len(matched) < limit:
+                seen.add(item["name"])
+                matched.append(item)
 
-        # 2. 扫描其余全部带释义词库
-        for item in self.structured_memes:
-            name = item["name"].lower()
-            if len(name) >= 2 and name in clean_msg:
-                if item["name"] not in matched_keys:
-                    matched_keys.add(item["name"])
-                    matched.append(item)
-                    if len(matched) >= 3:
-                        break
+        # 1. 名字/别名子串命中。核心梗排前面，同层里长名字优先（「疯狂星期四」先于「星期四」）
+        pool = [(0, m) for m in self.core_memes] + [(1, m) for m in self.structured_memes]
+        pool.sort(key=lambda x: (x[0], -len(x[1].get("name", ""))))
+        for _, item in pool:
+            names = [item.get("name", "")] + list(item.get("aliases") or [])
+            if any(len(n) >= 2 and n.lower() in clean for n in names):
+                add(item)
+
+        # 2. 一个都没认出来，才做容错召回：群里常打错字、漏字（卡啦彼丘），精确子串永远命中不了。
+        #    只认三字以上的核心梗，且重合度要够高，否则「又送人头了」会把一堆词召回来。
+        if not matched:
+            msg_chars = set(clean)
+            scored = []
+            for item in self.core_memes:
+                name = item.get("name", "")
+                if len(name) < 3:
+                    continue
+                chars = set(name)
+                shared = len(chars & msg_chars)
+                if shared >= 2 and shared / len(chars) >= 0.75:
+                    scored.append((shared / len(chars), item))
+            for _, item in sorted(scored, key=lambda x: -x[0]):
+                add(item)
         return matched
 
+    @staticmethod
+    def _short_desc(item: Dict[str, Any], limit: int = 26) -> str:
+        desc = (item.get("desc") or "").strip()
+        if len(desc) <= limit:
+            return desc
+        cuts = [i for i in (desc.find("。"), desc.find("；"), desc.find("，")) if 8 <= i <= limit]
+        return desc[:min(cuts)] if cuts else desc[:limit]
+
     def get_prompt_snippet(self, user_message: str = "") -> str:
-        """
-        生成用于注入 Prompt 的网络热梗参考文本
-        包含：
-        1. 群友发言精准命中的梗及释义（置顶）
-        2. 当前 100 个词轮换池中的词汇（每 30 分钟轮换，提供网络冲浪语境底座）
+        """三层注入：常驻核心梗 + 这句沾边的梗 + 一小撮流行词。
+
+        以前是「命中的梗 + 100 条随机词表」，1910 条库里随机抽 100 条，命中率低、
+        还占掉一大截注意力。现在常驻的少而准，剩下的靠检索，检索不到就别硬接。
         """
         self.load_pool()
         self.rotate_pool()
-
-        if not self.current_pool and not self.structured_memes:
+        if not self.core_memes and not self.current_pool and not self.structured_memes:
             return ""
 
+        lines: List[str] = []
+        if self.core_memes:
+            parts = []
+            for m in self.core_memes[:14]:
+                cue = m.get("cue") or self._short_desc(m)
+                parts.append(f"{m['name']}→{cue}" if cue else m["name"])
+            lines.append("【群里常聊的梗（照这个口吻接，别背解释）】：" + "｜".join(parts))
+
         matched = self.match_user_message(user_message) if user_message else []
-        matched_names = {m["name"] for m in matched}
+        core_names = {m["name"] for m in self.core_memes}
+        hits = [m for m in matched if m["name"] not in core_names][:3]
+        if hits:
+            lines.append("【这句沾边的梗】：" + "；".join(
+                f"{m['name']}（{self._short_desc(m)}）" for m in hits))
 
-        lines = [
-            "【网络冲浪语境与热词参考（当前轮换池100条，自然融入、切忌生搬硬套或无脑堆砌）】:"
-        ]
-
-        if matched:
-            match_parts = []
-            for m in matched[:3]:
-                desc = (m.get("desc") or "").strip()
-                if len(desc) > 50:
-                    cut = min([i for i in (desc.find("。"), desc.find("；")) if i > 15] or [50])
-                    desc = desc[:cut]
-                match_parts.append(f"{m['name']}（{desc}）" if desc else m['name'])
-            lines.append(f"- 群友提到/上下文相关梗（仅当群友正文明确在玩梗时顺水推舟接梗，严禁仅因群友昵称/名片包含某些字词而强行硬套尬聊）: {'; '.join(match_parts)}")
-
-        # 提取当前 100 个词（去重已命中的）
-        pool_words = []
-        for item in self.current_pool:
-            name = item["name"]
-            if name in matched_names:
-                continue
-            desc = item.get("desc")
-            if desc:
-                pool_words.append(f"{name}({desc})")
-            else:
-                pool_words.append(name)
-
-        # 拼接成紧凑的词表展示
-        lines.append(f"- 常用流行词汇池: {'、'.join(pool_words[:self.pool_size])}")
+        if self.current_pool:
+            words = [
+                i["name"] for i in self.current_pool
+                if i["name"] not in core_names and re.fullmatch(r"[\u4e00-\u9fa5A-Za-z0-9]{2,8}", i["name"] or "")
+            ][:30]
+            if words:
+                lines.append("【最近常刷到的词】：" + "、".join(words))
         return "\n".join(lines)
 
 
 # 单例实例
-meme_manager = MemeManager(pool_size=100, rotation_interval=1800)
+meme_manager = MemeManager(pool_size=30, rotation_interval=1800)
 
 if __name__ == "__main__":
     test_msg = "今天星期四，感觉好想吃炸鸡，天天加班整个人班味好重啊"

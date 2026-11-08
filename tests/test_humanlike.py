@@ -241,6 +241,22 @@ def test_offtopic_gate():
     check("短句不拦", not anti_template.is_offtopic("笑死", "今晚吃什么 火锅还是烤肉"))
 
 
+def test_meme_recall():
+    """梗库 1900 条，靠的是检索而不是全塞进 prompt。"""
+    from meme_manager import meme_manager as mm
+
+    mm.load_pool(force=True)
+    check("核心梗已加载", len(mm.core_memes) >= 10, str(len(mm.core_memes)))
+    check("精确命中打瓦", [m["name"] for m in mm.match_user_message("打瓦吗兄弟")][:1] == ["打瓦"])
+    check("别名命中v我50", "疯狂星期四" in [m["name"] for m in mm.match_user_message("v我50")])
+    check("打错字也能召回", "卡拉彼丘" in [m["name"] for m in mm.match_user_message("今晚卡啦彼丘开黑")])
+    check("两字角色名照常命中", "白墨" in [m["name"] for m in mm.match_user_message("白墨这奶量")])
+    check("不沾边不乱认", mm.match_user_message("今晚吃火锅") == [])
+    snippet = mm.get_prompt_snippet("今晚卡啦彼丘开黑")
+    check("核心梗常驻在提示词里", "卡拉彼丘→" in snippet)
+    check("梗提示不超 600 字", len(snippet) <= 600, str(len(snippet)))
+
+
 def test_interject():
     now = 10000.0
     check("刚说完不抢话", interject_planner.too_soon(now, now - 10))
@@ -272,6 +288,7 @@ if __name__ == "__main__":
     test_newline_split()
     test_short_bubbles()
     test_offtopic_gate()
+    test_meme_recall()
     test_interject()
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

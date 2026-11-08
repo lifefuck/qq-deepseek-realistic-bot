@@ -248,7 +248,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         last_clean = re.sub(r'\[CQ:[^\]]+\]', '', timeline_pure_content.split('\n')[-1] if timeline_pure_content else "").strip()
         # 排除常见基础寒暄
         common_greetings = ("你好", "在吗", "早安", "晚安", "在干嘛", "早上好", "晚上好", "嗨", "哈喽", "谢谢", "好的")
-        local_has_meme = bool(bot.meme_manager.get_prompt_snippet(timeline_pure_content))
+        local_has_meme = bool(bot.meme_manager.match_user_message(timeline_pure_content))
         if not local_has_meme and 3 <= len(last_clean) <= 12 and not any(g in last_clean for g in common_greetings):
             # 包含游戏、特定名词结构或口头禅特征
             if any(c in last_clean for c in ("瓦", "桥", "哥", "姐", "酱", "牢", "神", "王", "圣", "急", "典", "乐", "批", "门")):
@@ -282,7 +282,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
 
     # 随消息变化的上下文，统一挂在 user 消息末尾
     dynamic_context = ""
-    # 注入动态网络热词轮换池（100条/30分钟轮换）与群友命中梗（使用纯正文匹配，避免被昵称带偏）
+    # 注入三层梗上下文：常驻核心梗 + 本句命中的梗 + 轮换词（30条/30分钟）
     memes_context = bot.meme_manager.get_prompt_snippet(timeline_pure_content)
     if memes_context:
         dynamic_context += f"\n{memes_context}\n"

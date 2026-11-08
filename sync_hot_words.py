@@ -253,6 +253,20 @@ def sync_memes() -> dict:
             seen_names.add(m["name"])
             memes_list.append(m)
 
+    # 手写的核心梗单独放 memes_core.json 维护（自动同步会整体重写词库，
+    # 直接写进 memes_pool.json 会被下一次同步冲掉），这里合并进来
+    core_path = os.path.join(os.path.dirname(OUTPUT_FILE), "memes_core.json")
+    try:
+        with open(core_path, "r", encoding="utf-8") as f:
+            for m in json.load(f).get("core", []):
+                if m.get("name") and m["name"] not in seen_names:
+                    seen_names.add(m["name"])
+                    memes_list.append(m)
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        logger.warning(f"核心梗合并失败: {e}")
+
     payload = {
         "updated_at": __import__("time").time(),
         "total_count": len(memes_list),
