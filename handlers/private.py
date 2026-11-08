@@ -214,5 +214,9 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
     bot.admin_private_timeline.append(f"小鲸鱼: {reply}")
     bot.admin_private_history.append(f"小鲸鱼: {reply}")
     await asyncio.sleep(0.8)
+    # 撤回的私聊消息不再回复（任务多半已被 cancel，这里是第二道闸）
+    if bot.was_recalled(event.get("message_id")):
+        bot.logger.info("[私聊] 触发消息已撤回，丢弃回复")
+        return
     await bot.send_private_message(ws, bot.ADMIN_QQ, reply, is_command_report=False)
 

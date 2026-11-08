@@ -15,7 +15,6 @@ from typing import Optional
 import aiohttp
 
 from services import affect
-from services import pacing
 from services import typo
 
 # 由 bot.py 在启动时注入自己。直接 import bot 在 `python bot.py` 下会拿到
@@ -452,9 +451,7 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
         return
     profile = affect.profile("private")
     segments = _cap_segments(segments, profile["max_segments"])
-    hour = time.localtime().tm_hour
-    await asyncio.sleep(pacing.reading_delay(hour) * 0.5)
-
+    # 私聊也不做拟真延迟：全砍。要快就一条条立刻发。
     for i, seg in enumerate(segments):
         clean_seg = bot.strip_markdown(seg).strip()
         clean_seg = bot.obfuscate_urls_for_qq(clean_seg)
@@ -471,12 +468,7 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
             logger.info("[私聊 %d] 私信已发送: %s", user_id, clean_seg[:40])
         else:
             logger.warning("[私聊 %d] 私信发送可能失败: %s | 响应: %s", user_id, clean_seg[:40], res)
-        if slip and typo.should_correct():
-            await asyncio.sleep(random.uniform(1.2, 2.6))
-            await bot.call_action(ws, "send_private_msg",
-                                  {"user_id": user_id, "message": typo.correction_line(slip)}, timeout=3.0)
-        if i < len(segments) - 1:
-            await asyncio.sleep(pacing.segment_delay(clean_seg, hour, profile["delay_mult"]))
+        # 手滑纠正也一起砍：多等两秒只为了补一个错字，不划算
 
     affect.on_bot_spoke("private")
     affect.save()

@@ -241,6 +241,35 @@ def test_offtopic_gate():
     check("短句不拦", not anti_template.is_offtopic("笑死", "今晚吃什么 火锅还是烤肉"))
 
 
+def test_recall_interrupt():
+    """撤回要真的掐掉还在排队的回复，而不是只记个日志。"""
+    import asyncio
+    import bot
+
+    async def scenario():
+        async def slow():
+            await asyncio.sleep(5)
+
+        task = asyncio.create_task(slow())
+        mid = 987654321
+        bot.track_reply_task(mid, task)
+        bot.group_timelines[999].append({
+            "sender": "甲(QQ 1)", "sender_id": 1, "content": "撤回我", "time": 0, "msg_id": mid,
+        })
+        await bot.handle_notice_event(None, {
+            "post_type": "notice", "notice_type": "group_recall",
+            "group_id": 999, "user_id": 1, "message_id": mid,
+        })
+        await asyncio.sleep(0)
+        return (task.cancelled(), bot.was_recalled(mid),
+                any(m.get("msg_id") == mid for m in bot.group_timelines[999]))
+
+    cancelled, marked, still_there = asyncio.run(scenario())
+    check("撤回会取消回复任务", cancelled)
+    check("撤回会被记下", marked)
+    check("撤回的消息从时间线移除", not still_there)
+
+
 def test_meme_recall():
     """梗库 1900 条，靠的是检索而不是全塞进 prompt。"""
     from meme_manager import meme_manager as mm
@@ -289,6 +318,7 @@ if __name__ == "__main__":
     test_short_bubbles()
     test_offtopic_gate()
     test_meme_recall()
+    test_recall_interrupt()
     test_interject()
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

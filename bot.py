@@ -770,6 +770,49 @@ def _on_background_done(task: asyncio.Task) -> None:
     if exc:
         logger.error("后台任务异常退出: %s", exc, exc_info=exc)
 
+# ==================== 撤回联动 ====================
+# message_id -> 由这条消息触发的回复任务。撤回时直接 cancel，模型那边也会跟着断开。
+reply_tasks: Dict[int, asyncio.Task] = {}
+# 已撤回的消息 id：任务来不及取消时，发送前还有最后一道闸
+recalled_msgs: Dict[int, float] = {}
+RECALL_KEEP_SECONDS = 600
+
+
+def track_reply_task(message_id, task) -> None:
+    """记住「这条消息触发的回复」，撤回时才有东西可取消。"""
+    try:
+        mid = int(message_id)
+    except (TypeError, ValueError):
+        return
+    reply_tasks[mid] = task
+    if len(reply_tasks) > 400:
+        for k in list(reply_tasks)[:200]:
+            reply_tasks.pop(k, None)
+
+
+def mark_recalled(message_id) -> bool:
+    """标记撤回。返回 False 表示这条本来就没在等回复，不用管。"""
+    try:
+        mid = int(message_id)
+    except (TypeError, ValueError):
+        return False
+    now = time.time()
+    for k, ts in list(recalled_msgs.items()):
+        if now - ts > RECALL_KEEP_SECONDS:
+            recalled_msgs.pop(k, None)
+    recalled_msgs[mid] = now
+    return True
+
+
+def was_recalled(message_id) -> bool:
+    if not message_id:
+        return False
+    try:
+        return int(message_id) in recalled_msgs
+    except (TypeError, ValueError):
+        return False
+
+
 def spawn(coro, *, track_for_stop: bool = False) -> asyncio.Task:
     """统一的后台任务入口：留引用、接异常、可选纳入 /stop 的取消范围"""
     task = asyncio.create_task(coro)
@@ -1749,6 +1792,28 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
         group_all_banned.pop(group_id, None)
         return
 
+    # 2.5 消息撤回：这条消息触发的回复如果还没发出去，直接掐掉
+    # NapCat 的群撤回是 notice_type=group_recall，私聊是 friend_recall
+    if notice_type in ("group_recall", "friend_recall"):
+        mid = event.get("message_id")
+        operator = event.get("operator_id") or event.get("user_id")
+        task = reply_tasks.pop(int(mid), None) if str(mid or "").lstrip("-").isdigit() else None
+        cancelled = False
+        if task and not task.done():
+            task.cancel()
+            cancelled = True
+        mark_recalled(mid)
+        removed = False
+        if group_id:
+            tl = group_timelines.get(group_id)
+            for item in list(tl or ()):
+                if item.get("msg_id") == mid:
+                    tl.remove(item)
+                    removed = True
+        logger.info("[撤回] 群 %s 消息 %s 被 %s 撤回，中断回复=%s，清理时间线=%s",
+                    group_id or "私聊", mid, operator, cancelled, removed)
+        return
+
     # 3. 监测戳一戳事件 (poke)
     if sub_type != "poke":
         return
@@ -2080,7 +2145,8 @@ async def main():
                                     if msg_type == "group":
                                         spawn(handle_group_message(ws, event))
                                     elif msg_type == "private":
-                                        spawn(handle_private_message(ws, event))
+                                        _t = spawn(handle_private_message(ws, event))
+                                        track_reply_task(event.get("message_id"), _t)
                                 elif post_type in ("notice", "notify"):
                                     # 监听群戳一戳通知
                                     logger.info("收到系统/群通知事件: %s", event)

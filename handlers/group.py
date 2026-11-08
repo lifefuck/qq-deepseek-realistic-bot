@@ -44,6 +44,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     if is_peer_bot_sender:
         sender_display = f"{sender_display}[机器人]"
     raw_message = event.get("raw_message", "")
+    # 撤回联动要用它反查「这条消息触发的那次回复」
+    src_msg_id = event.get("message_id")
     
     if group_id not in bot.ALLOWED_GROUPS or sender_id == bot.BOT_QQ:
         return
@@ -450,7 +452,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         "sender_id": sender_id,
         "content": full_content,
         "addr": " ".join(addr_parts),
-        "time": now
+        "time": now,
+        "msg_id": src_msg_id
     }
     bot.group_timelines[group_id].append(record_item)
     bot.group_history_pool[group_id].append(record_item)
@@ -563,7 +566,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             bot.logger.info("[群 %s] 已有生成任务在跑，本次触发忽略，消息仍留在时间线里", group_id)
             return
 
-        asyncio.create_task(process_group_trigger(
+        _task = asyncio.create_task(process_group_trigger(
             ws, group_id,
             is_at=is_at or is_reply_to_bot or is_attacking_admin,
             sender_nick=sender_display,
@@ -571,8 +574,10 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             target_uid=sender_id,
             user_text=clean_body,
             is_follow_up=is_follow_up,
-            extra_instruction=extra_note
+            extra_instruction=extra_note,
+            src_msg_id=src_msg_id
         ))
+        bot.track_reply_task(src_msg_id, _task)
         return
         
     # 2. 旁观模式（未直接找机器人）：质量打分决定要不要开口
@@ -613,7 +618,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         bot.logger.info("[群 %d] 主动插话处于冷却期 (%.0fs)，保持静默。", group_id, min_cd)
         return
         
-    async def debounced_step(target_gid: int, nick: str, mention_flag: bool, uid: int, text_body: str):
+    async def debounced_step(target_gid: int, nick: str, mention_flag: bool, uid: int, text_body: str, msg_id=None):
         try:
             # 只做防抖，不做拟真：0.4 秒内同一个人接着发，就把这次任务顶掉重算，
             # 免得回半句话。群聊不为「像人」付时间成本。
@@ -625,22 +630,24 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         if current:
             current._generating = True
         is_adm = (uid == bot.ADMIN_QQ)
-        await process_group_trigger(ws, target_gid, is_at=False, sender_nick=nick, is_admin=is_adm, is_mention=mention_flag, target_uid=uid, user_text=text_body)
+        await process_group_trigger(ws, target_gid, is_at=False, sender_nick=nick, is_admin=is_adm, is_mention=mention_flag, target_uid=uid, user_text=text_body, src_msg_id=msg_id)
 
     old_task = bot.group_debounce_tasks.get(group_id)
     if old_task and not old_task.done() and not getattr(old_task, "_generating", False):
         old_task.cancel()
-    bot.group_debounce_tasks[group_id] = asyncio.create_task(debounced_step(group_id, sender_display, False, sender_id, clean_body))
+    _task = asyncio.create_task(debounced_step(group_id, sender_display, False, sender_id, clean_body, src_msg_id))
+    bot.group_debounce_tasks[group_id] = _task
+    bot.track_reply_task(src_msg_id, _task)
 
 
-async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = ""):
+async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = "", src_msg_id=None):
     """同群串行入口：已有请求在跑就直接放弃这次触发，避免并发双开模型"""
     lock = bot.group_gen_locks[group_id]
     if lock.locked():
         bot.logger.info("[群 %s] 生成锁被占用，跳过重复触发", group_id)
         return
     async with lock:
-        await _process_group_trigger(ws, group_id, is_at=is_at, sender_nick=sender_nick, is_admin=is_admin, is_mention=is_mention, target_uid=target_uid, user_text=user_text, is_follow_up=is_follow_up, extra_instruction=extra_instruction)
+        await _process_group_trigger(ws, group_id, is_at=is_at, sender_nick=sender_nick, is_admin=is_admin, is_mention=is_mention, target_uid=target_uid, user_text=user_text, is_follow_up=is_follow_up, extra_instruction=extra_instruction, src_msg_id=src_msg_id)
 
 
 # 接着上一句说的信号：指向你、提问、或者就是个短半句
@@ -679,8 +686,12 @@ def _timeline_line(m: dict) -> str:
     return f"{m['sender']} {addr}: {m['content']}" if addr else f"{m['sender']}: {m['content']}"
 
 
-async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = ""):
+async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = "", src_msg_id=None):
     """汇总群时间线向模型发起决策"""
+    # 消息在排队期间被撤回了，连模型都不用调
+    if bot.was_recalled(src_msg_id):
+        bot.logger.info("[群 %s] 触发消息 %s 已撤回，跳过生成", group_id, src_msg_id)
+        return
     timeline = bot.group_timelines[group_id]
     if not timeline and not user_text:
         return
@@ -768,6 +779,9 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
     at_target = target_uid if is_at else None
     # 分段发送：root 模式已删除，所有群聊回复走同一套分段链路
     # 以前这里传 True，模型回一句带换行的话就整条带着回车发出去，群里看着像多打了一行空行
+    if bot.was_recalled(src_msg_id):
+        bot.logger.info("[群 %s] 生成期间消息被撤回，丢弃这次回复", group_id)
+        return
     sent_text = await bot.send_segmented_group_message(ws, group_id, reply, is_command_report=False, at_user_id=at_target)
 
     # 写回上下文的是实际发出去的那句：削平过、标签剥过，跟群里看到的一致
