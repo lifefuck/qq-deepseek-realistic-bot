@@ -33,6 +33,7 @@ class MemeManager:
         self.last_file_mtime = 0.0
 
         self.core_memes: List[Dict[str, Any]] = []        # 常驻核心梗：每次都注入，不轮换
+        self._snippet_calls = 0                           # 轮换词按需注入的计数器
         self.all_memes: List[Dict[str, Any]] = []
         self.structured_memes: List[Dict[str, Any]] = []  # 带解释的高质量梗
         self.word_only_memes: List[str] = []              # 纯热词
@@ -162,34 +163,37 @@ class MemeManager:
         self.last_rotation = now
         logger.debug("动态热词轮换池已刷新，当前选取 %d 条热词/梗", len(self.current_pool))
 
-    def match_user_message(self, text: str, limit: int = 3) -> List[Dict[str, Any]]:
-        """从这条消息里认出梗：先核心梗，再全库别名，最后才对核心梗做容错召回。
+    def match_user_message(self, text: str, limit: int = 2) -> List[Dict[str, Any]]:
+        """认出这条消息在玩什么梗，按相关度排序返回。
 
-        顺序很重要：核心梗是手写的、带接法示范的，命中就该优先占位；
-        容错召回只对核心梗做，全库 1900 条参与模糊匹配会把「牛头人」当成「牢明」。
+        排序而不是「谁名字长谁先」：正名命中 > 别名命中 > 容错召回，
+        同层里名字越长越具体。只给前两条——梗是调味，三条以上就开始稀释注意力。
         """
         clean = re.sub(r"\[[^\]]*\]", " ", text or "").lower()
-        matched: List[Dict[str, Any]] = []
+        scored: List[tuple] = []
         seen = set()
 
-        def add(item: Dict[str, Any]) -> None:
-            if item.get("name") and item["name"] not in seen and len(matched) < limit:
+        def push(item: Dict[str, Any], score: float) -> None:
+            if item.get("name") and item["name"] not in seen:
                 seen.add(item["name"])
-                matched.append(item)
+                scored.append((score, item))
 
-        # 1. 名字/别名子串命中。核心梗排前面，同层里长名字优先（「疯狂星期四」先于「星期四」）
-        pool = [(0, m) for m in self.core_memes] + [(1, m) for m in self.structured_memes]
-        pool.sort(key=lambda x: (x[0], -len(x[1].get("name", ""))))
-        for _, item in pool:
-            names = [item.get("name", "")] + list(item.get("aliases") or [])
-            if any(len(n) >= 2 and n.lower() in clean for n in names):
-                add(item)
+        # 1. 名字/别名子串：核心梗略微加权，因为它是手写、带接法示范的
+        core_bonus = {m["name"]: 1.5 for m in self.core_memes}
+        for item in self.core_memes + self.structured_memes:
+            name = (item.get("name") or "").lower()
+            if len(name) >= 2 and name in clean:
+                push(item, 3.0 + len(name) * 0.3 + core_bonus.get(item["name"], 0))
+                continue
+            for alias in item.get("aliases") or []:
+                a = str(alias).lower()
+                if len(a) >= 2 and a in clean:
+                    push(item, 2.0 + len(a) * 0.2 + core_bonus.get(item["name"], 0))
+                    break
 
-        # 2. 一个都没认出来，才做容错召回：群里常打错字、漏字（卡啦彼丘），精确子串永远命中不了。
-        #    只认三字以上的核心梗，且重合度要够高，否则「又送人头了」会把一堆词召回来。
-        if not matched:
+        # 2. 一个都没认出来才容错：只对核心梗，重合度 0.75 起，避免把「牛头人」认成「牢明」
+        if not scored:
             msg_chars = set(clean)
-            scored = []
             for item in self.core_memes:
                 name = item.get("name", "")
                 if len(name) < 3:
@@ -197,10 +201,10 @@ class MemeManager:
                 chars = set(name)
                 shared = len(chars & msg_chars)
                 if shared >= 2 and shared / len(chars) >= 0.75:
-                    scored.append((shared / len(chars), item))
-            for _, item in sorted(scored, key=lambda x: -x[0]):
-                add(item)
-        return matched
+                    push(item, 1.0 + shared / len(chars))
+
+        scored.sort(key=lambda x: -x[0])
+        return [item for _, item in scored[:limit]]
 
     @staticmethod
     def _short_desc(item: Dict[str, Any], limit: int = 26) -> str:
@@ -236,7 +240,8 @@ class MemeManager:
             lines.append("【这句沾边的梗】：" + "；".join(
                 f"{m['name']}（{self._short_desc(m)}）" for m in hits))
 
-        if self.current_pool:
+        self._snippet_calls += 1
+        if self.current_pool and (hits or self._snippet_calls % 5 == 1):
             words = [
                 i["name"] for i in self.current_pool
                 if i["name"] not in core_names and re.fullmatch(r"[\u4e00-\u9fa5A-Za-z0-9]{2,8}", i["name"] or "")

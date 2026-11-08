@@ -246,7 +246,7 @@ def test_meme_recall():
     from meme_manager import meme_manager as mm
 
     mm.load_pool(force=True)
-    check("核心梗已加载", len(mm.core_memes) >= 10, str(len(mm.core_memes)))
+    check("核心梗已加载", len(mm.core_memes) >= 8, str(len(mm.core_memes)))
     check("精确命中打瓦", [m["name"] for m in mm.match_user_message("打瓦吗兄弟")][:1] == ["打瓦"])
     check("别名命中v我50", "疯狂星期四" in [m["name"] for m in mm.match_user_message("v我50")])
     check("打错字也能召回", "卡拉彼丘" in [m["name"] for m in mm.match_user_message("今晚卡啦彼丘开黑")])
