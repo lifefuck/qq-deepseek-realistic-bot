@@ -469,6 +469,12 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool, group_id: Optiona
                 reply = reply.strip()
                 # 净化动作括号和独白
                 reply = re.sub(r"[（\(][^（）\(\)]*[）\)]", "", reply).strip()
+                # 模型偶尔把两句话用空格连成一条（「干嘛 手欠是吧」），
+                # 戳一下只回一句才像人，取第一个短句，剩下的丢掉
+                if " " in reply:
+                    first = reply.split()[0].strip("，,、。！!~")
+                    if 1 <= len(first) <= 8:
+                        reply = first
                 stripped = reply.strip("。！!~")
                 if not stripped:
                     # 思考模型截断导致 content 为空或全标点时，退回拟真兜底词
