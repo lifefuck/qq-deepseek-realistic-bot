@@ -241,6 +241,33 @@ def test_offtopic_gate():
     check("短句不拦", not anti_template.is_offtopic("笑死", "今晚吃什么 火锅还是烤肉"))
 
 
+def test_quote_reply():
+    """引用回复要能认出来「引用的是谁」，不能只靠 event["reply"]。"""
+    import asyncio
+    import bot
+
+    class WS:
+        closed = False
+
+    async def fake_call(ws, action, params, timeout=None):
+        assert action == "get_msg"
+        return {"status": "ok", "data": {
+            "sender": {"user_id": bot.BOT_QQ, "nickname": "小鲸鱼"},
+            "raw_message": "我什么没见过，这话一出来就知道你要开始吹了",
+        }}
+
+    orig = bot.call_action
+    bot.call_action = fake_call
+    try:
+        meta = asyncio.run(bot.extract_reply_meta(WS(), {}, "[CQ:reply,id=123] 你刚才说啥"))
+    finally:
+        bot.call_action = orig
+
+    check("引用能回查出原话", "我什么没见过" in ((meta or {}).get("text") or ""))
+    check("引用自己认得出来", str((meta or {}).get("sender_id")) == str(bot.BOT_QQ))
+    check("引用自己写成「引用你」", "引用你" in ((meta or {}).get("text") or ""))
+
+
 def test_recall_interrupt():
     """撤回要真的掐掉还在排队的回复，而不是只记个日志。"""
     import asyncio
@@ -318,6 +345,7 @@ if __name__ == "__main__":
     test_short_bubbles()
     test_offtopic_gate()
     test_meme_recall()
+    test_quote_reply()
     test_recall_interrupt()
     test_interject()
     print(f"\n{PASSED} passed, {len(FAILED)} failed")

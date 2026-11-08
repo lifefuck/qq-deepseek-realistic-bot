@@ -86,10 +86,10 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         bot.logger.info("[群 %d] 被其他机器人 %s 艾特，忽略不接", group_id, sender_display)
         return
 
-    # 引用回复机器人也算直接呼叫：后面 repo 问答、游戏指令、护栏都要用它，先算出来
+    # 引用回复机器人也算直接呼叫：后面 repo 问答、游戏指令、护栏都要用它，先算出来。
+    # 不能只看 event["reply"]——NapCat 不给这个字段，得回查 get_msg 才知道引用的是谁。
     is_reply_to_bot = False
-    if "reply" in event and isinstance(event["reply"], dict):
-        is_reply_to_bot = (event["reply"].get("sender", {}).get("user_id") == bot.BOT_QQ)
+    reply_sender_id = None
     
     # 累加该群自上次机器人发言以来的消息条数
     bot.group_msg_count_since_bot[group_id] += 1
@@ -102,7 +102,11 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             bot.group_recent_images[group_id].append((u_clean, time.time(), sender_id, sender_nick))
 
     # 解析引用消息与合并转发
-    reply_prefix = await bot.extract_reply_context(ws, event, raw_message)
+    reply_meta = await bot.extract_reply_meta(ws, event, raw_message)
+    reply_prefix = reply_meta.get("text") if reply_meta else None
+    if reply_meta:
+        reply_sender_id = reply_meta.get("sender_id")
+    is_reply_to_bot = str(reply_sender_id) == str(bot.BOT_QQ)
     raw_message = await bot.expand_forward_messages(ws, raw_message)
     if reply_prefix and "[CQ:image" in reply_prefix:
         raw_message = f"{reply_prefix}\n{raw_message}"
@@ -434,9 +438,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 很容易把 A 对 B 说的话当成对自己说的，抢答得莫名其妙。
     # qq=all 是 @全体成员，不是具体的人，滤掉免得 int() 炸
     at_qqs = [int(q) for q in re.findall(r"\[CQ:at,[^\]]*qq=(\d+)\]", raw_message)]
-    reply_uid = None
-    if "reply" in event and isinstance(event["reply"], dict):
-        reply_uid = event["reply"].get("sender", {}).get("user_id")
+    reply_uid = reply_sender_id
     addr_parts = []
     others = [q for q in at_qqs if q != int(bot.BOT_QQ)]
     if others:
@@ -468,15 +470,14 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 检查是否艾特了主人（ADMIN_QQ）
     is_at_admin = any(int(q) == bot.ADMIN_QQ for q in at_other_match)
     
-    # 检查是否引用回复了其他人（非机器人）
+    # 检查是否引用回复了其他人（非机器人）。
+    # 和上面一样，只能靠 get_msg 回查出来的 reply_sender_id；event["reply"] NapCat 不给。
     is_reply_to_other = False
     is_reply_to_admin = False
-    if "reply" in event and isinstance(event["reply"], dict):
-        reply_sender = event["reply"].get("sender", {}).get("user_id")
-        if reply_sender and reply_sender != bot.BOT_QQ:
-            is_reply_to_other = True
-            if reply_sender == bot.ADMIN_QQ:
-                is_reply_to_admin = True
+    if reply_sender_id and str(reply_sender_id) != str(bot.BOT_QQ):
+        is_reply_to_other = True
+        if str(reply_sender_id) == str(bot.ADMIN_QQ):
+            is_reply_to_admin = True
 
     # 针对主人的恶意辱骂/恶性攻击的主动护短检测（仅限指名道姓恶性人身攻击，日常调侃/水群词绝不误伤）
     is_attacking_admin = False

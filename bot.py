@@ -1638,35 +1638,62 @@ def is_game_or_yunzai_command(text: str) -> bool:
             return True
     return False
 
-async def extract_reply_context(ws: aiohttp.ClientWebSocketResponse, event: dict, raw_msg: str) -> Optional[str]:
-    """提取被回复引用的原消息内容"""
-    # 1. 直接从 event 中的 reply 字段获取（NapCat 标准支持）
-    if "reply" in event and isinstance(event["reply"], dict):
-        reply_obj = event["reply"]
-        nick = reply_obj.get("sender", {}).get("nickname") or reply_obj.get("sender", {}).get("card") or "群友"
-        orig_raw = reply_obj.get("raw_message") or reply_obj.get("message") or ""
-        # 如果引用的是图片，保留发送者信息与 CQ:image 以便后续视觉模型识别发送人
-        if "[CQ:image" in str(orig_raw):
-            return f'[引用 {nick} 发送的图片: {str(orig_raw)}]'
-        orig_text = clean_cq_codes(orig_raw)
-        if orig_text:
-            return f'[引用 {nick}: "{orig_text[:50]}"]'
+async def extract_reply_meta(ws: aiohttp.ClientWebSocketResponse, event: dict, raw_msg: str) -> Optional[dict]:
+    """解析「这条消息引用/回复了谁」。
 
-    # 2. 从 [CQ:reply,id=xxx] 解析并异步调用 get_msg
-    m = re.search(r"\[CQ:reply,id=(-?\d+)\]", raw_msg)
-    if m:
-        msg_id = int(m.group(1))
-        res = await call_action(ws, "get_msg", {"message_id": msg_id}, timeout=1.0)
-        if res and res.get("status") == "ok":
-            data = res.get("data", {})
-            nick = data.get("sender", {}).get("nickname") or data.get("sender", {}).get("card") or "群友"
-            orig_raw = data.get("raw_message") or ""
-            if "[CQ:image" in str(orig_raw):
-                return f'[引用 {nick} 发送的图片: {str(orig_raw)}]'
-            orig_text = clean_cq_codes(orig_raw)
-            if orig_text:
-                return f'[引用 {nick}: "{orig_text[:50]}"]'
-    return None
+    返回 {"text": 引用内容, "sender_id": 被引用者 QQ, "is_image": bool, "nick": 昵称}。
+
+    注意：NapCat 这个版本不在 event 里塞 reply 字段（日志里 7 天 0 次），
+    只有 raw_message 里的 [CQ:reply,id=xxx]，所以必须回查 get_msg 才拿得到「引用的是谁」。
+    以前直接读 event["reply"] 判「是不是在回我」，等于永远判 False。
+    """
+    reply_obj = event.get("reply") if isinstance(event.get("reply"), dict) else None
+
+    # 1. NapCat 真给了 reply 字段就白嫖，省一次 API
+    if reply_obj:
+        sender = reply_obj.get("sender") or {}
+        nick = sender.get("nickname") or sender.get("card") or "群友"
+        orig_raw = reply_obj.get("raw_message") or reply_obj.get("message") or ""
+        sender_id = sender.get("user_id")
+    else:
+        # 2. 否则按 [CQ:reply,id=xxx] 回查原消息
+        m = re.search(r"\[CQ:reply,id=(-?\d+)\]", raw_msg or "")
+        if not m:
+            return None
+        res = await call_action(ws, "get_msg", {"message_id": int(m.group(1))}, timeout=1.0)
+        if not res or res.get("status") != "ok":
+            return None
+        data = res.get("data", {})
+        sender = data.get("sender") or {}
+        nick = sender.get("nickname") or sender.get("card") or "群友"
+        orig_raw = data.get("raw_message") or ""
+        sender_id = sender.get("user_id")
+
+    if "[CQ:image" in str(orig_raw):
+        return {
+            "text": f"[引用 {nick} 发送的图片: {orig_raw}]",
+            "sender_id": sender_id,
+            "is_image": True,
+            "nick": nick,
+        }
+    orig_text = clean_cq_codes(orig_raw)
+    if not orig_text:
+        return {"text": None, "sender_id": sender_id, "is_image": False, "nick": nick}
+    # 引用的是自己说的话，直接说「引用你」，模型才分得清这是冲它来的
+    who = "你" if str(sender_id) == str(BOT_QQ) else nick
+    return {
+        "text": f'[引用{who}: "{orig_text[:50]}"]',
+        "sender_id": sender_id,
+        "is_image": False,
+        "nick": nick,
+    }
+
+
+async def extract_reply_context(ws: aiohttp.ClientWebSocketResponse, event: dict, raw_msg: str) -> Optional[str]:
+    """只要引用文本的旧接口，保留给私聊等调用方。"""
+    meta = await extract_reply_meta(ws, event, raw_msg)
+    return meta.get("text") if meta else None
+
 
 # ==================== LLM 调用 ====================
 
