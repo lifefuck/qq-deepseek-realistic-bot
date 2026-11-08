@@ -1053,7 +1053,8 @@ def load_sessions() -> Dict[str, float]:
             with open(SESSION_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 now = time.time()
-                return {k: v for k, v in data.items() if v > now}
+                # 老文件里存的是明文 token，读进来先转成哈希，浏览器里已登录的 cookie 不会失效
+                return {(_session_key(k) if len(k) != 64 else k): v for k, v in data.items() if v > now}
         except Exception:
             pass
     return {}

@@ -121,6 +121,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     vision_desc = None
     session = bot.get_http_session()
     target_img_url = None
+    extra_img_urls: list[str] = []
     user_conv_key = (group_id, sender_id)
     follow_up_info = bot.user_follow_up_state.get(user_conv_key)
     has_active_follow_up = bool(follow_up_info and time.time() < follow_up_info.get("expire", 0.0) and follow_up_info.get("remain", 0) > 0)
@@ -129,6 +130,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         # 当消息本身带有图片时：只要是找机器人的（@、引用、追问）或者主人发言，或者文本提到看图/分析/找番等，一律直接解析！
         if is_at or is_reply_to_bot or has_active_follow_up or is_admin or bool(re.search(r"(?:什么番|哪部番|谁画的|出处|搜番|搜截图|找番|看图|这图|图里|识图|分析|看下|看看|表情包)", raw_message)):
             target_img_url = m_imgs[0].replace("&amp;", "&")
+            # 一次发多张时别只认第一张，最多再看两张
+            extra_img_urls = [u.replace("&amp;", "&") for u in m_imgs[1:3]]
     elif (is_at or is_reply_to_bot or has_active_follow_up or is_admin) and bool(re.search(r"(?:什么番|哪部番|谁画的|出处|搜番|搜截图|找番|看图|这图|图里|识图|分析|看下|看看|表情包)", raw_message)):
         # 消息本身不带图片，回溯上一张图片
         now_ts = time.time()
@@ -147,6 +150,10 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     if target_img_url:
         bot.logger.info("[群 %d] 捕获图片，调用 Gemini 识图感知画面: %s", group_id, target_img_url[:60])
         vision_desc = await vision.describe_image(session, target_img_url)
+        for extra in extra_img_urls:
+            extra_desc = await vision.describe_image(session, extra)
+            if extra_desc:
+                vision_desc = f"{vision_desc}；另外一张：{extra_desc}" if vision_desc else extra_desc
         if vision_desc:
             bot.logger.info("[群 %d] Gemini 识图成功: %s", group_id, vision_desc[:60])
 
