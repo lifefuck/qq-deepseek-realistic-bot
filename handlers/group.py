@@ -572,7 +572,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             extra_instruction=extra_note,
             src_msg_id=src_msg_id
         ))
-        bot.track_reply_task(src_msg_id, _task)
+        bot.track_reply_task(src_msg_id, _task, group_id)
         return
         
     # 2. 旁观模式（未直接找机器人）：质量打分决定要不要开口
@@ -632,7 +632,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         old_task.cancel()
     _task = asyncio.create_task(debounced_step(group_id, sender_display, False, sender_id, clean_body, src_msg_id))
     bot.group_debounce_tasks[group_id] = _task
-    bot.track_reply_task(src_msg_id, _task)
+    bot.track_reply_task(src_msg_id, _task, group_id)
 
 
 async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = "", src_msg_id=None):

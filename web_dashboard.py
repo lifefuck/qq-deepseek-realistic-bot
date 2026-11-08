@@ -1037,6 +1037,11 @@ AUTH_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dashboard
 SESSION_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".dashboard_sessions.json")
 SESSION_LIFETIME = 30 * 86400          # 30 天持久化免密（用户明确要求保持 30 天）
 
+def _session_key(token: str) -> str:
+    """磁盘和内存里只放哈希：文件泄了也换不到能用的 cookie。"""
+    return hashlib.sha256(("dash:" + token).encode("utf-8")).hexdigest()
+
+
 def load_sessions() -> Dict[str, float]:
     """从磁盘加载持久化会话，杜绝服务重启/重载丢会话"""
     if os.path.exists(SESSION_FILE):
@@ -1190,7 +1195,7 @@ def record_login_attempt(ip: str, success: bool):
 def create_session() -> str:
     """生成高熵随机会话令牌并登记内存与磁盘"""
     token = secrets.token_urlsafe(32)
-    ACTIVE_SESSIONS[token] = time.time() + SESSION_LIFETIME
+    ACTIVE_SESSIONS[_session_key(token)] = time.time() + SESSION_LIFETIME
     save_sessions()
     return token
 
@@ -1198,25 +1203,26 @@ def validate_session(token: Optional[str]) -> bool:
     """校验随机会话有效性并自动滑动续期"""
     if not token:
         return False
-    if token not in ACTIVE_SESSIONS:
+    key = _session_key(token)
+    if key not in ACTIVE_SESSIONS:
         # 兼容重启或外部初始化的 sessions 文件
-        disk_sessions = load_sessions()
-        ACTIVE_SESSIONS.update(disk_sessions)
-    if token not in ACTIVE_SESSIONS:
+        ACTIVE_SESSIONS.update(load_sessions())
+    if key not in ACTIVE_SESSIONS:
         return False
     now = time.time()
-    if now > ACTIVE_SESSIONS[token]:
-        del ACTIVE_SESSIONS[token]
+    if now > ACTIVE_SESSIONS[key]:
+        ACTIVE_SESSIONS.pop(key, None)
         save_sessions()
         return False
     # 滑动续期
-    ACTIVE_SESSIONS[token] = now + SESSION_LIFETIME
+    ACTIVE_SESSIONS[key] = now + SESSION_LIFETIME
     return True
 
 def revoke_session(token: Optional[str]):
     """立即销毁并废弃会话"""
-    if token and token in ACTIVE_SESSIONS:
-        del ACTIVE_SESSIONS[token]
+    key = _session_key(token) if token else ""
+    if key and key in ACTIVE_SESSIONS:
+        del ACTIVE_SESSIONS[key]
         save_sessions()
 
 def request_is_https(request: web.Request) -> bool:
@@ -1318,7 +1324,12 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
 
         try:
             body = await request.json()
-            pwd = body.get("password", "").strip()
+        except Exception:
+            return web.json_response({"error": "请求格式错误"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "请求格式错误"}, status=400)
+        try:
+            pwd = str(body.get("password", "") or "").strip()
             _, salt, expected_hash = get_auth_credentials()
 
             if pwd and verify_password(pwd, salt, expected_hash):
@@ -1372,7 +1383,15 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
             return web.json_response({"error": "未提供配置更新回调"}, status=500)
         try:
             body = await request.json()
+        except Exception:
+            return web.json_response({"error": "请求格式错误"}, status=400)
+        if not isinstance(body, dict):
+            return web.json_response({"error": "请求格式错误"}, status=400)
+        try:
             raw_gid = body.get("group_id")
+            # 缺 group_id 以前会静默写进「私聊/全局」配置，前端漏传就改错地方
+            if raw_gid is None:
+                return web.json_response({"error": "缺少 group_id"}, status=400)
             key = body.get("key")
             val = body.get("value")
 

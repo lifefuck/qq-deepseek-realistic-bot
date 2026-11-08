@@ -47,9 +47,6 @@ class MemeManager:
             "general": []    # 通用网络流行语
         }
         
-        # 别名/同义词映射表: alias -> meme item
-        self.alias_map: Dict[str, Dict[str, Any]] = {}
-        
         self.load_pool()
 
     def load_pool(self, force: bool = False):
@@ -66,7 +63,10 @@ class MemeManager:
             with open(MEMES_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            self.all_memes = data.get("memes", [])
+            # 没有 name 的词条直接丢弃：以前会在构建索引时 KeyError，
+            # 而 mtime 已经写进去了，下次 load 直接 return，整库永久半死
+            self.all_memes = [m for m in (data.get("memes") or [])
+                              if isinstance(m, dict) and str(m.get("name") or "").strip()]
             self.last_file_mtime = mtime
 
             # 核心梗单独一个文件：自动同步会重写 memes_pool.json，手写内容放那儿会被冲掉
@@ -81,7 +81,6 @@ class MemeManager:
             # 重置分类与别名字典
             for k in self.category_pools:
                 self.category_pools[k] = []
-            self.alias_map = {}
 
             # 分流：带解释的高质量梗 vs 纯流行词
             self.structured_memes = [m for m in self.all_memes if m.get("desc")]
@@ -89,11 +88,7 @@ class MemeManager:
 
             # 构建别名索引与圈子分类
             for m in self.structured_memes:
-                name = m["name"].lower()
-                self.alias_map[name] = m
-                for al in m.get("aliases", []):
-                    if al:
-                        self.alias_map[str(al).lower()] = m
+                name = str(m.get("name") or "").lower()
 
                 # 自动圈子归类
                 desc = m.get("desc", "")
@@ -226,25 +221,34 @@ class MemeManager:
             return ""
 
         lines: List[str] = []
+        rendered_core = set()
         if self.core_memes:
-            parts = []
-            for m in self.core_memes[:14]:
+            parts, budget = [], 520          # 以前硬切 [:14]，第 15 条起既不展示也匹配不到
+            for m in self.core_memes:
+                name = str(m.get("name") or "")
+                if not name:
+                    continue
                 cue = m.get("cue") or self._short_desc(m)
-                parts.append(f"{m['name']}→{cue}" if cue else m["name"])
-            lines.append("【群里常聊的梗（照这个口吻接，别背解释）】：" + "｜".join(parts))
+                piece = f"{name}→{cue}" if cue else name
+                if parts and len("｜".join(parts)) + len(piece) > budget:
+                    break
+                parts.append(piece)
+                rendered_core.add(name)
+            if parts:
+                lines.append("【群里常聊的梗（别背解释，贴切才接，最多用一个）】：" + "｜".join(parts))
 
         matched = self.match_user_message(user_message) if user_message else []
-        core_names = {m["name"] for m in self.core_memes}
-        hits = [m for m in matched if m["name"] not in core_names][:3]
+        # 过滤用「已经渲染过的」，不是全部核心梗名
+        hits = [m for m in matched if str(m.get("name") or "") not in rendered_core][:3]
         if hits:
             lines.append("【这句沾边的梗】：" + "；".join(
-                f"{m['name']}（{self._short_desc(m)}）" for m in hits))
+                f"{m.get('name','')}（{self._short_desc(m)}）" for m in hits))
 
         self._snippet_calls += 1
         if self.current_pool and (hits or self._snippet_calls % 5 == 1):
             words = [
-                i["name"] for i in self.current_pool
-                if i["name"] not in core_names and re.fullmatch(r"[\u4e00-\u9fa5A-Za-z0-9]{2,8}", i["name"] or "")
+                str(i.get("name") or "") for i in self.current_pool
+                if str(i.get("name") or "") not in rendered_core and re.fullmatch(r"[\u4e00-\u9fa5A-Za-z0-9]{2,8}", i["name"] or "")
             ][:30]
             if words:
                 lines.append("【最近常刷到的词】：" + "、".join(words))

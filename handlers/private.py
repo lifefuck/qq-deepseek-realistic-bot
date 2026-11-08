@@ -54,6 +54,10 @@ def _apply_favor_everywhere(target_qq: int, *, new_value: int = None, delta: int
     return old_val, touched
 
 
+# 私聊同一时间只跑一轮生成：连发两句时不会互相看不到对方、各回各的
+_PRIVATE_GEN_LOCK = asyncio.Lock()
+
+
 async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dict):
     """管理员私聊流水线"""
     sender_id = event.get("user_id")
@@ -217,11 +221,12 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         sleep_instruction = (
             "【当前为夜间作息睡眠时段】：\n"
             "你正处于半夜被主人私聊叫醒的状态，整个人很困、睡意朦胧。\n"
-            "要求：只能通过真实的语气词与口语呈现困意（例如句首带哈欠声、唔……、呼、困死了、大半夜的怎么啦等自然口语），严禁带括号动作描写（严禁写括号揉眼睛/打哈欠等动作），保持真诚松弛。"
+            "要求：状态是困、反应慢、句子短，像被吵醒的人随口应一句；别写括号动作，也别套固定拟声词。"
         )
 
     try:
-        reply = await bot.call_deepseek(timeline_str, is_at=True, is_admin=True, is_private=True, extra_system_instruction=sleep_instruction)
+        async with _PRIVATE_GEN_LOCK:
+            reply = await bot.call_deepseek(timeline_str, is_at=True, is_admin=True, is_private=True, extra_system_instruction=sleep_instruction)
     finally:
         if current_task:
             bot.running_tasks.discard(current_task)
@@ -233,12 +238,12 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
     reply, _ = meme_catalog.extract_tag(reply)
     if not reply:
         return
-    bot.admin_private_timeline.append(f"小鲸鱼: {reply}")
-    bot.admin_private_history.append(f"小鲸鱼: {reply}")
-    await asyncio.sleep(0.8)
     # 撤回的私聊消息不再回复（任务多半已被 cancel，这里是第二道闸）
     if bot.was_recalled(event.get("message_id")):
         bot.logger.info("[私聊] 触发消息已撤回，丢弃回复")
         return
-    await bot.send_private_message(ws, bot.ADMIN_QQ, reply, is_command_report=False)
+    sent = await bot.send_private_message(ws, bot.ADMIN_QQ, reply, is_command_report=False)
+    if sent:
+        bot.admin_private_timeline.append(f"小鲸鱼: {reply}")
+        bot.admin_private_history.append(f"小鲸鱼: {reply}")
 

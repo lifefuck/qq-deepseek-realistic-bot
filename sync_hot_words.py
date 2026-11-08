@@ -143,7 +143,14 @@ def sync_memes() -> dict:
             t_json = json.loads(raw_data)
             for it in t_json.get("items", [])[:15]:
                 title = (it.get("title") or "").strip()
-                if 2 <= len(title) <= 20 and not any(w in title for w in ("外交部", "气象", "地震", "总书记", "政治")):
+                # 热搜标题会被当成「梗」注入群聊，事故/刑案/塌房类一律别进来：
+                # 一是模型会照着调侃，二是群里真聊起来有舆情风险
+                _BLOCK = ("外交部", "气象", "地震", "总书记", "政治", "事故", "遇难", "身亡", "死亡",
+                          "坠亡", "失踪", "刑拘", "案件", "通报", "塌房", "恋情", "离婚", "出轨",
+                          "猝死", "自杀", "轻生", "性侵", "猥亵", "拐卖", "中毒", "火灾", "爆炸",
+                          "车祸", "孕妇", "婴儿", "遗体", "通缉", "枪击", "战争", "导弹", "袭击",
+                          "裁员", "欠薪", "维权", "举报")
+                if 2 <= len(title) <= 20 and not any(w in title for w in _BLOCK):
                     if title not in seen_names and is_safe_meme(title):
                         seen_names.add(title)
                         memes_list.append({
@@ -193,7 +200,7 @@ def sync_memes() -> dict:
                 req_payload = {
                     "model": model_name,
                     "messages": [
-                        {"role": "system", "content": "你是一个懂各种网络热搜、游戏黑话和流行梗的年轻人。请为每个给出的网络热词或热搜标题写一句极其简炼的背景（20字以内，讲清楚这是什么梗、大家在调侃或关注什么）。输出格式：每行一个'序号. 解释'，不要废话。"},
+                        {"role": "system", "content": "你是一个懂各种网络热搜、游戏黑话和流行梗的年轻人。请为每个给出的网络热词或热搜标题写一句极其简炼的背景（20字以内）。输出格式：每行「原词|解释」，原词必须一字不差照抄，不要编号、不要多余的话。"},
                         {"role": "user", "content": names_prompt}
                     ],
                     "temperature": 0.5,
@@ -209,15 +216,26 @@ def sync_memes() -> dict:
                     if resp.status == 200:
                         res_data = json.loads(resp.read().decode())
                         ans_text = res_data["choices"][0]["message"]["content"]
+                        by_name = {str(m.get("name") or ""): m for m in unexplained}
                         for line in ans_text.splitlines():
-                            m_idx = re.match(r"^(\d+)\.\s*(.*)", line.strip())
-                            if m_idx:
-                                idx = int(m_idx.group(1)) - 1
-                                if 0 <= idx < len(unexplained):
-                                    brief_desc = m_idx.group(2).strip()
-                                    if brief_desc:
-                                        unexplained[idx]["desc"] = brief_desc[:40]
-                                        unexplained[idx]["desc_generated"] = True
+                            line = line.strip()
+                            # 按名字回填。以前按行号对齐，模型少输出一行或重排就张冠李戴，
+                            # 还会带着错误的解释永久入库。
+                            if "|" in line:
+                                name, brief = line.split("|", 1)
+                                target = by_name.get(name.strip())
+                            else:
+                                m_idx = re.match(r"^(\d+)[.、]\s*(.*)", line)
+                                target = None
+                                brief = ""
+                                if m_idx:
+                                    idx = int(m_idx.group(1)) - 1
+                                    target = unexplained[idx] if 0 <= idx < len(unexplained) else None
+                                    brief = m_idx.group(2)
+                            brief = brief.strip()
+                            if target is not None and brief:
+                                target["desc"] = brief[:40]
+                                target["desc_generated"] = True
                         logger.info("已成功为最新热搜补充一句话梗背景！")
             except Exception as e:
                 logger.warning(f"自动提炼热搜梗摘要跳过或失败: {e}")

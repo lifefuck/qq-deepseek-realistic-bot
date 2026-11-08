@@ -7,6 +7,14 @@
 import asyncio
 import random
 import time
+
+
+def _safe_int(v, default=50) -> int:
+    """记忆里的 favor 可能被手改成 None/字符串，int() 直接抛就整条 /memory 崩掉。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
 from typing import Optional
 
 import aiohttp
@@ -88,16 +96,25 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
     # 2. /stop - 一键紧急刹车中止所有思考与排队任务并开启静默
     elif _cmd_head == "/stop":
         stopped_count = 0
-        # 1. 取消所有群的防抖任务
+        # 群里发 /stop 只停本群；私聊（无 group_id）才是全局急停
         for gid, task in list(bot.group_debounce_tasks.items()):
+            if group_id and gid != group_id:
+                continue
             if task and not task.done():
                 task.cancel()
                 stopped_count += 1
-        # 2. 取消所有运行中的大模型思考/生成请求
-        for task in list(bot.running_tasks):
-            if not task.done():
+        # 2. 取消运行中的生成请求；按群急停时只动本群登记过的任务
+        for mid, task in list(bot.reply_tasks.items()):
+            if group_id and bot.reply_task_groups.get(mid) != group_id:
+                continue
+            if task and not task.done():
                 task.cancel()
                 stopped_count += 1
+        if not group_id:
+            for task in list(bot.running_tasks):
+                if not task.done():
+                    task.cancel()
+                    stopped_count += 1
                 
         # 3. 清理追问窗口并开启静默保护，杜绝刚叫停又自动插话
         if group_id:
@@ -197,7 +214,7 @@ def _format_member(uid: str, mem: dict, member: dict) -> str:
     title = (member.get("title") or "").strip()
     meta = role + (f" · 头衔「{title}」" if title else "")
 
-    favor = int(mem.get("favor", 50))
+    favor = _safe_int(mem.get("favor", 50))
     notes = _dedupe_notes(mem.get("notes")) or "无印象"
 
     # 查询深层持久化记忆条目（借鉴 DSH）
@@ -246,7 +263,7 @@ async def handle_memory_summary_command(ws: aiohttp.ClientWebSocketResponse, gro
 
         members = await _fetch_group_members(ws, group_id) if group_id else {}
         # 好感高的排前面，主人固定第一
-        rows = sorted(scope.items(), key=lambda kv: (-int(kv[1].get("favor", 50)), kv[0]))
+        rows = sorted(scope.items(), key=lambda kv: (-_safe_int(kv[1].get("favor", 50)), kv[0]))
         rows.sort(key=lambda kv: 0 if kv[0] == str(bot.ADMIN_QQ) else 1)
 
         group_name = bot.group_names_cache.get(group_id, f"群 {group_id}") if group_id else "私聊"

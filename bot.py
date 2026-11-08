@@ -778,21 +778,25 @@ def _on_background_done(task: asyncio.Task) -> None:
 # ==================== 撤回联动 ====================
 # message_id -> 由这条消息触发的回复任务。撤回时直接 cancel，模型那边也会跟着断开。
 reply_tasks: Dict[int, asyncio.Task] = {}
+reply_task_groups = {}   # msg_id -> group_id，/stop 在群里发时只停本群
 # 已撤回的消息 id：任务来不及取消时，发送前还有最后一道闸
 recalled_msgs: Dict[int, float] = {}
 RECALL_KEEP_SECONDS = 600
 
 
-def track_reply_task(message_id, task) -> None:
+def track_reply_task(message_id, task, group_id=None) -> None:
     """记住「这条消息触发的回复」，撤回时才有东西可取消。"""
     try:
         mid = int(message_id)
     except (TypeError, ValueError):
         return
     reply_tasks[mid] = task
+    if group_id is not None:
+        reply_task_groups[mid] = group_id   # /stop 在单个群发时只停这个群
     if len(reply_tasks) > 400:
         for k in list(reply_tasks)[:200]:
             reply_tasks.pop(k, None)
+            reply_task_groups.pop(k, None)
 
 
 def mark_recalled(message_id) -> bool:
