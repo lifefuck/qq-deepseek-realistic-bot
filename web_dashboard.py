@@ -1280,6 +1280,16 @@ def check_authenticated(request: web.Request) -> bool:
 DIST_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist")
 
 @web.middleware
+async def _security_headers(request: web.Request, handler):
+    """面板只在本机跑，但浏览器侧仍要挡住 MIME 嗅探与 iframe 嵌套。"""
+    resp = await handler(request)
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("X-Frame-Options", "SAMEORIGIN")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    return resp
+
+
+@web.middleware
 async def session_auth_middleware(request: web.Request, handler):
     """现代化安全无感会话拦截器"""
     # 静态前端资源与登录/注销接口直接放行
@@ -1300,7 +1310,7 @@ async def session_auth_middleware(request: web.Request, handler):
 
 async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_config_func: Optional[Callable[[Optional[int], str, Any], bool]] = None) -> web.Application:
     """构建 aiohttp web 实例，支持加固鉴权与配置热写入"""
-    app = web.Application(middlewares=[session_auth_middleware])
+    app = web.Application(middlewares=[_security_headers, session_auth_middleware])
 
     # 静态资源在请求时按需解析：前端重新构建后不必重启服务也能立刻生效
     async def handle_asset(request: web.Request):
