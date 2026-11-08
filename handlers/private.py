@@ -9,6 +9,7 @@ import re
 import time
 from services import trace
 from services import vision
+from services import affect
 import media_resolver
 
 # 由 bot.py 在启动时注入自己。直接 import bot 在 `python bot.py` 下会拿到
@@ -58,6 +59,11 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
 
     clean_body = bot.clean_cq_codes(raw_message).strip()
     clean_body = re.sub(r"\[CQ:reply,id=-?\d+\]", "", clean_body).strip()
+    # 私聊也走同一套心境，key 用 private，不占群的账
+    try:
+        affect.on_group_message("private", clean_body)
+    except Exception:
+        pass
 
     if media_info:
         clean_body = f"{clean_body}\n{media_info['summary']}".strip()

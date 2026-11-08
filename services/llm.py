@@ -9,6 +9,8 @@ import connectors
 import cross_interaction
 import cross_memory
 import memory_atoms
+from services import affect
+from services import anti_template
 
 from typing import Optional
 from typing import Tuple
@@ -31,6 +33,28 @@ def bind(host):
     bot = host
 
 logger = logging.getLogger("qqbot.llm")
+
+def affect_context(group_id, is_private: bool, is_root_work: bool) -> str:
+    """心境 / 牵挂 / 换说法，拼成一段附加提示。
+
+    独立成函数是为了能单测：这段一旦为空，整条拟人链路就是死的，
+    但线上表现只是「回复有点平」，不报错，很难发现。
+    """
+    key = group_id if group_id else "private"
+    parts = []
+    memo = affect.prompt_memo(key)
+    if memo:
+        parts.append(memo)
+    care = affect.care_hint(key)
+    if care:
+        parts.append(care)
+    # 换说法只给方向不给范例，避免模型抄成新模板
+    if not is_private and not is_root_work:
+        variant = affect.style_variant()
+        if variant:
+            parts.append(f"【这次换个说法】：{variant}")
+    return ("\n" + "\n".join(parts) + "\n") if parts else ""
+
 
 async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False, is_private: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, sender_nick: str = "", group_id: Optional[int] = None, is_follow_up: bool = False, latest_line: str = "", extra_system_instruction: str = "") -> Optional[str]:
     """请求 SiliconFlow DeepSeek-V3 模型"""
@@ -288,6 +312,9 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         # 面板指令两千多字符，只有真在问用法时才带，平时一个字都不发
         if bot.needs_games_kb(timeline_pure_content):
             dynamic_context += f"\n【云崽指令清单（群友在问用法，按这个答）】：\n{bot.GAMES_KB}\n"
+
+        # 心境：只给体感，不给分数。模型看见数字就会在回复里演情绪、报状态。
+        dynamic_context += affect_context(group_id, is_private, is_root_work)
     # 群文件上下文增强（当群友询问群文件时，仅拉取文件列表标题与元信息，不读文件正文）
     group_files_context = ""
     if group_id and bot.current_ws and any(kw in timeline_pure_content for kw in ("群文件", "文件列表", "群里有没有", "群里发过", "发群文件", "找文件")):
@@ -377,6 +404,11 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                             logger.error("模型连续返回空内容，放弃本次回复")
                             return None
                         logger.info("模型生成完成 (耗时 %.2fs): %s", elapsed, reply[:30])
+                        # 回声开场是最像机器人的一处：把对方的词原样搬回来加个问号
+                        stripped = anti_template.strip_echo_opener(reply, latest_line)
+                        if stripped != reply:
+                            logger.info("[回声闸] 砍掉复述开场: %r -> %r", reply[:26], stripped[:26])
+                            reply = stripped
                         return reply
             except (asyncio.TimeoutError, aiohttp.ClientError) as e:
                 if attempt < 2:
@@ -595,6 +627,12 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
     old_favor = mem.get("favor", 50)
     new_favor = max(0, min(100, old_favor + favor_delta))
     mem["favor"] = new_favor
+
+    # 好感变化顺手喂给心境，不额外花一次模型调用
+    try:
+        affect.on_favor_delta(group_id or "private", favor_delta, dialogue_snippet)
+    except Exception as e:
+        logger.debug("心境更新异常: %s", e)
     
     # 好感度关键里程碑跨越检测与傲娇突破提醒（跨越 80 挚友、60 熟人、40 警惕、20 嫌弃）
     milestones = [20, 40, 60, 80]

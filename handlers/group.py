@@ -19,6 +19,7 @@ import safety_guard
 import time
 from services import trace
 from services import vision
+from services import affect
 
 # 由 bot.py 在启动时注入自己。直接 import bot 在 `python bot.py` 下会拿到
 # 另一个模块实例（__main__ 与 bot 各一份），全局状态就分裂了。
@@ -175,7 +176,15 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 如果用户只 @ 了机器人，没有附带文字也没有图片
     if is_at and not clean_body:
         clean_body = "在吗"
-    elif not clean_body:
+
+    # 每条群友消息都喂给心境：破功、牵挂、被晾着都从这里进来。
+    # 放在 clean_body 成型之后，免得把 CQ 码当成聊天内容。
+    try:
+        affect.on_group_message(group_id, clean_body)
+    except Exception:
+        pass
+
+    if not clean_body:
         return
 
     # 游戏指令或云崽生态专用指令，交给云崽等扩展插件处理，AI 机器人主动跳过，彻底避免抢答与刷屏

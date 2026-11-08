@@ -42,6 +42,9 @@ import safety_guard
 import cross_interaction
 import memory_atoms
 from services import trace
+from services import affect
+from services import anti_template
+from services import interject_planner
 from services.messaging import (send_group_message, send_segmented_group_message,
                               send_private_message, send_meme_message, thin_emoji,
                               send_forward_message, build_forward_nodes)
@@ -1305,18 +1308,39 @@ def scrub_ai_flavor(text: str) -> str:
 
 
 def de_template(reply: str, group_id: int = 0) -> str:
-    """只干一件事：同一句话原样再发一次就挡掉。说话风格交给模型自己判断。"""
+    """挡复读，也削「每条一个模子」的形状。
+
+    以前只判整句骨架相同；但连着几条「不是，……」起手、或者每条都用
+    「是吧」收尾，单看都正常，连起来就是复读机。形状判定放 services/anti_template，
+    这里只负责调用和日志。
+    """
     text = reply.strip()
     if not text:
         return reply
+    recent = [r for r in recent_bot_replies.get(group_id, ()) if r]
+
     skel = _skeleton(text)
-    if skel and any(_skeleton(r) == skel for r in recent_bot_replies[group_id]):
+    if skel and any(_skeleton(r) == skel for r in recent):
         segs = [s for s in re.split(r"[，,。！？]", text) if s.strip()]
         if len(segs) > 1:
             # 第一段太短（"吵死啦""好家伙"）就带上第二段，别削成俩字
             keep = segs[:2] if len(segs[0]) < 6 else segs[:1]
             text = "，".join(keep)
             logger.info("[反模板闸] 整句复读，削短: %r", text)
+        return text
+
+    reason = anti_template.match(text, recent)
+    if reason != "none":
+        reshaped = anti_template.reshape(text, reason)
+        if reshaped and reshaped != text:
+            logger.info("[反模板闸] %s 撞车，削形: %r -> %r", reason, text[:30], reshaped[:30])
+            text = reshaped
+
+    # 连着几条同一个语气词收尾，听起来就像同一个人在同一条录音里
+    trimmed = anti_template.trim_particle(text, recent)
+    if trimmed != text:
+        logger.info("[反模板闸] 语气尾巴重复，摘掉: %r", text[-12:])
+        text = trimmed
     return text
 
 
@@ -1428,8 +1452,24 @@ def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int =
     score, why = score_message_quality(text, group_id=group_id, has_image=has_image, has_media=has_media)
     desire = float(cfg.get("interject_prob", 0.25))
     threshold = max(0.35, min(0.90, 0.80 - 0.8 * desire))
+
+    # 质量分只说明「话题值不值得接」，还不等于「现在该不该开口」：
+    # 刚说完话就插嘴是抢话，上一条没人接还追着说是自说自话。
+    now = time.time()
+    last_reply = group_last_bot_reply_time.get(group_id, 0.0)
+    if interject_planner.too_soon(now, last_reply):
+        logger.info("[群 %d] 接话时机：%d 秒前刚说过，先不抢", group_id, int(now - last_reply))
+        return False
+    score, timing = interject_planner.adjust(
+        score,
+        now=now,
+        last_bot_reply=last_reply,
+        msgs_since_bot=group_msg_count_since_bot.get(group_id, 0),
+        last_reply_answered=affect.is_last_reply_answered(group_id),
+    )
     passed = score >= threshold
-    logger.info("[群 %d] 接话质量 %.2f vs 门槛 %.2f (%s) -> %s", group_id, score, threshold, why, "接" if passed else "略过")
+    logger.info("[群 %d] 接话质量 %.2f vs 门槛 %.2f (%s | 时机 %s) -> %s",
+                group_id, score, threshold, why, timing or "无修正", "接" if passed else "略过")
     return passed
 
 # ==================== OneBot11 API 请求包装 ====================
@@ -1908,12 +1948,33 @@ async def _cold_group_activator():
             logger.debug("[冷场唤醒守护] 巡检异常: %s", ce)
 
 
+async def _affect_keeper():
+    """每 5 分钟给各群心境做一次衰减和「没人接」累积。
+
+    心境不靠每条消息算，靠时间自然回落；这条循环只负责让它动起来。
+    """
+    while True:
+        try:
+            await asyncio.sleep(300)
+            for gid in ALLOWED_GROUPS:
+                affect.tick(gid)
+            affect.save()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("[心境守护] 巡检异常: %s", e)
+
+
 async def main():
     logger.info("启动 QQ DeepSeek 群聊 & 私聊机器人...")
     logger.info("白名单群: %s | 机器人 QQ: %d | 模型: %s | 管理员: %d", list(ALLOWED_GROUPS), BOT_QQ, MODEL_NAME, ADMIN_QQ)
 
     load_runtime_state()
+    # 心境状态单独落盘：和记忆库分开，坏了也不至于把群友档案带崩
+    affect.attach(atomic_write_json,
+                  os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "affect_state.json"))
     asyncio.create_task(_favor_keeper())
+    asyncio.create_task(_affect_keeper())
     asyncio.create_task(_cold_group_activator())
 
     # 启动轻量现代浅色 Web 仪表盘（只绑 127.0.0.1，外网走 Cloudflare 隧道）
@@ -2027,4 +2088,5 @@ if __name__ == "__main__":
     finally:
         # 退出前把攒着的记忆和账本落盘，别丢最后几分钟的数据
         flush_user_memories()
+        affect.save(force=True)
         token_tracker.save()

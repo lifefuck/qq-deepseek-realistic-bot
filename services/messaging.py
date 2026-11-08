@@ -14,6 +14,10 @@ from typing import Optional
 
 import aiohttp
 
+from services import affect
+from services import pacing
+from services import typo
+
 # 由 bot.py 在启动时注入自己。直接 import bot 在 `python bot.py` 下会拿到
 # 另一个模块实例（__main__ 与 bot 各一份），全局状态就分裂了。
 bot = None
@@ -38,20 +42,6 @@ def _tidy(text: str) -> str:
     return re.sub(r"\s+([，。！？、])", r"\1", text)
 
 
-# 常见口语同音错字与懒汉打字映射（极低概率随机微调，注入真人糙汉打字质感）
-_SLANG_TYPOS = [
-    ("怎么", "zm"),
-    ("什么", "啥"),
-    ("确实", "确式"),
-    ("确实", "确实是"),
-    ("笑死", "笑s"),
-    ("好的", "好滴"),
-    ("真的", "真得"),
-    ("这样", "酱紫"),
-    ("知道", "知晓"),
-]
-
-
 # 语气词后面原本该是停顿，不该是空格
 _PARTICLE_RE = re.compile(r"([啊呀呢吧嘛哦诶欸哈咯啦喔唉诶])\s+")
 # 两个汉字之间的裸空格，基本就是把逗号换没了
@@ -73,16 +63,6 @@ def normalize_punctuation(text: str) -> str:
     t = re.sub(r"，{2,}", "，", t)          # 别叠出「，，」
     t = t.replace(" ，", "，").replace("， ", "，")
     return t.strip(" ，")
-
-
-def inject_casual_typo(text: str, prob: float = 0.04) -> str:
-    """偶尔（约 4% 概率）出现轻微输入法谐音/缩写，增加真人随手打字质感。"""
-    if random.random() >= prob or len(text) < 4:
-        return text
-    for src, dst in _SLANG_TYPOS:
-        if src in text:
-            return text.replace(src, dst, 1)
-    return text
 
 
 def thin_emoji(text: str, keep_ratio: float = 0.15) -> str:
@@ -184,7 +164,7 @@ async def send_input_status(ws: aiohttp.ClientWebSocketResponse, group_id: int):
         logger.debug("[群 %d] 设置输入中状态异常: %s", group_id, e)
 
 
-async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None):
+async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None, emoji_ratio: float = 0.15):
     """向 NapCat 发送群消息并捕获发送状态（支持可选 @ 对方，并内置群级 60 秒频控保护防 1200 拦截）"""
     if "[PASS]" in text:
         return
@@ -193,11 +173,12 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
     clean_text = bot.obfuscate_urls_for_qq(clean_text)
     # 过滤末尾句号
     clean_text = bot.remove_trailing_period(clean_text)
-    # 普通聊天里的表情抽稀与去逗号、真人随手打字质感注入，指令汇报/卡片不掺和
+    # 普通聊天里的表情抽稀与真人随手打字质感注入，指令汇报/卡片不掺和
     if not is_command_report:
-        clean_text = thin_emoji(clean_text)
+        clean_text = thin_emoji(clean_text, keep_ratio=emoji_ratio)
         clean_text = normalize_punctuation(clean_text)
-        clean_text = inject_casual_typo(clean_text)
+        # 错字在分段发送那一层做：只有那里知道这条有没有被改、改的是哪个词，
+        # 才能决定要不要补一句「打错了」。这里再注入一次会变成双重错字。
 
     # 普通聊天强控 200 字防水群；管理汇报与 memory 概览解除字数硬截断限制（放宽至 2000 字）
     max_len = 2000 if is_command_report else 200
@@ -298,6 +279,19 @@ def _limit_combo(text: str, key: int) -> str:
     return text
 
 
+def _cap_segments(segments: list[str], limit: int) -> list[str]:
+    """条数超了就并到最后一条，不直接丢内容。
+
+    心境差 / 深夜时只发两条：真人累了不会把一句话拆成五段发。
+    """
+    limit = max(1, int(limit))
+    if len(segments) <= limit:
+        return segments
+    head = segments[: limit - 1]
+    tail = "，".join(s for s in segments[limit - 1:] if s)
+    return head + ([tail] if tail else [])
+
+
 async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None) -> str:
     """分段发送：闲聊时切成 1~2 条连续发出，root 模式整块发送。
 
@@ -337,6 +331,8 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     segments = [seg for seg in (safety_guard.strip_internal_monologue(s) for s in segments) if seg]
     if not segments:
         return ""
+    profile = affect.profile(group_id)
+    segments = _cap_segments(segments, profile["max_segments"])
     # 图片比表情更抢眼：概率压到 4%（抽稀防机械甩图），触发词保留
     should_send_meme = bool(meme_tag) or (random.random() < 0.04) or any(k in text for k in ["大肥鱼", "炸毛", "闹麻了", "草", "无敌了", "才不是", "哼", "气死"])
     # 立绘是另一套：只在真炸毛/真害羞时上，别让「怎么」「为什么」这种口头词也甩一张图
@@ -352,20 +348,36 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         # 模型给了情绪就按情绪选，没给就用正文关键词兜底，再不行退回老逻辑
         final_pic_b64 = meme_catalog.pick_b64(meme_tag, text) or bot.get_random_meme_b64(text)
 
-    # 1. 拟真打字态：在长文本多段连发间隔中，再次轻量刷新输入中状态
+    # 拟真打字态：在长文本多段连发间隔中，再次轻量刷新输入中状态
     if hasattr(bot, "send_input_status") and len(segments) > 1:
         asyncio.create_task(bot.send_input_status(ws, group_id))
 
+    # 第一条之前先「读完+想一下」：秒回反而像自动应答。
+    # 乘 0.6 是折中，@ 场景不能让人等太久。
+    hour = time.localtime().tm_hour
+    if not is_command_report:
+        await asyncio.sleep(pacing.reading_delay(hour) * 0.6)
+
     for i, seg in enumerate(segments):
         target_at = at_user_id if i == 0 else None
-        await send_group_message(ws, group_id, seg, is_command_report=False, at_user_id=target_at)
+        # 错字池：只在长句上下手，链接/@/数字不碰
+        slip = typo.maybe_typo(seg)
+        payload = slip.text if slip else seg
+        await send_group_message(ws, group_id, payload, is_command_report=False,
+                                 at_user_id=target_at, emoji_ratio=profile["emoji_keep"])
+        # 手滑之后偶尔补一句纠正：不复述整句，只提打错的那个词
+        if slip and typo.should_correct():
+            await asyncio.sleep(random.uniform(1.2, 2.6))
+            await send_group_message(ws, group_id, typo.correction_line(slip), emoji_ratio=0.0)
         if i < len(segments) - 1:
-            delay = min(0.3, max(0.1, len(seg) * 0.01))
-            await asyncio.sleep(delay)
-            
-    # 文字发完后，如果触发了立绘或表情包，轻量延迟 0.1s 单独甩出一张真实图片
+            await asyncio.sleep(pacing.segment_delay(payload, hour, profile["delay_mult"]))
+
+    affect.on_bot_spoke(group_id)
+    affect.save()
+
+    # 文字发完后，如果触发了立绘或表情包，隔半秒单独甩出一张真实图片
     if final_pic_b64:
-        await asyncio.sleep(0.1)
+        await asyncio.sleep(random.uniform(0.4, 1.0))
         await send_meme_message(ws, group_id=group_id, b64_data=final_pic_b64)
 
     return text
@@ -409,14 +421,20 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
     segments = [seg for seg in (safety_guard.strip_internal_monologue(s) for s in segments) if seg]
     if not segments:
         return
+    profile = affect.profile("private")
+    segments = _cap_segments(segments, profile["max_segments"])
+    hour = time.localtime().tm_hour
+    await asyncio.sleep(pacing.reading_delay(hour) * 0.6)
 
     for i, seg in enumerate(segments):
         clean_seg = bot.strip_markdown(seg).strip()
         clean_seg = bot.obfuscate_urls_for_qq(clean_seg)
         clean_seg = bot.remove_trailing_period(clean_seg)
-        clean_seg = thin_emoji(clean_seg)
+        clean_seg = thin_emoji(clean_seg, keep_ratio=profile["emoji_keep"])
         clean_seg = normalize_punctuation(clean_seg)
-        clean_seg = inject_casual_typo(clean_seg)
+        slip = typo.maybe_typo(clean_seg)
+        if slip:
+            clean_seg = slip.text
         if not clean_seg:
             continue
         res = await bot.call_action(ws, "send_private_msg", {"user_id": user_id, "message": clean_seg}, timeout=3.0)
@@ -424,7 +442,13 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
             logger.info("[私聊 %d] 私信已发送: %s", user_id, clean_seg[:40])
         else:
             logger.warning("[私聊 %d] 私信发送可能失败: %s | 响应: %s", user_id, clean_seg[:40], res)
+        if slip and typo.should_correct():
+            await asyncio.sleep(random.uniform(1.2, 2.6))
+            await bot.call_action(ws, "send_private_msg",
+                                  {"user_id": user_id, "message": typo.correction_line(slip)}, timeout=3.0)
         if i < len(segments) - 1:
-            delay = min(0.4, max(0.1, len(clean_seg) * 0.01))
-            await asyncio.sleep(delay)
+            await asyncio.sleep(pacing.segment_delay(clean_seg, hour, profile["delay_mult"]))
+
+    affect.on_bot_spoke("private")
+    affect.save()
 
