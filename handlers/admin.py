@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import random
 import time
 from typing import Optional
 
@@ -281,9 +282,15 @@ async def generate_agent_command_reply(action_type: str, detail: str = "", is_pr
         "Content-Type": "application/json"
     }
     
+    # 这是主人下完指令后的一句口头确认，不是工作汇报。
+    # 写成「请以…口吻给出回复」模型就会端起客服腔，改成给它场景和例句，让它直接说。
     prompt = (
-        f"主人（life）在{'私聊' if is_private else '群里'}下达了管理指令：{action_type}，执行结果细节：{detail}。\n"
-        f"请以小鲸鱼俏皮、亲近随性的口吻临场随机给出一句回复（每次措辞自拟，拒绝死板模板，可俏皮可爱、可随性利落，1 句，15~30字以内，绝不用句号）："
+        f"主人 life 刚让你做了件事：{action_type}"
+        f"{('，细节是 ' + detail) if detail else ''}。事情已经办了。\n"
+        f"你回他一句，就像刚才顺手做完顺嘴说一声。\n"
+        f"两到十个字，一句话，别汇报、别复述指令、别用「已为您」「已完成」，不用句号。\n"
+        f"例如：「搞定了」「删了，别再叫」「这批没开」「弄完了，累死」\n"
+        f"现在只说这一句："
     )
 
     payload = bot.get_base_chat_payload(
@@ -309,6 +316,6 @@ async def generate_agent_command_reply(action_type: str, detail: str = "", is_pr
     except Exception as e:
         bot.logger.debug("临场生成指令反馈异常: %s", e)
     
-    # 极简保底（防止网络超时卡壳）
-    return f"已完成 {action_type} ({detail})" if detail else f"已搞定 {action_type}"
+    # 保底也要像人话，不能吐「已完成 设置好感度 (xx)」这种工单回执
+    return random.choice(["搞定了", "弄好了", "行，办了", "这就完事了"])
 

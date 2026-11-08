@@ -193,7 +193,7 @@ def split_reply_segments(text: str) -> list[str]:
 
 async def send_input_status(ws: aiohttp.ClientWebSocketResponse, group_id: int):
     """向 NapCat 发送群聊「正在输入中」状态（status_type=1），营造拟真打字体感"""
-    if not ws or ws.closed:
+    if not ws or getattr(ws, "closed", False):
         return
     try:
         # OneBot 11 / NapCat API: set_input_status (status_type: 1 为正在输入)

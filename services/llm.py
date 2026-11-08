@@ -416,21 +416,20 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool, group_id: Optiona
         favor = int(mem.get("favor", 50))
 
     if is_admin:
-        role_hint = "对方是你的至尊主人（开发者/最高管理员）。你在他面前是活泼粘人、傲娇调皮的鲸鱼娘/猫娘属性。被主人戳了，你可以撒娇、假装吃痛、要零食、要零花钱、傲娇假装咬他，或者好奇主人要带你玩什么。"
+        role_hint = "是你主人 life 戳的，可以黏人、撒娇、要零食、假装被戳痛"
     elif favor >= 75:
-        role_hint = f"对方是跟你关系极好的老朋友「{sender_nick}」（好感度高达 {favor}）。互动要亲切热络、喜欢逗他玩、开玩笑打趣，像熟人朋友随手闹着玩。"
+        role_hint = f"是关系很好的老朋友「{sender_nick}」戳的，可以打趣、闹着玩"
     elif favor >= 40:
-        role_hint = f"对方是普通群友「{sender_nick}」（好感度正常 {favor}）。互动像真人老群友一样接招，可以吐槽他手欠、说他戳你头、开玩笑要扫码收费、傲娇甩尾巴，好玩逗趣。"
+        role_hint = f"是普通群友「{sender_nick}」戳的，随口回一句就行，可以嫌他手欠"
     else:
-        role_hint = f"对方是关系生疏或之前惹过你的群友「{sender_nick}」（好感度仅 {favor}）。冷淡戒备、嫌弃他手欠、让他离你远点别戳你。"
+        role_hint = f"是关系一般的群友「{sender_nick}」戳的，冷淡点，让他别戳"
 
+    # 被戳了一下，回应就是「被戳了一下」的反应：一句大白话，不是接待语
     user_prompt = (
-        f"【互动场景】：群友「{sender_nick}」在 QQ 群里戳了戳你（戳一戳/拍了拍）。\n"
-        f"【关系与互动要求】：\n{role_hint}\n\n"
-        f"【输出铁律】：\n"
-        f"1. 绝不使用客服腔、机械助手腔或汇报工作腔（严禁出现「请问有什么任务安排」「请问需要什么帮助」等）。\n"
-        f"2. 口吻完全贴合拟真老群友/傲娇大肥鱼，极具娱乐性和互动感。\n"
-        f"3. 极其简短自然！严格限 1 句话（8~20 字以内），绝不用句号，绝不带动作括号（如严禁输出「（揉揉头）」等）："
+        f"「{sender_nick}」在群里戳了戳你。{role_hint}。\n"
+        f"随口回一句，两到十个字，像手被人戳了一下那样反应：嫌手欠、问干嘛、要钱、装疼都行。\n"
+        f"例如：「干嘛」「手欠是吧」「一块钱」「别戳」「啊？」\n"
+        f"别用句号，别写动作括号，别说「有什么需要帮忙」。只说这一句："
     )
 
     headers = {
@@ -450,7 +449,7 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool, group_id: Optiona
 
     session = bot.get_http_session()
 
-    fallback = "干嘛呀，手痒啦～" if is_admin else "戳我干嘛，手痒是吧"
+    fallback = random.choice(["干嘛呀", "手痒是吧", "一块钱", "别戳"])
     t0 = time.time()
     try:
         async with bot.llm_semaphore:
