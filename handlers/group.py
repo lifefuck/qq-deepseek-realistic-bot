@@ -615,8 +615,9 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         
     async def debounced_step(target_gid: int, nick: str, mention_flag: bool, uid: int, text_body: str):
         try:
-            # 缩短至 1.0 秒轻微防抖，接话更迅速不被冲走
-            await asyncio.sleep(1.0)
+            # 只做防抖，不做拟真：0.4 秒内同一个人接着发，就把这次任务顶掉重算，
+            # 免得回半句话。群聊不为「像人」付时间成本。
+            await asyncio.sleep(0.4)
         except asyncio.CancelledError:
             return  # 还在防抖窗口内，被新消息顶掉是正常的
         # 标记已进入生成阶段：后续新消息不得再 cancel 这个任务
@@ -763,9 +764,6 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
     if not is_at and not is_admin:
         bot.group_last_active_reply[group_id] = time.time()
 
-    # 拟真发话停顿：被@或追问时直连秒回，旁观插话保留 0.3s 微停顿
-    if not is_at and not is_admin and not is_follow_up:
-        await asyncio.sleep(0.3)
     # 当群友主动艾特机器人呼叫时，回复必须带上 [CQ:at] 艾特该群友；若为主动旁观插话则自然接话不强行艾特
     at_target = target_uid if is_at else None
     # 分段发送：root 模式已删除，所有群聊回复走同一套分段链路

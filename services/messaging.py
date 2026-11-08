@@ -392,21 +392,8 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         # 模型给了情绪就按情绪选，没给就用正文关键词兜底，再不行退回老逻辑
         final_pic_b64 = meme_catalog.pick_b64(meme_tag, text) or bot.get_random_meme_b64(text)
 
-    # 拟真打字态：在长文本多段连发间隔中，再次轻量刷新输入中状态
-    if hasattr(bot, "send_input_status") and len(segments) > 1:
-        asyncio.create_task(bot.send_input_status(ws, group_id))
-
-    # 第一条之前先「读完+想一下」：秒回反而像自动应答。
-    # 乘 0.6 是折中，@ 场景不能让人等太久。
-    hour = time.localtime().tm_hour
-    if not is_command_report:
-        # 被点名/被回复的，真人基本是立刻接话，不该有「读完想一下」的停顿；
-        # 普通插话才需要先看两眼再开口
-        if at_user_id:
-            await asyncio.sleep(random.uniform(0.2, 0.5))
-        else:
-            await asyncio.sleep(pacing.reading_delay(hour) * 0.5)
-
+    # 群聊不做拟真延迟：群里要的是接得上话，模型吐完就发。
+    # 拟真节奏只留给私聊（见 send_private_message），一对一才需要「看完想了想」。
     for i, seg in enumerate(segments):
         target_at = at_user_id if i == 0 else None
         # 错字池：只在长句上下手，链接/@/数字不碰
@@ -414,20 +401,12 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         payload = slip.text if slip else seg
         await send_group_message(ws, group_id, payload, is_command_report=False,
                                  at_user_id=target_at, emoji_ratio=profile["emoji_keep"])
-        # 手滑之后偶尔补一句纠正：不复述整句，只提打错的那个词
-        if slip and typo.should_correct():
-            await asyncio.sleep(random.uniform(1.2, 2.6))
-            await send_group_message(ws, group_id, typo.correction_line(slip), emoji_ratio=0.0)
-        if i < len(segments) - 1:
-            pace_mult = profile["delay_mult"] * (0.7 if at_user_id else 1.0)
-            await asyncio.sleep(pacing.segment_delay(payload, hour, pace_mult))
 
     affect.on_bot_spoke(group_id)
     affect.save()
 
     # 文字发完后，如果触发了立绘或表情包，隔半秒单独甩出一张真实图片
     if final_pic_b64:
-        await asyncio.sleep(random.uniform(0.4, 1.0))
         await send_meme_message(ws, group_id=group_id, b64_data=final_pic_b64)
 
     return text
