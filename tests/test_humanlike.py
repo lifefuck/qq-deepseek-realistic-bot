@@ -31,7 +31,7 @@ def check(name, cond, detail=""):
 
 def test_pacing():
     samples = [pacing.segment_delay("今天这波确实有点离谱", 14) for _ in range(40)]
-    check("节奏下界不低于 0.8s", min(samples) >= 0.8, f"min={min(samples):.2f}")
+    check("节奏下界不低于 0.55s", min(samples) >= 0.55, f"min={min(samples):.2f}")
     check("节奏上界不超过 8s", max(samples) <= 8.0, f"max={max(samples):.2f}")
     check("节奏有抖动不是固定值", len({round(s, 2) for s in samples}) > 20)
     # 长句打字更久：比较均值，单次比较会被随机抖动打败

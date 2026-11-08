@@ -10,12 +10,12 @@ import random
 
 # 看到消息到第一句发出去：相当于「读完 + 想一下」，不是立刻弹字
 READ_MIN, READ_MAX = 0.6, 1.6
-# 两条之间的停顿：思考 + 抬手，真人一般在 1~3 秒
-SEG_BASE_MIN, SEG_BASE_MAX = 1.0, 3.0
+# 两条之间的停顿：思考 + 抬手。原来 1~3 秒，切短句后气泡变多，总时长被放大，压到 0.8~2.2
+SEG_BASE_MIN, SEG_BASE_MAX = 0.8, 2.2
 # 每多一个字多花的打字时间
 PER_CHAR = 0.02
 # 单次停顿上限，别让三条消息拖到十几秒，群里会以为 bot 卡了
-SEG_CAP = 5.0
+SEG_CAP = 3.5
 
 
 def is_sleepy(hour: int) -> bool:
@@ -26,7 +26,7 @@ def is_sleepy(hour: int) -> bool:
 def reading_delay(hour: int = 12) -> float:
     """第一条消息之前的「阅读时间」。困的时候更久。"""
     base = random.uniform(READ_MIN, READ_MAX)
-    return round(base * (1.5 if is_sleepy(hour) else 1.0), 3)
+    return round(base * (1.25 if is_sleepy(hour) else 1.0), 3)
 
 
 def segment_delay(text: str, hour: int = 12, mood_mult: float = 1.0) -> float:
@@ -40,4 +40,4 @@ def segment_delay(text: str, hour: int = 12, mood_mult: float = 1.0) -> float:
     delay = (base + typing) * max(0.5, min(2.0, mood_mult))
     # 再抖 15%，避免连续几条间隔呈现规律
     delay *= random.uniform(0.85, 1.15)
-    return round(min(SEG_CAP * 1.6, max(0.8, delay)), 3)
+    return round(min(SEG_CAP * 1.2, max(0.6, delay)), 3)

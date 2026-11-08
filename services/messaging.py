@@ -400,7 +400,12 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     # 乘 0.6 是折中，@ 场景不能让人等太久。
     hour = time.localtime().tm_hour
     if not is_command_report:
-        await asyncio.sleep(pacing.reading_delay(hour) * 0.6)
+        # 被点名/被回复的，真人基本是立刻接话，不该有「读完想一下」的停顿；
+        # 普通插话才需要先看两眼再开口
+        if at_user_id:
+            await asyncio.sleep(random.uniform(0.2, 0.5))
+        else:
+            await asyncio.sleep(pacing.reading_delay(hour) * 0.5)
 
     for i, seg in enumerate(segments):
         target_at = at_user_id if i == 0 else None
@@ -414,7 +419,8 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
             await asyncio.sleep(random.uniform(1.2, 2.6))
             await send_group_message(ws, group_id, typo.correction_line(slip), emoji_ratio=0.0)
         if i < len(segments) - 1:
-            await asyncio.sleep(pacing.segment_delay(payload, hour, profile["delay_mult"]))
+            pace_mult = profile["delay_mult"] * (0.7 if at_user_id else 1.0)
+            await asyncio.sleep(pacing.segment_delay(payload, hour, pace_mult))
 
     affect.on_bot_spoke(group_id)
     affect.save()
@@ -468,7 +474,7 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
     profile = affect.profile("private")
     segments = _cap_segments(segments, profile["max_segments"])
     hour = time.localtime().tm_hour
-    await asyncio.sleep(pacing.reading_delay(hour) * 0.6)
+    await asyncio.sleep(pacing.reading_delay(hour) * 0.5)
 
     for i, seg in enumerate(segments):
         clean_seg = bot.strip_markdown(seg).strip()
