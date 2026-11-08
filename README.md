@@ -1,31 +1,17 @@
-# QQ DeepSeek Realistic Bot
+# QQ 群聊机器人
 
-基于 OneBot 11（如 NapCat）和 DeepSeek-V3 的 QQ 群聊机器人。
-说话像普通群友：短句、接梗、不客套，按情绪配表情包，被 @ 一次后能连着聊几句。自带 Web 面板，按群管理。
+一个住在 QQ 群里的机器人。底下接 OneBot 11（NapCat、LLOneBot 都行），模型走 OpenAI 兼容接口，默认 DeepSeek。
 
-## 特性
+它不装客服。被 @ 会答，没人叫也会看气氛插一句；能看懂图和表情包，记得住群里谁是谁。
 
-- **连续追问**：群友 @ 一次或戳一戳后，自动开启 5 分钟追问窗口，期间不用反复 @ 机器人。
-- **打字分段**：回复按标点或换行切成两段发出，不一次砸出一大坨；代码块整条发，不做任何人为停顿。
-- **多模态视觉**：接入 Gemini 视觉前置识图，群友发表情包、梗图或截图能看懂画面细节并临场互动吐槽。
-- **深层记忆与好感**：引入 DSH 思想与 fish_memory 引擎，按群与群友隔离记录画像与过往话题，支持 BM25 + 时间衰减深层召回。
-- **统一人设**：群聊和私聊都是同一套人设，不再分 root/user 两种模式。
-- **冷热场权重**：群安静超过 10 分钟降权（0.25x），不硬凑；聊得热闹时提权（1.5x），跟着接梗。
-- **动态频控防风控**：滑动 60 秒内严格控制群发言频次（最高 9 条），达到第 10 条触发 AI 自主生成的风控告警并自动闭麦冷却 60 秒；戳一戳特例放行不限频。
-- **云崽共存**：自动过滤游戏查询前缀（如 `#`、`面板` 等），游戏指令交由云崽处理，AI 不抢答。
-- **链接解析**：群友发抖音、B 站、小红书短链时自动抓取视频标题和简介，带着上下文回复。
-- **表情包跟情绪走**：138 张图提前打好情绪和关键词，模型在句末标 `[MEME:情绪]`，按此选图，不全靠随机。
-- **Web 控制台 (`:8088`)**：Miuix Vue 3 开发，构建产物内置。支持按群调插话概率、冷热场权重、夜间休眠、群友记忆与实时日志。
+## 跑之前
 
-## 文档
+- Python 3.10 以上
+- 一个已经登录的 NapCat（或其他 OneBot 11 实现），开着 WebSocket
+- 一个模型接口。默认配置指向 SiliconFlow 的 DeepSeek-V3，换别家只要兼容 OpenAI 格式就行
+- 可选：Gemini key。不填也能跑，只是它看不懂图片内容
 
-更多深入配置已拆分到 `docs/` 目录：
-- [系统机制说明 (docs/architecture.md)](docs/architecture.md)
-- [提示词与人设配置 (docs/persona-and-prompts.md)](docs/persona-and-prompts.md)
-
-## 部署运行
-
-### 1. 安装依赖
+## 装
 
 ```bash
 git clone https://github.com/lifefuck/qq-deepseek-realistic-bot.git
@@ -35,95 +21,102 @@ python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 
-# 下载配套表情包
+# 表情包单独一个仓库，放在项目根目录下
 git clone --depth 1 https://github.com/shirachino/astrbot-deepseek-meme-pack.git meme-pack
 ```
 
-### 2. 配置文件
-
-复制 `.env.example` 为 `.env`：
+## 配
 
 ```bash
 cp .env.example .env
 ```
 
-编辑 `.env` 填入配置：
+然后改 `.env`：
 
 ```dotenv
-# OneBot 11 WebSocket 地址（以 NapCat 为例）
+# NapCat 的 WebSocket 地址
 NAPCAT_WS_URL=ws://127.0.0.1:3001
 
-# 机器人 QQ 与最高管理员 QQ
+# 机器人自己的号，和管它的那个号
 BOT_QQ=1000000000
 ADMIN_QQ=1000000001
 
-# 启用的白名单群号，多个用逗号隔开
-WHITELIST_GROUPS=123456789,987654321
+# 只在这些群里工作，逗号分隔
+WHITELIST_GROUPS=123456789
 
-# DeepSeek 接口配置
-DEEPSEEK_API_KEY=sk-xxxxxx
+DEEPSEEK_API_KEY=sk-你的key
 DEEPSEEK_API_URL=https://api.siliconflow.cn/v1/chat/completions
 DEEPSEEK_MODEL=deepseek-ai/DeepSeek-V3
+
+# 不填就跳过识图
+GEMINI_API_KEY=
 ```
 
-### 3. 运行
+`LLM_MAX_CONCURRENCY` 控制同时跑几个请求，机器吃不消就调小。
+
+## 起
 
 ```bash
-# 直接运行
 python3 bot.py
-
-# 启动后可浏览器访问 http://IP:8088 打开管理后台
 ```
 
-生产环境推荐使用 systemd 托管，参考配置：
+面板跟着起来，地址是 `http://127.0.0.1:8088`。它只监听本机，外网要自己套反代，别直接把端口放出去。
 
-```ini
-[Unit]
-Description=QQ DeepSeek Bot
-After=network.target
+想用 systemd 托管，`deploy/systemd/` 里有现成的 unit，把路径改成你的就行。
 
-[Service]
-Type=simple
-WorkingDirectory=%h/projects/qq-deepseek-realistic-bot
-ExecStart=%h/projects/qq-deepseek-realistic-bot/.venv/bin/python bot.py
-Restart=always
-RestartSec=5
+## 指令
 
-[Install]
-WantedBy=default.target
-```
-
-## 常用指令
-
-| 指令 | 权限 | 说明 |
+| 指令 | 谁能用 | 干什么 |
 | :--- | :--- | :--- |
-| `[戳一戳]` | 全员 | 触发戳一戳互动，开启 5 分钟追问窗口 |
-| `/memory` | 全员 | 群友档案，合并转发成聊天记录：群名片/QQ昵称、QQ 号、群身份、头衔、好感与印象 |
-| `/user` | 管理员 | 切回日常闲聊人设 |
-| `/on` | 管理员 | 一键放开本群全部功能 |
-| `/off` | 管理员 | 一键停掉本群全部功能，除主人外谁说话都不理 |
-| `/new` | 管理员 | 清空当前群或私聊的会话上下文 |
-| `/new all` | 管理员 | 清空所有群上下文 |
-| `/stop` | 管理员 | 停止当前生成并清空等待队列 |
+| `/memory` | 所有人 | 看本群的人员档案，合并转发成聊天记录 |
+| `/new` | 管理员 | 清掉当前群或私聊的上下文 |
+| `/new all` | 管理员 | 清掉所有群的上下文 |
+| `/stop` | 管理员 | 停止正在生成的回复。群里发只停这个群，私聊发才是全局停 |
+| `/on` | 管理员 | 恢复本群全部功能 |
+| `/off` | 管理员 | 关掉本群全部功能，只认主人 |
 
-## 群玩法
+戳一戳也算一次互动，之后 5 分钟内不用反复 @ 它，最多连着答 5 次。
 
-| 指令 | 说明 |
-| :--- | :--- |
-| 被 @ 时带图 | 当斗图处理，直接从表情包库存反甩一张，同群 30 秒一次 |
+同一个人 2 分钟内连着 @ 它 5 次，会被冷却 60 秒。这是防刷屏，不是 bug。
 
-不想接斗图就 `/off`，或者只在面板上调插话意愿。
+## 面板
 
-作息：23:00~07:00 进入休眠，不主动插话，被 @ 只回短梦话。主人私聊或戳一下能叫醒 30 分钟。
+按群单独调：接话意愿、作息、戳一戳、静音。还能看群友档案和实时日志。
 
+配置写在 `group_configs.json`，密码哈希在 `.dashboard_auth`。这两个都不进版本库。
 
-## 提交前自检
+## 一些取舍
+
+**不做拟真延迟。** 模型吐完就发，不模拟"正在输入"、不加气泡间隔。群里要的是快。
+
+**不输出动作旁白。** `（甩尾巴）`、`*叹气*` 这类会被剥掉，只留说的话。
+
+**短句优先。** 闲聊十来个字，真讲正事才铺开。
+
+**群里不带长篇历史。** 默认只喂当前这句，避免接错人，也省 token。管理员私聊才给完整时间线。
+
+## 目录
+
+```
+bot.py                入口，连接、调度、记忆
+handlers/             群聊、私聊、管理指令
+services/             模型调用、发送、视觉、情绪
+meme_manager.py       梗库三层：核心梗、检索、轮换
+media_resolver.py     抖音 / 小红书 / B站短链解析
+web_dashboard.py      面板后端
+web_ui/               面板前端（Vue 3）
+docs/                 机制说明
+scripts/              自检与工具脚本
+```
+
+## 改之前
 
 ```bash
-./scripts/install_hooks.sh   # 装一次 pre-commit：
-                             # 语法 + 模块循环导入 + 冒烟测试
+./scripts/install_hooks.sh
 ```
+
+装个 pre-commit，跑语法检查、循环导入检查、冒烟测试。不装也能提交，就是容易把东西改坏。
 
 ## 作者
 
-- life
+life
