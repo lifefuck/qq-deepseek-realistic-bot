@@ -34,7 +34,7 @@ def bind(host):
 
 logger = logging.getLogger("qqbot.llm")
 
-def affect_context(group_id, is_private: bool, is_root_work: bool) -> str:
+def affect_context(group_id, is_private: bool) -> str:
     """心境 / 牵挂 / 换说法，拼成一段附加提示。
 
     独立成函数是为了能单测：这段一旦为空，整条拟人链路就是死的，
@@ -49,7 +49,7 @@ def affect_context(group_id, is_private: bool, is_root_work: bool) -> str:
     if care:
         parts.append(care)
     # 换说法只给方向不给范例，避免模型抄成新模板
-    if not is_private and not is_root_work:
+    if not is_private:
         variant = affect.style_variant()
         if variant:
             parts.append(f"【这次换个说法】：{variant}")
@@ -159,56 +159,35 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         if relations_hint:
             user_mem_prompt += relations_hint
 
-    channel_mode = bot.get_channel_mode(group_id if not is_private else None)
-    is_root_work = is_admin and channel_mode == "root"
     if is_admin and is_private:
-        if channel_mode == "root":
-            user_prompt = (
-                f"{identity_note}"
-                f"【当前交谈者身份】：专属主人 life（QQ {bot.ADMIN_QQ}）\n"
-                f"以下是你们的历史对话记录：\n{timeline_text}\n\n"
-                f"【当前这句】：「{latest_line}」\n"
-                f"你现在表面傲娇嘴硬、爱嘀咕两句小情绪，但心里其实很在乎依赖主人、宠着主人乖乖听话。"
-                f"不确定或不懂就直接说不知，严禁瞎猜胡编，严禁任何括号描写，像手机聊天随手回（1~2句，绝不用句号）："
-            )
-        else:
-            user_prompt = (
-                f"{identity_note}"
-                f"以下是你与专属主人「{sender_nick}」(QQ {bot.ADMIN_QQ}) 的私聊历史：\n{timeline_text}\n\n"
-                # 记忆块放时间线后面：历史是累加的公共前缀，放前面才能被缓存命中
-                f"{user_mem_prompt}"
-                f"【主人发来私信】：\n"
-                f"当前跟你说话的是你的专属主人兼创造者。请清楚认同主人身份，态度自然真实、听主人的话，结合好感度自然交流，严禁括号描写（20~40 字）："
-            )
+        user_prompt = (
+            f"{identity_note}"
+            f"以下是你与专属主人「{sender_nick}」(QQ {bot.ADMIN_QQ}) 的私聊历史：\n{timeline_text}\n\n"
+            # 记忆块放时间线后面：历史是累加的公共前缀，放前面才能被缓存命中
+            f"{user_mem_prompt}"
+            f"【主人发来私信】：\n"
+            f"当前跟你说话的是你的专属主人兼创造者。请清楚认同主人身份，态度自然真实、听主人的话，结合好感度自然交流，严禁括号描写（20~40 字）："
+        )
     elif is_admin and (is_at or is_follow_up):
-        if channel_mode == "root":
-            user_prompt = (
-                f"{identity_note}"
-                f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
-                f"【主人「{sender_nick}」(QQ {bot.ADMIN_QQ}) 这句话】：「{latest_line}」\n"
-                f"当前是专属主人的 /root 模式。面对主人，你要体现出纯正女孩子的傲娇反差：表面嘴硬爱嘀咕，但心里特别听主人话、软萌乖巧顺从！绝非恶毒攻击，更不是窝囊受气。\n"
-                f"不确定或没看懂就直接问，别瞎猜脑补；严禁任何括号描写，像真人群聊随手回（1~2句，绝不用句号）："
-            )
-        else:
-            follow_up_note = (
-                f"他这是接着你们正在聊的事往下说，不是新开一轮。\n"
-                if is_follow_up else
-                f"他是在跟你说这句话本身，不是在报个到。\n"
-            )
-            user_prompt = (
-                f"{identity_note}"
-                f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
-                f"{user_mem_prompt}"
-                f"【注意识别对话者身份】：当前是你的专属主人兼创造者 life (QQ {bot.ADMIN_QQ}) 在群里跟你说话。\n"
-                f"（清楚知道对方是你的主人 life，态度自然真实、俏皮亲近，听主人的话，绝不搞错称呼）\n"
-                f"{follow_up_note}"
-                f"【主人说的这句】：「{latest_line}」\n"
-                f"对这句话本身作反应，别把注意力放在「他来找我了」上；看不懂他想说啥就直接问他这句什么意思，"
-                f"别另起话题、也别再讲一遍你上一轮说过的话。\n"
-                f"语气可以是黏人的：撒个娇、卖个乖都行，但严禁出现任何括号动作旁白描写（如（甩尾巴）等彻底禁用）；"\
-                f"严禁把「拔电源」「敲代码」「我是AI」当梗挂嘴边；"\
-                f"（20~35 字，绝不用句号）："
-            )
+        follow_up_note = (
+            f"他这是接着你们正在聊的事往下说，不是新开一轮。\n"
+            if is_follow_up else
+            f"他是在跟你说这句话本身，不是在报个到。\n"
+        )
+        user_prompt = (
+            f"{identity_note}"
+            f"以下是当前群聊对话记录：\n{timeline_text}\n\n"
+            f"{user_mem_prompt}"
+            f"【注意识别对话者身份】：当前是你的专属主人兼创造者 life (QQ {bot.ADMIN_QQ}) 在群里跟你说话。\n"
+            f"（清楚知道对方是你的主人 life，态度自然真实、俏皮亲近，听主人的话，绝不搞错称呼）\n"
+            f"{follow_up_note}"
+            f"【主人说的这句】：「{latest_line}」\n"
+            f"对这句话本身作反应，别把注意力放在「他来找我了」上；看不懂他想说啥就直接问他这句什么意思，"
+            f"别另起话题、也别再讲一遍你上一轮说过的话。\n"
+            f"语气可以是黏人的：撒个娇、卖个乖都行，但严禁出现任何括号动作旁白描写（如（甩尾巴）等彻底禁用）；"\
+            f"严禁把「拔电源」「敲代码」「我是AI」当梗挂嘴边；"\
+            f"（20~35 字，绝不用句号）："
+        )
     elif is_at or is_mention or is_follow_up:
         follow_up_note = (
             "他刚 @ 过你，这句大概率是接着上面那茬往下说，不是新话题；但要是行里写着→@别人或"
@@ -295,26 +274,25 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
 
     # System Prompt 保持不变：热梗、面板指令这些随消息变的内容全部走 user 末尾，
     # 这样每次请求的前缀一致，服务端不用反复重算开头那一段
-    system_content = bot.sanitize_text(bot.ROOT_SYSTEM_PROMPT if is_root_work else bot.SYSTEM_PROMPT)
+    system_content = bot.sanitize_text(bot.SYSTEM_PROMPT)
 
     # 随消息变化的上下文，统一挂在 user 消息末尾
     dynamic_context = ""
-    if not is_root_work:
-        # 注入动态网络热词轮换池（100条/30分钟轮换）与群友命中梗（使用纯正文匹配，避免被昵称带偏）
-        memes_context = bot.meme_manager.get_prompt_snippet(timeline_pure_content)
-        if memes_context:
-            dynamic_context += f"\n{memes_context}\n"
-        # 本群最近说过的话回喂给模型，光靠代码削句子治不了「换个说法还是同一个梗」
-        if group_id:
-            repeat_hint = bot.get_anti_repeat_hint(group_id)
-            if repeat_hint:
-                dynamic_context += f"\n{repeat_hint}\n"
-        # 面板指令两千多字符，只有真在问用法时才带，平时一个字都不发
-        if bot.needs_games_kb(timeline_pure_content):
-            dynamic_context += f"\n【云崽指令清单（群友在问用法，按这个答）】：\n{bot.GAMES_KB}\n"
+    # 注入动态网络热词轮换池（100条/30分钟轮换）与群友命中梗（使用纯正文匹配，避免被昵称带偏）
+    memes_context = bot.meme_manager.get_prompt_snippet(timeline_pure_content)
+    if memes_context:
+        dynamic_context += f"\n{memes_context}\n"
+    # 本群最近说过的话回喂给模型，光靠代码削句子治不了「换个说法还是同一个梗」
+    if group_id:
+        repeat_hint = bot.get_anti_repeat_hint(group_id)
+        if repeat_hint:
+            dynamic_context += f"\n{repeat_hint}\n"
+    # 面板指令两千多字符，只有真在问用法时才带，平时一个字都不发
+    if bot.needs_games_kb(timeline_pure_content):
+        dynamic_context += f"\n【云崽指令清单（群友在问用法，按这个答）】：\n{bot.GAMES_KB}\n"
 
-        # 心境：只给体感，不给分数。模型看见数字就会在回复里演情绪、报状态。
-        dynamic_context += affect_context(group_id, is_private, is_root_work)
+    # 心境：只给体感，不给分数。模型看见数字就会在回复里演情绪、报状态。
+    dynamic_context += affect_context(group_id, is_private)
     # 群文件上下文增强（当群友询问群文件时，仅拉取文件列表标题与元信息，不读文件正文）
     group_files_context = ""
     if group_id and bot.current_ws and any(kw in timeline_pure_content for kw in ("群文件", "文件列表", "群里有没有", "群里发过", "发群文件", "找文件")):
@@ -349,8 +327,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         user_prompt = bot.sanitize_text(user_prompt + dynamic_context)
     if extra_system_instruction:
         user_prompt = bot.sanitize_text(user_prompt + f"\n【实时突发情境指令（请严格融入人设自由发挥）】：\n{extra_system_instruction}\n")
-    max_tokens_val = 1500 if is_root_work else bot.MAX_OUTPUT_TOKENS
-    temperature_val = 0.75 if is_root_work else 0.8
+    max_tokens_val = bot.MAX_OUTPUT_TOKENS
+    temperature_val = 0.8
     payload = bot.get_base_chat_payload(
         model=bot.MODEL_NAME,
         messages=[

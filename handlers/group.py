@@ -298,7 +298,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
 
     # 管理员快捷指令检测（忽略大小写，兼容全角斜杠与常用刹车词）
     if is_admin and (
-        norm_lower.startswith(("/new", "/stop", "/root", "/user", "/on", "/off"))
+        norm_lower.startswith(("/new", "/stop", "/on", "/off", "/root", "/user"))
         or norm_lower in ("stop", "new", "闭嘴", "停", "暂停")
     ):
         target_cmd = norm_cmd
@@ -310,7 +310,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         if handled:
             return
 
-    # 管理员在群里直接下达管理命令拦截 (无需切 root 模式，支持随时修改/清除/重置指定群友的 memory 与好感度)
+    # 管理员在群里直接下达管理命令拦截（支持随时修改/清除/重置指定群友的 memory 与好感度）
     if is_admin:
         # 1. 清除/重置某人 memory
         # 兼容: 重置123456789memary / 清除 123456789 memory / 删掉群友 123456789 记忆 / 清空123456789
@@ -669,11 +669,7 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
         return
         
     # 闲聊只传当前发言和少量未读上下文，避免历史越堆越长，也防止认错人
-    # 如果是 root 模式则提供完整时间线供技术分析，否则仅传递当前群友最新发言
-    channel_mode = bot.get_channel_mode(group_id)
-    if is_admin and channel_mode == "root":
-        dialogue_text = "\n".join(_timeline_line(m) for m in timeline)
-    elif is_admin:
+    if is_admin:
         # 主人追问/呼叫时只喂最近几句：单独一个「乐乐」递过去，模型只能当寒暄敷衍
         recent_lines = list(timeline)[-8:] if timeline else []
         dialogue_text = "\n".join(_timeline_line(m) for m in recent_lines) or (user_text or "")
@@ -751,7 +747,7 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
         await asyncio.sleep(0.3)
     # 当群友主动艾特机器人呼叫时，回复必须带上 [CQ:at] 艾特该群友；若为主动旁观插话则自然接话不强行艾特
     at_target = target_uid if is_at else None
-    # root 模式只是「长度和自由度放开」，不等于这条是指令汇报：
+    # 分段发送：root 模式已删除，所有群聊回复走同一套分段链路
     # 以前这里传 True，模型回一句带换行的话就整条带着回车发出去，群里看着像多打了一行空行
     sent_text = await bot.send_segmented_group_message(ws, group_id, reply, is_command_report=False, at_user_id=at_target)
 

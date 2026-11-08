@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""管理指令：/root、/new、记忆清理、自然语言指挥。
+"""管理指令：/new、记忆清理、自然语言指挥。
 
 状态都在 bot 里，这里只做解析和分发。
 """
@@ -115,43 +115,7 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
             await bot.send_group_message(ws, group_id, reply_text)
         return True
 
-    # 3. /root - 切换到工作模式 (支持按群独立切换)
-    elif cmd_lower.startswith("/root"):
-        target_gid = None
-        parts = cmd.split()
-        if len(parts) > 1 and parts[1].isdigit():
-            target_gid = int(parts[1])
-        elif not is_private:
-            target_gid = group_id
-
-        bot.update_group_config(target_gid, "mode", "root")
-        desc = f"群 {target_gid} 已切换至 root 技术伙伴模式" if target_gid else "私聊已切换至 root 技术伙伴模式"
-        reply_text = await generate_agent_command_reply("切换工作模式", desc, is_private=is_private, group_id=target_gid)
-        if is_private:
-            await bot.send_private_message(ws, bot.ADMIN_QQ, reply_text)
-        else:
-            await bot.send_group_message(ws, group_id, reply_text)
-        return True
-
-    # 4. /user - 切换回肥鱼娱乐模式 (支持按群独立切换)
-    elif cmd_lower.startswith("/user"):
-        target_gid = None
-        parts = cmd.split()
-        if len(parts) > 1 and parts[1].isdigit():
-            target_gid = int(parts[1])
-        elif not is_private:
-            target_gid = group_id
-
-        bot.update_group_config(target_gid, "mode", "user")
-        desc = f"群 {target_gid} 已切回日常大肥鱼人设" if target_gid else "私聊已切回日常大肥鱼人设"
-        reply_text = await generate_agent_command_reply("切换娱乐模式", desc, is_private=is_private, group_id=target_gid)
-        if is_private:
-            await bot.send_private_message(ws, bot.ADMIN_QQ, reply_text)
-        else:
-            await bot.send_group_message(ws, group_id, reply_text)
-        return True
-
-    # 5. /memes 或 /reload_memes - 手动重载与刷新网络热梗轮换池
+    # 3. /memes 或 /reload_memes - 手动重载与刷新网络热梗轮换池
     elif cmd_lower.startswith("/reload_memes") or cmd_lower.startswith("/memes"):
         meme_manager.load_pool(force=True)
         count = len(meme_manager.current_pool)
@@ -317,22 +281,15 @@ async def generate_agent_command_reply(action_type: str, detail: str = "", is_pr
         "Content-Type": "application/json"
     }
     
-    channel_mode = bot.get_channel_mode(group_id if not is_private else None)
-    if channel_mode == "root":
-        prompt = (
-            f"主人（开发者 life）下达了管理指令：{action_type}，细节：{detail}。\n"
-            f"当前是专属主人的 root 模式，请用傲娇但听话顺从的少女口吻临场给出 1 句简明执行确认（表面嘀咕两句但利落办好，10~25字以内，拒绝废话，绝不用句号）："
-        )
-    else:
-        prompt = (
-            f"主人（life）在{'私聊' if is_private else '群里'}下达了管理指令：{action_type}，执行结果细节：{detail}。\n"
-            f"请以小鲸鱼俏皮、亲近随性的口吻临场随机给出一句回复（每次措辞自拟，拒绝死板模板，可俏皮可爱、可随性利落，1 句，15~30字以内，绝不用句号）："
-        )
+    prompt = (
+        f"主人（life）在{'私聊' if is_private else '群里'}下达了管理指令：{action_type}，执行结果细节：{detail}。\n"
+        f"请以小鲸鱼俏皮、亲近随性的口吻临场随机给出一句回复（每次措辞自拟，拒绝死板模板，可俏皮可爱、可随性利落，1 句，15~30字以内，绝不用句号）："
+    )
 
     payload = bot.get_base_chat_payload(
         model=bot.MODEL_NAME,
         messages=[
-            {"role": "system", "content": bot.ROOT_SYSTEM_PROMPT if bot.get_channel_mode(group_id if not is_private else None) == "root" else bot.SYSTEM_PROMPT},
+            {"role": "system", "content": bot.SYSTEM_PROMPT},
             {"role": "user", "content": prompt}
         ],
         max_tokens=50,

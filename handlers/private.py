@@ -94,7 +94,7 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
 
     # 管理员指令拦截
     if (
-        norm_lower.startswith(("/new", "/stop", "/root", "/user", "/on", "/off"))
+        norm_lower.startswith(("/new", "/stop", "/on", "/off", "/root", "/user"))
         or norm_lower in ("stop", "new", "闭嘴", "停", "暂停")
     ):
         target_cmd = norm_cmd
@@ -106,7 +106,7 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         if handled:
             return
 
-    # 管理员私聊直接下达生产命令拦截 (无需切 root 模式，随时可管理任意群友好感度与记忆)
+    # 管理员私聊直接下达生产命令拦截（随时可管理任意群友好感度与记忆）
     if True:
         # 1. 清除某人记忆
         m_clear = re.search(r"(?:清除|删掉|清空|重置)\s*(?:用户|群友)?\s*(\d{5,11})\s*(?:的)?\s*(?:memory|memary|记忆|档案)?", clean_body, re.IGNORECASE)
@@ -214,5 +214,5 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
     bot.admin_private_timeline.append(f"小鲸鱼: {reply}")
     bot.admin_private_history.append(f"小鲸鱼: {reply}")
     await asyncio.sleep(0.8)
-    await bot.send_private_message(ws, bot.ADMIN_QQ, reply, is_command_report=(bot.get_channel_mode(None) == "root"))
+    await bot.send_private_message(ws, bot.ADMIN_QQ, reply, is_command_report=False)
 

@@ -183,17 +183,12 @@ def test_prompt_injection():
     st = affect._get(88)
     st["pout"] = 0.9
     st["valence"] = -0.5
-    ctx = llm.affect_context(88, False, False)
+    ctx = llm.affect_context(88, False)
     check("心情差时注入体感", "堵" in ctx or "低" in ctx, ctx[:60])
     check("注入内容不含数字", not any(ch.isdigit() for ch in ctx), ctx[:60])
 
     affect.reset()
-    st = affect._get(89)
-    st["pout"] = 0.9
-    ctx_root = llm.affect_context(89, False, True)
-    check("root 干活时不加换说法", "换个说法" not in ctx_root, ctx_root[:60])
-
-    ctx_private = llm.affect_context(None, True, False)
+    ctx_private = llm.affect_context(None, True)
     check("私聊也能取到状态", isinstance(ctx_private, str))
     affect.reset()
 

@@ -34,7 +34,7 @@ import cross_memory
 import fun_features
 import media_resolver
 from meme_manager import meme_manager
-from prompts import (SYSTEM_PROMPT, ROOT_SYSTEM_PROMPT, GAMES_KB, needs_games_kb,
+from prompts import (SYSTEM_PROMPT, GAMES_KB, needs_games_kb,
                      repo_ask_reply, _POKE_QUIPS, _POKE_ADMIN_QUIPS,
                      _POKE_FAVOR_HIGH, _POKE_FAVOR_MID, _POKE_FAVOR_LOW)
 import meme_catalog
@@ -804,7 +804,6 @@ def is_anger_unlimited(group_id) -> bool:
     cfg = _anger_cache["data"].get(str(group_id)) or {}
     return bool(cfg.get("unlimited"))
 DEFAULT_GROUP_CONFIG = {
-    "mode": "user",            # "user" (拟真闲聊) 或 "root" (技术老搭档)
     "muted": False,             # /off 一键静音的总闸：群友说什么都不回，管理员指令照旧
     "enable_interject": True,   # 是否允许主动插话
     "interject_prob": 0.25,     # 主动接话意愿 (0.0~1.0)：越高门槛越低，25 = 中等质量话题就接
@@ -817,9 +816,7 @@ DEFAULT_GROUP_CONFIG = {
     "enable_yunzai": True,      # 是否开启云崽游戏生态 (原神/星铁/米游社)
     "enable_fun": True          # 被 @ 且带图时接一回合斗图
 }
-DEFAULT_PRIVATE_CONFIG = {
-    "mode": "user"
-}
+DEFAULT_PRIVATE_CONFIG = {}
 group_configs: Dict[str, dict] = {}
 
 def load_group_configs():
@@ -912,8 +909,6 @@ def get_group_config(group_id: Optional[int]) -> dict:
         group_configs[sgid] = dict(DEFAULT_GROUP_CONFIG)
     return group_configs[sgid]
 
-def get_channel_mode(group_id: Optional[int]) -> str:
-    return get_group_config(group_id).get("mode", "user")
 
 def update_group_config(group_id: Optional[int], key: str, value: Any) -> bool:
     cfg = get_group_config(group_id)
@@ -1506,7 +1501,7 @@ def is_game_or_yunzai_command(text: str) -> bool:
         "$", "￥"
     )
     if t.startswith(cmd_prefixes):
-        # 排除管理员的系统级斜杠管理指令 (/root, /user, /new, /stop 等依然保留给 AI)
+        # 排除管理员的系统级斜杠管理指令 (/new, /stop 等依然保留给 AI)
         return True
         
     # 2. 云崽及游戏插件常用免前缀功能指令集合
@@ -1822,7 +1817,6 @@ def get_bot_dashboard_status() -> Dict[str, Any]:
             "qq": BOT_QQ,
             "admin_qq": ADMIN_QQ,
             "model": MODEL_NAME,
-            "admin_mode": get_channel_mode(None),
             "is_sleeping": is_bot_sleeping(),
             "sleep_override": (now < sleep_override_until),
             "uptime": (now - BOT_START_TIME),

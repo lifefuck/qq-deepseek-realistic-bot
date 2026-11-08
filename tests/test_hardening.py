@@ -72,9 +72,6 @@ async def test_dashboard():
         r = await client.post("/api/group/config", json={"group_id": 1, "key": "hack_key", "value": 1})
         check("未知配置项被拒绝", r.status == 400, f"got {r.status}")
 
-        r = await client.post("/api/group/config", json={"group_id": 1, "key": "mode", "value": "evil"})
-        check("非法 mode 被拒绝", r.status == 400, f"got {r.status}")
-
         r = await client.post("/api/group/config", json={"group_id": 1, "key": "interject_prob", "value": 3})
         check("越界插话概率被拒绝", r.status == 400, f"got {r.status}")
 

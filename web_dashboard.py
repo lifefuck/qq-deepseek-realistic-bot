@@ -588,13 +588,8 @@ INDEX_HTML = """<!DOCTYPE html>
       badgeConn.innerText = "● NapCat 在线 (QQ " + data.bot.qq + ")";
 
       const badgeMode = document.getElementById('badgeMode');
-      if (data.bot.admin_mode === 'root') {
-        badgeMode.className = "badge badge-warning";
-        badgeMode.innerText = "技术伙伴模式 (/root)";
-      } else {
-        badgeMode.className = "badge badge-primary";
-        badgeMode.innerText = "闲聊模式 (/user)";
-      }
+      badgeMode.className = "badge badge-primary";
+      badgeMode.innerText = "闲聊模式";
 
       const badgeSleep = document.getElementById('badgeSleep');
       if (data.bot.is_sleeping) {
@@ -672,7 +667,6 @@ INDEX_HTML = """<!DOCTYPE html>
       let html = "";
       for (const g of data.groups) {
         const cfg = g.config || {};
-        const isRoot = cfg.mode === "root";
         const isInterjectOn = cfg.enable_interject !== false;
         const isSleepOn = cfg.enable_sleep !== false;
         const isPokeOn = cfg.enable_poke !== false;
@@ -689,10 +683,6 @@ INDEX_HTML = """<!DOCTYPE html>
             <div class="group-card-header">
               <span class="group-id">
                 ${esc(gName)} <span style="font-size:12px; color:var(--text-muted); font-weight:normal;">(${esc(g.group_id)})</span>
-                <button class="btn-mode-toggle ${isRoot ? 'btn-mode-root' : 'btn-mode-user'}"
-                  onclick="setGroupConfig('${g.group_id}', 'mode', '${isRoot ? 'user' : 'root'}')">
-                  ${isRoot ? 'root 模式 (点切闲聊)' : '闲聊模式 (点切 root)'}
-                </button>
               </span>
               <span class="badge ${badgeClass}">${esc(g.interject_why)}</span>
             </div>
@@ -767,30 +757,13 @@ INDEX_HTML = """<!DOCTYPE html>
       }
 
       // 附加私聊专属卡片
-      const privCfg = (data.configs && data.configs.private) || { mode: "user" };
-      const isPrivRoot = privCfg.mode === "root";
       html += `
         <div class="group-card" style="border-color: #cbd5e1;">
           <div class="group-card-header">
             <span class="group-id" style="color: #475569;">
               主人私聊直通
-              <button class="btn-mode-toggle ${isPrivRoot ? 'btn-mode-root' : 'btn-mode-user'}"
-                onclick="setGroupConfig('private', 'mode', '${isPrivRoot ? 'user' : 'root'}')">
-                ${isPrivRoot ? 'root 模式 (点切闲聊)' : '闲聊模式 (点切 root)'}
-              </button>
             </span>
             <span class="badge badge-gold">主人专属通道</span>
-          </div>
-          <div class="controls-box">
-            <div class="control-row">
-              <span class="control-label">私聊默认工作模式</span>
-              <span style="font-size:12px; font-weight:600; color:var(--text-main);">
-                ${isPrivRoot ? '技术搭档 (代码/排障/无字数限制)' : '日常伴聊 (口头禅/傲娇/短句)'}
-              </span>
-            </div>
-          </div>
-          <div style="font-size:12px; color:var(--text-muted); margin-top:8px;">
-            私聊支持使用 <code>/root</code> 或 <code>/user</code> 自由切换，拥有免睡眠直接唤醒特权。
           </div>
         </div>
       `;
@@ -1395,10 +1368,7 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
             if not isinstance(key, str) or not key:
                 return web.json_response({"error": "缺少 key 参数"}, status=400)
 
-            if key == "mode":
-                if val not in ("user", "root"):
-                    return web.json_response({"error": "mode 只能是 user 或 root"}, status=400)
-            elif key in BOOL_CONFIG_KEYS:
+            if key in BOOL_CONFIG_KEYS:
                 if not isinstance(val, bool):
                     return web.json_response({"error": f"{key} 必须是布尔值"}, status=400)
             elif key == "interject_prob":

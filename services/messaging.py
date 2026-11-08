@@ -298,7 +298,7 @@ def _cap_segments(segments: list[str], limit: int) -> list[str]:
 
 
 async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None) -> str:
-    """分段发送：闲聊时切成 1~2 条连续发出，root 模式整块发送。
+    """分段发送：闲聊时切成 1~2 条连续发出，长汇报与代码块整块发送。
 
     返回实际发出去的正文（已削平、已剥标签），调用方拿它写回上下文，
     别再把没削过的原始回复存进去。
@@ -308,8 +308,7 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         text = bot.scrub_ai_flavor(text)
         # 先归一标点再切段：空格断句的回复会被整条发出去，看着最像机器
         text = normalize_punctuation(text)
-    channel_mode = bot.get_channel_mode(group_id)
-    if not is_command_report and channel_mode != "root":
+    if not is_command_report:
         text = bot.de_template(text, group_id)
     # [MEME:xx] 是给选图用的，正文不能带出去，也不能被切段切开
     text, meme_tag = meme_catalog.extract_tag(text)
@@ -325,7 +324,7 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     if not text:
         return ""
 
-    # 只有超长汇报类指令才不分段；普通群聊与 root 模式均走分段，像真人连发打字。
+    # 只有超长汇报类指令才不分段；普通群聊一律走分段，像真人连发打字。
     # 代码块/多行清单也必须整条发：切开就散了。
     block_like = "```" in text or text.count("\n") >= 3
     if is_command_report or len(text) > 300 or block_like:
@@ -399,7 +398,7 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
     if not is_command_report:
         text = bot.scrub_ai_flavor(text)
         text = normalize_punctuation(text)
-    if not is_command_report and bot.get_channel_mode(None) != "root":
+    if not is_command_report:
         text = bot.de_template(text, private_key)
     text = _limit_combo(text, private_key)
     bot.recent_bot_replies[private_key].append(text)
