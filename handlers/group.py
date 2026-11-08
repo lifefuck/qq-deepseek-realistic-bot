@@ -17,6 +17,7 @@ import random
 import re
 import safety_guard
 import time
+from services import anti_template
 from services import trace
 from services import vision
 from services import affect
@@ -38,6 +39,10 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     sender_nick = event.get("sender", {}).get("card") or event.get("sender", {}).get("nickname") or str(sender_id)
     sender_title = (event.get("sender", {}).get("title") or "").strip()
     sender_display = f"{sender_nick}【头衔: {sender_title}】" if sender_title else sender_nick
+    # 别的机器人也在这个群里说话，标出来模型才不会把它当群友接茬
+    is_peer_bot_sender = bot.is_peer_bot(sender_id, sender_nick)
+    if is_peer_bot_sender:
+        sender_display = f"{sender_display}[机器人]"
     raw_message = event.get("raw_message", "")
     
     if group_id not in bot.ALLOWED_GROUPS or sender_id == bot.BOT_QQ:
@@ -73,6 +78,11 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
                 
     # 打印原始接收日志，方便精准观测
     bot.logger.info("[群 %d] 收到原始消息 raw_message=%r, is_at=%s", group_id, raw_message, is_at)
+
+    # 别的机器人 @ 你就别回：两个 bot 互 @ 是死循环刷屏的最短路径
+    if is_peer_bot_sender and not is_admin and is_at:
+        bot.logger.info("[群 %d] 被其他机器人 %s 艾特，忽略不接", group_id, sender_display)
+        return
 
     # 引用回复机器人也算直接呼叫：后面 repo 问答、游戏指令、护栏都要用它，先算出来
     is_reply_to_bot = False
@@ -567,6 +577,12 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         
     # 2. 旁观模式（未直接找机器人）：质量打分决定要不要开口
     # 不再按"水群词"一刀切，短句/表情交给打分自然压分
+    # 明确在跟别人说话（@别人 / 回复别人）就别插嘴：
+    # 以前只挡了即时回复，打分插话这条路照样接一嘴，A 对 B 说的话就被当成对自己说的
+    if not is_at and (is_at_other or is_reply_to_other):
+        bot.logger.info("[群 %d] 群友在与他人对话，放弃插话", group_id)
+        return
+
     # 检查管理员 /stop 设置的群主动插话静默保护期
     silence_exp = bot.group_silence_until.get(group_id, 0.0)
     if now < silence_exp:
@@ -735,6 +751,11 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
         ]
         if any(re.search(pat, reply) for pat in confused_patterns):
             bot.logger.info("[群 %d] 拦截到旁观插话中没搞懂的困惑反问套话: %s，保持静默直接丢弃", group_id, reply)
+            return
+        # 无厘头闸：回的话跟刚才那几句一个词都不沾，说明它没跟上，发出去就是自说自话
+        recent_ctx = " ".join(m.get("content", "") for m in list(timeline)[-3:])
+        if anti_template.is_offtopic(reply, recent_ctx):
+            bot.logger.info("[群 %d] 插话与当前话题无交集，丢弃: %s", group_id, reply)
             return
 
     # 机器人每次在群里发话后，重置该群的消息计数

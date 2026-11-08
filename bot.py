@@ -1271,6 +1271,37 @@ def get_anti_repeat_hint(group_id: int = 0) -> str:
 # 书面连接词和客服式收尾，是"AI 味"最明显的来源；群里没人这么说话
 # 前一组是固定书面套话，删掉不影响语义；后一组只有后面跟逗号时才是连接词，
 # 否则「另外一个人」「首先我得说清楚」里的词是真内容，不能动。
+# 群里别的机器人：OneBot 不给可靠标记，只能靠名单 + 昵称特征认。
+# 认错的代价很直接——把它的播报当成人话去接，或者跟它对吵刷屏。
+_PEER_BOT_NAME_HINTS = ("机器人", "bot", "助手", "管家", "小助手", "bot酱")
+PEER_BOT_QQS: set[int] = set()
+
+
+def load_peer_bots() -> None:
+    """从 data/peer_bots.json 读已知机器人 QQ（一个数组，随时手改）。"""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "peer_bots.json")
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            PEER_BOT_QQS.clear()
+            PEER_BOT_QQS.update(int(q) for q in json.load(f) if str(q).strip().lstrip("-").isdigit())
+    except FileNotFoundError:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump([], f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.warning("[其他机器人] 名单读取失败: %s", e)
+
+
+def is_peer_bot(qq, nick: str = "") -> bool:
+    try:
+        if int(qq) in PEER_BOT_QQS:
+            return True
+    except (TypeError, ValueError):
+        pass
+    n = (nick or "").lower()
+    return any(h in n for h in _PEER_BOT_NAME_HINTS)
+
+
 _AI_OPENERS = (
     "总的来说", "总而言之", "综上所述", "需要注意的是", "值得一提的是", "值得注意的是",
     "换句话说", "简而言之", "简单来说",
@@ -1279,6 +1310,9 @@ _AI_CONNECTIVES = ("首先", "其次", "另外", "此外", "所以说")
 _AI_TAILS = (
     "希望对你有帮助", "希望能帮到你", "希望这能帮到你", "如果还有其他问题",
     "还有其他问题的话", "有什么需要随时说", "随时可以问我",
+    # 客服句式：真人聊天不会先给结论再补一句「你可以试试」，更不会问「还需要什么」
+    "如有需要", "如需帮助", "有问题随时找我", "还有什么可以帮你", "需要的话可以试试",
+    "建议你可以试试", "你可以尝试一下", "供你参考", "以上",
 )
 
 
@@ -1964,6 +1998,7 @@ async def main():
     logger.info("白名单群: %s | 机器人 QQ: %d | 模型: %s | 管理员: %d", list(ALLOWED_GROUPS), BOT_QQ, MODEL_NAME, ADMIN_QQ)
 
     load_runtime_state()
+    load_peer_bots()
     # 心境状态单独落盘：和记忆库分开，坏了也不至于把群友档案带崩
     affect.attach(atomic_write_json,
                   os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "affect_state.json"))

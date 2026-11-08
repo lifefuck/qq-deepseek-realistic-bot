@@ -220,6 +220,27 @@ def test_newline_split():
     check("拆后没有裸换行", all("\n" not in s for s in segs), str(segs))
 
 
+def test_short_bubbles():
+    """十几个字一条、还拿逗号串着，是群里最像 AI 的形状。"""
+    from services import messaging
+
+    segs = messaging.shape_short(["刚吃完饭，然后下楼买了杯咖啡，顺手把快递拿了，今天人还挺多"])
+    check("长句切成短气泡", len(segs) >= 3, str(segs))
+    check("每条不超过 11 字", all(len(x) <= 11 for x in segs), str(segs))
+    check("短句原样放过", messaging.shape_short(["就这"]) == ["就这"])
+    check("没逗号不硬拆", messaging.shape_short(["你是不是又偷偷把服务器重启了"]) == ["你是不是又偷偷把服务器重启了"])
+    check("不吐尾逗号", all(not x.endswith("，") for x in segs), str(segs))
+
+
+def test_offtopic_gate():
+    """旁观插话跟刚才聊的零交集，就是在自说自话。"""
+    from services import anti_template
+
+    check("不沾边判无关", anti_template.is_offtopic("这波操作真的离谱到没边了", "今晚吃什么 火锅还是烤肉"))
+    check("沾边不误伤", not anti_template.is_offtopic("火锅太辣了", "今晚吃什么 火锅还是烤肉"))
+    check("短句不拦", not anti_template.is_offtopic("笑死", "今晚吃什么 火锅还是烤肉"))
+
+
 def test_interject():
     now = 10000.0
     check("刚说完不抢话", interject_planner.too_soon(now, now - 10))
@@ -249,6 +270,8 @@ if __name__ == "__main__":
     test_prompt_injection()
     test_echo_and_particle()
     test_newline_split()
+    test_short_bubbles()
+    test_offtopic_gate()
     test_interject()
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:

@@ -118,6 +118,44 @@ def _split_long_clause(s: str, min_len: int = 34) -> Optional[list[str]]:
     return best
 
 
+_MAX_BUBBLE_CHARS = 10  # 单条气泡的目标长度：真人聊天很少一口气超过十个字
+
+
+def shape_short(segments: list[str], limit: int = 4) -> list[str]:
+    """把「一句话塞三个逗号」的长句切成几条短气泡。
+
+    真人打字是一段一段蹦出来的：先说「刚吃完饭」，再补「去买了杯咖啡」。
+    模型爱写「刚吃完饭，然后去楼下买了杯咖啡，顺手把快递也拿了」这种一整条，
+    切段器只在句末标点处下刀，切完仍是十几个字一条，所以这里补一刀按逗号断。
+    只在逗号处切，不切词、不切数字；短句原样放过，免得把「就这」拆散。
+    """
+    out: list[str] = []
+    for seg in segments:
+        seg = (seg or "").strip()
+        if not seg:
+            continue
+        if len(seg) <= _MAX_BUBBLE_CHARS or not re.search(r"[，,、]", seg):
+            out.append(seg)
+            continue
+        buf = ""
+        for part in re.split(r"[，,、]", seg):
+            part = part.strip()
+            if not part:
+                continue
+            if not buf:
+                buf = part
+            elif len(buf) + len(part) + 1 <= _MAX_BUBBLE_CHARS:
+                buf = f"{buf}，{part}"
+            else:
+                out.append(buf)
+                buf = part
+        if buf:
+            out.append(buf)
+    if len(out) > limit:
+        out = out[: limit - 1] + ["，".join(out[limit - 1:])]
+    return [s.strip(" ，,、") for s in out if s.strip(" ，,、")]
+
+
 def split_reply_segments(text: str) -> list[str]:
     """按强标点（！？”。~）、换行切成 1~3 条短消息，像真人连续打字。
     不拿空格当分隔符，也不把中英混排切断。若回复包含换行则优先按行分段发。"""
@@ -331,7 +369,7 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         await send_group_message(ws, group_id, text, is_command_report=is_command_report, at_user_id=at_user_id)
         return text
 
-    segments = split_reply_segments(text)
+    segments = shape_short(split_reply_segments(text))
     # 切段之后每段再过一遍旁白闸：整句正文里混一句「（发送表情包）」，切出来就是独立一条，
     # 上面按整条判断的闸门漏掉它，群里就看见模型在自述执行过程
     segments = [seg for seg in (safety_guard.strip_internal_monologue(s) for s in segments) if seg]
@@ -423,7 +461,7 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
         return
 
     # 普通私聊消息：按标点分段发送
-    segments = split_reply_segments(text)
+    segments = shape_short(split_reply_segments(text))
     segments = [seg for seg in (safety_guard.strip_internal_monologue(s) for s in segments) if seg]
     if not segments:
         return

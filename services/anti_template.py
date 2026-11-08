@@ -160,3 +160,23 @@ def shape_report(text: str) -> dict:
         "has_question": bool(re.search(r"[?？吗呢嘛]", text or "")),
         "has_ellipsis": "…" in (text or "") or "..." in (text or ""),
     }
+
+
+def _bigrams(text: str) -> set:
+    """中文按二字滑窗取词，不依赖分词库。用来判「这句在说同一件事吗」。"""
+    t = re.sub(r"[^\u4e00-\u9fa5A-Za-z0-9]", "", text or "")
+    return {t[i:i + 2] for i in range(len(t) - 1)}
+
+
+def is_offtopic(reply: str, context: str, min_len: int = 10) -> bool:
+    """旁观接话时，回的内容跟刚才那几句一个词都不沾，基本是自说自话。
+
+    只用来拦「插话」，被 @ 的时候不拦——那时候它有权把话题拐走。
+    短句（笑死、就这）不拦，那些本来就是纯情绪。
+    """
+    if len(reply or "") < min_len:
+        return False
+    r = _bigrams(reply)
+    if not r:
+        return False
+    return not (r & _bigrams(context))
