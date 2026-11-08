@@ -169,6 +169,11 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
     if "[PASS]" in text:
         return
     clean_text = bot.strip_markdown(text).strip()
+    # 兜底：单发通道绝不让裸换行流到 QQ。聊天内容的换行并成逗号，
+    # 只有汇报/面板才保留换行（那种换行是有结构的）。
+    clean_text = clean_text.replace("\r", "")
+    if not is_command_report and "\n" in clean_text:
+        clean_text = re.sub(r"\s*\n+\s*", "，", clean_text)
     # 链接混淆防风控
     clean_text = bot.obfuscate_urls_for_qq(clean_text)
     # 过滤末尾句号
@@ -320,8 +325,10 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     if not text:
         return ""
 
-    # 只有超长汇报类指令才不分段；普通群聊与 root 模式均走分段，像真人连发打字
-    if is_command_report or len(text) > 300:
+    # 只有超长汇报类指令才不分段；普通群聊与 root 模式均走分段，像真人连发打字。
+    # 代码块/多行清单也必须整条发：切开就散了。
+    block_like = "```" in text or text.count("\n") >= 3
+    if is_command_report or len(text) > 300 or block_like:
         await send_group_message(ws, group_id, text, is_command_report=is_command_report, at_user_id=at_user_id)
         return text
 

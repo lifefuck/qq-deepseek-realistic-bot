@@ -751,7 +751,9 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
         await asyncio.sleep(0.3)
     # 当群友主动艾特机器人呼叫时，回复必须带上 [CQ:at] 艾特该群友；若为主动旁观插话则自然接话不强行艾特
     at_target = target_uid if is_at else None
-    sent_text = await bot.send_segmented_group_message(ws, group_id, reply, is_command_report=(is_admin and bot.get_channel_mode(group_id) == "root"), at_user_id=at_target)
+    # root 模式只是「长度和自由度放开」，不等于这条是指令汇报：
+    # 以前这里传 True，模型回一句带换行的话就整条带着回车发出去，群里看着像多打了一行空行
+    sent_text = await bot.send_segmented_group_message(ws, group_id, reply, is_command_report=False, at_user_id=at_target)
 
     # 写回上下文的是实际发出去的那句：削平过、标签剥过，跟群里看到的一致
     clean_reply_record = bot.remove_trailing_period(bot.strip_markdown(sent_text or "")).strip()

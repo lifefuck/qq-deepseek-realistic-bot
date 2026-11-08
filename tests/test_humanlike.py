@@ -214,6 +214,17 @@ def test_echo_and_particle():
     check("语气词不重复就留", anti_template.trim_particle("那我多没面子啊", ["行吧", "走了"]) == "那我多没面子啊")
 
 
+def test_newline_split():
+    """线上实测：模型回了两行，结果整条带着回车发出去了。"""
+    import bot  # noqa: F401  先加载宿主，messaging 里的 bot 引用才有值
+    from services import messaging
+
+    reply = "哦？这是在问我刚才说话的样子顺不顺眼吗\n还行吧，比之前那堆翻译腔强多了"
+    segs = messaging.split_reply_segments(reply)
+    check("两行拆成两条", len(segs) == 2, str(segs))
+    check("拆后没有裸换行", all("\n" not in s for s in segs), str(segs))
+
+
 def test_interject():
     now = 10000.0
     check("刚说完不抢话", interject_planner.too_soon(now, now - 10))
@@ -242,6 +253,7 @@ if __name__ == "__main__":
     test_persist()
     test_prompt_injection()
     test_echo_and_particle()
+    test_newline_split()
     test_interject()
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:
