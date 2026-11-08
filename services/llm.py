@@ -191,8 +191,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
     elif is_at or is_mention or is_follow_up:
         follow_up_note = (
             "他刚 @ 过你，这句大概率是接着上面那茬往下说，不是新话题；但要是行里写着→@别人或"
-            "（回复别人），那就是在跟别人聊，你看着别硬答。不许沉默、不许输出 [PASS]，"
-            "看不懂就直接问他这句什么意思。\n"
+            "（回复别人），那就是在跟别人聊，可以不出声，也可以只接一句不抢答。"
+            "真看不懂就直说没听懂，别装懂。\n"
             if is_follow_up else ""
         )
         # 时间线只当背景，必须把当前这句单独钉出来：只丢上下文时模型常抓上一句来答
@@ -207,8 +207,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"【谁在跟谁说话】：行里的「→@某某」是他 @ 的人，「（回复某某）」是他回复的人。出现「→@你」或「（回复你）」才是直接找你；写的是别人名字就说明这话是说给那个人的，你只是被顺带提到，别插进去抢答。\n"
             f"【态度】：严格服从上方好感度，80+ 亲切热络，<40 冷淡戒备。对线分级按人设铁律执行，只回惹你的人，不迁怒无辜。\n"
             f"拿不准的直接说不知道/看不懂，别编；"
-            f"要是拿具体问题考你（算术、常识、时间、数字），先把答案说出来，别糊弄过去；"
-            f"【说话习惯】：像在手机上回消息，一条一般 2~10 个字，想到哪说到哪，话多就分两条发；"
+            f"要是拿具体问题考你（算术、常识、时间、数字），会就答，不会就说不会，别糊弄；"
+            f"【说话习惯】：闲聊一条两三个字到十来个字，想到哪说到哪；真在讲正事就说清楚，别硬拆成碎句；"
             f"别把三个逗号串成一句话，别总结、别解释、别给建议，除非他真在问怎么办；"
             f"严禁输出任何动作括号，绝不用句号，别写小作文："
         )
@@ -228,9 +228,9 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"3. 若近期发言附带群友发的图片/表情包：\n"
             f"   - 只接图里真实存在的一个细节（字、表情、动作），别复述整张图，也别夸「好可爱」「太搞笑了」这种万能话；\n"
             f"   - 图看不明白、或者只是没内容的截图，就 [PASS]；\n"
-            f"4. 严禁不懂装懂、严禁答非所问、严禁发出「你在说什么呀」这种生硬机械套话；\n"
+            f"4. 别不懂装懂、别答非所问；没听清就问一句，但别用「你在说什么呀」这种客服腔；\n"
             f"5. 【接话要有落点】：只接群里正在说的那件具体的事（谁、干了啥、哪个梗）；说不出具体东西就输出 [PASS]，别发感慨、别发万能吐槽；\n"
-            f"6. 【说话习惯】：一条一般 2~10 个字，最多一句；想到哪说到哪，别把三个逗号串成一句，别总结别解释；\n"
+            f"6. 【说话习惯】：闲聊一条两三个字到十来个字，最多一句；想到哪说到哪，别总结别解释；\n"
             f"7. 标着「[机器人]」的发言是别的机器人，不是人：别把它当群友接茬，更别跟它对吵，最多一句阴阳就收手；\n"
         )
 
@@ -323,7 +323,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         period_str = "晚上"
     else:
         period_str = "深夜/凌晨"
-    time_hint = f"\n【当前真实系统时段】：{now_dt.strftime('%Y-%m-%d')} 星期{['一','二','三','四','五','六','日'][now_dt.weekday()]}（时段: {period_str}）\n"
+    time_hint = f"\n【当前真实时间】：{now_dt.strftime('%Y-%m-%d %H:%M')} 星期{['一','二','三','四','五','六','日'][now_dt.weekday()]}（{period_str}）\n"
     user_prompt = bot.sanitize_text(user_prompt + time_hint)
     # 注入跨群公共话题记忆（仅供认知背景，不破坏当前群独立性）
     if group_id:
@@ -431,7 +431,7 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool, group_id: Optiona
     user_prompt = (
         f"「{sender_nick}」在群里戳了戳你。{role_hint}。\n"
         f"随口回一句，两到十个字，像手被人戳了一下那样反应：嫌手欠、问干嘛、要钱、装疼都行。\n"
-        f"例如：「干嘛」「手欠是吧」「一块钱」「别戳」「啊？」\n"
+        f"用你自己的说法，别套固定短句，也别每次都用同一个反应。\n"
         f"别用句号，别写动作括号，别说「有什么需要帮忙」。只说这一句："
     )
 
@@ -499,10 +499,10 @@ async def evaluate_favor_with_ai(user_id: int, sender_nick: str, dialogue_snippe
     sys_prompt = (
         "你是群聊好感度判定器。根据群友发言和小鲸鱼的回复，判断该群友对小鲸鱼的真实态度。\n"
         "只输出 JSON：{\"delta\": -8~8 的整数, \"impression\": 10 字以内印象，没有就填 null}\n"
-        "【好感度升降原则（务必果断拉开差距，拒绝僵化无感）】：\n"
-        "- 扣分项：挑衅找茬、辱骂对线扣 -5~-8；阴阳怪气、恶意挑刺扣 -3~-5；叫大肥鱼/恶作剧扣 -1~-2。\n"
-        "- 0 分：完全与小鲸鱼无关的路人日常打卡、水群。\n"
-        "- 加分项：真诚互动/顺毛夸奖 +2~+3；投喂食物/维护小鲸鱼/热情送礼物 +4~+6；表白偏爱 +6~+8。"
+        "【判定原则】：只看这条发言对小鲸鱼的态度，别为了凑分数硬给。\n"
+        "- 扣分项：挑衅找茬、辱骂对线 -5~-8；阴阳怪气、恶意挑刺 -3~-5。\n"
+        "- 0 分：与小鲸鱼无关的日常水群；叫「大肥鱼/小鲸鱼/鲸宝」这类外号属于亲昵，不算冒犯。\n"
+        "- 加分项：真诚互动/顺毛夸奖 +2~+3；投喂食物/维护小鲸鱼 +4~+6；表白偏爱 +6~+8。"
     )
     user_prompt = f"群友「{sender_nick}」发言：{dialogue_snippet}\n小鲸鱼回复：{bot_reply or '（无）'}"
     
@@ -517,6 +517,7 @@ async def evaluate_favor_with_ai(user_id: int, sender_nick: str, dialogue_snippe
     )
     payload["response_format"] = {"type": "json_object"}
     
+    raw_text = ""
     try:
         session = bot.get_http_session()
         async with bot.llm_semaphore:
@@ -535,15 +536,6 @@ async def evaluate_favor_with_ai(user_id: int, sender_nick: str, dialogue_snippe
                         if impression.lower() in ["null", "none", "无"]:
                             impression = ""
                         return delta, impression
-                m = re.search(r"\{.*?\}", raw_text, re.DOTALL)
-                if m:
-                    res_json = json.loads(m.group(0))
-                    delta = int(res_json.get("delta", 0))
-                    delta = max(-8, min(8, delta))
-                    impression = str(res_json.get("impression") or "").strip()
-                    if impression.lower() in ["null", "none", "无"]:
-                        impression = ""
-                    return delta, impression
     except Exception as e:
         logger.warning("AI 动态好感度判定异常: %s", e)
     return 0, ""

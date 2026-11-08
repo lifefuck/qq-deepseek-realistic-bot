@@ -41,7 +41,12 @@ def _grams(text: str) -> set:
 
 
 def same_topic(a: str, b: str) -> bool:
-    """共享一个非停用的双字实词就算同一件事。"""
+    """共享一个非停用双字词就算同一件事。
+
+    这个判据偏松（「可乐真好喝」和「可乐鸡翅」也会并），但话题池是「隔壁群在聊什么」
+    的粗记忆，宁可合并也别把同一件事拆成五条刷屏。真正伤人的是合并时用短句覆盖长句，
+    那点已在 _push 里修掉：只保留信息量更大的那句。
+    """
     shared = {g for g in _grams(a) & _grams(b) if g not in _STOP_GRAMS}
     return bool(shared) or memory_atoms.similarity(a, b) >= DUP_RATIO
 
@@ -96,7 +101,9 @@ class CrossGroupTopicManager:
             # 内容换成最新那句：池子回答的是「隔壁群最近在聊什么」，不是「最早提过什么」
             same["hits"] = int(same.get("hits", 1)) + 1
             same["last_seen"] = item.get("ts", time.time())
-            same["content"] = content[:150]
+            # 保留信息量更大的那句，别让一句水聊把整件事盖掉
+            if len(content) > len(same.get("content", "")):
+                same["content"] = content[:150]
             same["sender"] = item.get("sender", same.get("sender"))
             return True
         item.setdefault("hits", 1)

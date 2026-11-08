@@ -273,8 +273,29 @@ def sync_memes() -> dict:
         "memes": memes_list
     }
 
-    with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
+    # 数据源只有 GitHub raw + 三个热榜，代理一挂就可能只剩几十条。
+    # 以前这里无条件整体覆盖，一次失败就把上千条梗冲没且无法恢复。
+    old_count = 0
+    try:
+        with open(OUTPUT_FILE, "r", encoding="utf-8") as f:
+            old_count = len(json.load(f).get("memes") or [])
+    except Exception:
+        old_count = 0
+    if old_count > 200 and len(memes_list) < old_count * 0.6:
+        logger.error("同步结果只有 %d 条（原有 %d），疑似数据源异常，已中止，保留旧词库", len(memes_list), old_count)
+        return {"updated_at": __import__("time").time(), "total_count": old_count, "memes": []}
+
+    tmp = f"{OUTPUT_FILE}.{os.getpid()}.tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    try:
+        if os.path.exists(OUTPUT_FILE):
+            os.replace(OUTPUT_FILE, OUTPUT_FILE + ".bak")
+    except OSError:
+        pass
+    os.replace(tmp, OUTPUT_FILE)
 
     logger.info(f"词库同步完成，已落盘至 {OUTPUT_FILE}，总词数: {len(memes_list)}")
     return payload

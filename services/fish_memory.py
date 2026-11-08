@@ -17,7 +17,8 @@ import time
 from typing import Dict, List, Optional, Tuple
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_DB_PATH = os.path.join(HERE, "..", "..", "data", "fish_memory.db")
+# HERE 是 services/，只要上跳一级到项目根；以前多跳一级，库落在了 projects/data/
+DEFAULT_DB_PATH = os.path.join(HERE, "..", "data", "fish_memory.db")
 
 CJK = re.compile(r"[\u4e00-\u9fff]")
 NEG = re.compile(r"[不没别未无]")

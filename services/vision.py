@@ -5,6 +5,8 @@ import logging
 import aiohttp
 from typing import Optional, Dict, Tuple
 
+from media_resolver import _is_public_url
+
 logger = logging.getLogger(__name__)
 
 # Google Gemini 配置
@@ -24,13 +26,21 @@ FALLBACK_MODELS = [
 async def download_image_as_base64(session: aiohttp.ClientSession, image_url: str) -> Optional[tuple[str, str]]:
     """下载图片并转换为 base64 及对应 mime_type（若 URL 需要翻墙则附带代理）"""
     try:
+        # 图片地址来自群消息，任何人可伪造 CQ 码指向内网，先过公网校验
+        if not await _is_public_url(image_url):
+            logger.warning("[Vision] 拒绝非公网图片地址: %s", image_url[:80])
+            return None
         # QQ 图片直链一般无需代理，如遇到 google 或海外图片链接则可选代理
         proxy = PROXY_URL if "google" in image_url or "github" in image_url else None
         async with session.get(image_url, proxy=proxy, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
             if resp.status != 200:
                 logger.warning("[Vision] 下载图片失败 HTTP %d: %s", resp.status, image_url)
                 return None
-            data = await resp.read()
+            # 8MB 上限：base64 还要再涨 1/3，不能让它把内存吃掉
+            data = await resp.content.read(8 * 1024 * 1024 + 1)
+            if len(data) > 8 * 1024 * 1024:
+                logger.warning("[Vision] 图片超过 8MB，放弃: %s", image_url[:80])
+                return None
             if not data:
                 return None
             

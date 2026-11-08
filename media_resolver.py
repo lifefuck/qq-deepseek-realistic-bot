@@ -88,7 +88,9 @@ async def safe_fetch(
                     continue
                 if resp.status != 200:
                     return None
-                return str(resp.url), await resp.text(errors="ignore")
+                # 上限 2MB：群友贴个大文件链接就能把内存和事件循环一起拖死
+                raw = await resp.content.read(2 * 1024 * 1024)
+                return str(resp.url), raw.decode("utf-8", errors="ignore")
         except Exception as e:
             logger.debug("抓取失败 %s: %s", current, e)
             return None

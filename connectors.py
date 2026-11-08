@@ -3,6 +3,8 @@
 """
 import aiohttp
 import logging
+
+from media_resolver import _is_public_url
 import random
 import re
 from typing import Any, Dict, List, Optional
@@ -19,8 +21,15 @@ MAX_IMAGE_BYTES = 8 * 1024 * 1024
 async def _download_image(session: aiohttp.ClientSession, image_url: str) -> Optional[bytes]:
     """把群友发的图下载成字节，超过 8MB 直接放弃，别把内存喂爆。"""
     try:
+        # 这个 URL 来自群消息，不加校验就能被拿去打内网，还会把内网响应转手传给 trace.moe
+        if not await _is_public_url(image_url):
+            logger.warning("搜番拒绝非公网图片地址: %s", image_url[:80])
+            return None
         async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
-            if resp.status != 200:
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if resp.status != 200 or not ctype.startswith("image/"):
+                logger.warning("搜番图片类型不支持: HTTP %d %s", resp.status, ctype or "?")
+                return None
                 logger.warning("搜番下载图片失败: HTTP %d", resp.status)
                 return None
             declared = int(resp.headers.get("Content-Length") or 0)
@@ -49,7 +58,10 @@ async def search_anime_by_image(session: aiohttp.ClientSession, image_url: str) 
             if resp.status == 402:
                 logger.warning("Trace.moe 免费额度已用完")
                 return {"error": "quota"}
-            if resp.status != 200:
+            ctype = (resp.headers.get("Content-Type") or "").lower()
+            if resp.status != 200 or not ctype.startswith("image/"):
+                logger.warning("搜番图片类型不支持: HTTP %d %s", resp.status, ctype or "?")
+                return None
                 logger.warning("Trace.moe 请求失败: HTTP %d", resp.status)
                 return {"error": "http", "status": resp.status}
             data = await resp.json()
@@ -101,19 +113,22 @@ async def search_web_brief(session: aiohttp.ClientSession, query: str, limit: in
         async with session.post(search_url, data=data, headers=headers, timeout=8.0) as resp:
             if resp.status == 200:
                 html = await resp.text()
-                # 正则提取标题与摘要
-                snippets = re.findall(r'<a class="result__snippet[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>', html)
-                titles = re.findall(r'<a class="result__url[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>', html)
-                
-                # 备用抽取
-                items = re.findall(r'<div class="result__body">[\s\S]*?<a class="result__snippet[^>]*>([\s\S]*?)</a>', html)
-                title_matches = re.findall(r'<a class="result__a"[^>]*>([\s\S]*?)</a>', html)
-
-                for i in range(min(limit, len(title_matches))):
-                    t = re.sub(r'<[^>]+>', '', title_matches[i]).strip()
-                    s = re.sub(r'<[^>]+>', '', items[i]).strip() if i < len(items) else ""
-                    if t and s:
-                        results.append({"title": t, "snippet": s})
+                # 按 result 整块解析：标题和摘要必须同源。
+                # 以前是两个独立正则按下标对齐，DDG 一改版就「标题 A + 摘要 B」喂给模型。
+                blocks = re.findall(r'<div class="result results_links[\s\S]*?</div>\s*</div>', html)
+                if not blocks:
+                    blocks = re.findall(r'<div class="result__body">([\s\S]*?)</div>', html)
+                for block in blocks:
+                    tm = re.search(r'<a class="result__a"[^>]*>([\s\S]*?)</a>', block)
+                    if not tm:
+                        continue
+                    sm = re.search(r'<a class="result__snippet"[^>]*>([\s\S]*?)</a>', block)
+                    t = re.sub(r'<[^>]+>', '', tm.group(1)).strip()
+                    sn = re.sub(r'<[^>]+>', '', sm.group(1)).strip() if sm else ""
+                    if t:
+                        results.append({"title": t, "snippet": sn})
+                    if len(results) >= limit:
+                        break
     except Exception as e:
         logger.debug("网页检索异常: %s", e)
     return results

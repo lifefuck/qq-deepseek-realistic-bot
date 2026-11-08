@@ -571,8 +571,13 @@ def get_or_create_user_memory(user_id: int, nickname: str = "", group_id: Option
         }
     # 只在首次建档时给主人写默认身份，之后和普通群友一样按真实互动演进；
     # 以前每次调用都强刷 notes/traits，等于把主人的印象永久锁死在一句话上。
-    if not is_admin_user and nickname and group_scope[uid_str].get("nickname") != nickname:
-        group_scope[uid_str]["nickname"] = nickname
+    # 只认真正的昵称：戳一戳传的「群友/管理员」、显示名里的「【头衔: x】」「[机器人]」都不是名字，
+    # 以前这些会被原样写进记忆，把人改名成「群友」
+    clean_nick = re.sub(r"[【\[][^】\]]{0,20}[】\]]", "", nickname or "").strip()
+    if clean_nick in ("群友", "管理员", "未知"):
+        clean_nick = ""
+    if not is_admin_user and clean_nick and group_scope[uid_str].get("nickname") != clean_nick:
+        group_scope[uid_str]["nickname"] = clean_nick
     return group_scope[uid_str]
 
 def clear_single_user_memory(target_uid: int, group_id: Optional[int] = None) -> bool:
@@ -1905,7 +1910,7 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
             "remain": FOLLOW_UP_MAX_COUNT
         }
         # 戳一戳也算亲密互动，异步微调好感度
-        asyncio.create_task(update_user_memory_async(user_id, nick, "戳了戳小鲸鱼", group_id=group_id))
+        asyncio.create_task(update_user_memory_async(user_id, "", "戳了戳小鲸鱼", group_id=group_id))
 
 # ==================== 管理员私聊处理 ====================
 

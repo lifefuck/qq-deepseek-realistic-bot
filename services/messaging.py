@@ -44,7 +44,9 @@ def _tidy(text: str) -> str:
 # 语气词后面原本该是停顿，不该是空格
 _PARTICLE_RE = re.compile(r"([啊呀呢吧嘛哦诶欸哈咯啦喔唉诶])\s+")
 # 两个汉字之间的裸空格，基本就是把逗号换没了
-_CJK_GAP_RE = re.compile(r"(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])")
+_CJK_GAP_RE = re.compile(r"([\u4e00-\u9fff])\s+([\u4e00-\u9fff])")
+# 虚词旁边的空格八成是模型手滑，连起来就好；往里塞逗号会造出「写，的」这种语病
+_CJK_FUNC_CHARS = "的了着过是在有和与或都也却很就才而并把被我你他她它这那哪"
 
 
 def normalize_punctuation(text: str) -> str:
@@ -58,7 +60,13 @@ def normalize_punctuation(text: str) -> str:
         return text
     t = re.sub(r"[ \t]{2,}", " ", text)
     t = _PARTICLE_RE.sub(r"\1，", t)      # 「好啊 那就这样」→「好啊，那就这样」
-    t = _CJK_GAP_RE.sub("，", t)           # 「显卡没用 认命吧」→「显卡没用，认命吧」
+    def _join_gap(m):
+        a, b = m.group(1), m.group(2)
+        if a in _CJK_FUNC_CHARS or b in _CJK_FUNC_CHARS:
+            return a + b
+        return a + "，" + b
+
+    t = _CJK_GAP_RE.sub(_join_gap, t)      # 「显卡没用 认命吧」→「显卡没用，认命吧」
     t = re.sub(r"，{2,}", "，", t)          # 别叠出「，，」
     t = t.replace(" ，", "，").replace("， ", "，")
     return t.strip(" ，")
@@ -155,6 +163,16 @@ def shape_short(segments: list[str], limit: int = 4) -> list[str]:
     return [s.strip(" ，,、") for s in out if s.strip(" ，,、")]
 
 
+def _fold_overflow(segs: list[str], limit: int = 3) -> list[str]:
+    """超过 limit 段就把剩下的并成最后一条。
+    以前是 segs[:3] 裸切，第 4 段起直接凭空消失——用户看到的是半截回答。"""
+    if len(segs) <= limit:
+        return segs
+    head = segs[: limit - 1]
+    tail = "".join(segs[limit - 1:])
+    return head + [tail]
+
+
 def split_reply_segments(text: str) -> list[str]:
     """按强标点（！？”。~）、换行切成 1~3 条短消息，像真人连续打字。
     不拿空格当分隔符，也不把中英混排切断。若回复包含换行则优先按行分段发。"""
@@ -164,7 +182,7 @@ def split_reply_segments(text: str) -> list[str]:
         return []
     lines = [l.strip() for l in clean.split('\n') if l.strip()]
     if len(lines) > 1:
-        return lines[:3]
+        return _fold_overflow(lines)
     if len(clean) <= 16:
         return [clean]
 
@@ -183,7 +201,7 @@ def split_reply_segments(text: str) -> list[str]:
         parts.append(buf.strip())
     parts = _merge_fragments(parts)
     if len(parts) >= 2:
-        return parts[:3]
+        return _fold_overflow(parts)
     longer = _split_long_clause(clean)
     if longer:
         return longer
@@ -377,11 +395,11 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     profile = affect.profile(group_id)
     segments = _cap_segments(segments, profile["max_segments"])
     # 图片比表情更抢眼：概率压到 4%（抽稀防机械甩图），触发词保留
-    should_send_meme = bool(meme_tag) or (random.random() < 0.04) or any(k in text for k in ["大肥鱼", "炸毛", "闹麻了", "草", "无敌了", "才不是", "哼", "气死"])
+    should_send_meme = bool(meme_tag) or (random.random() < 0.04) or any(k in text for k in ["大肥鱼", "炸毛", "闹麻了", "卧槽", "无敌了", "才不是", "气死"])
     # 立绘是另一套：只在真炸毛/真害羞时上，别让「怎么」「为什么」这种口头词也甩一张图
 
     status_avatar = None
-    if any(k in text for k in ["气死", "滚", "闭嘴", "炸毛", "火大"]):
+    if any(k in text for k in ["气死", "滚啊", "闭嘴", "炸毛", "火大"]):
         status_avatar = bot.get_status_avatar_b64("angry")
     elif any(k in text for k in ["害羞", "脸红", "好耶"]):
         status_avatar = bot.get_status_avatar_b64("shy")
@@ -395,9 +413,8 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     # 拟真节奏只留给私聊（见 send_private_message），一对一才需要「看完想了想」。
     for i, seg in enumerate(segments):
         target_at = at_user_id if i == 0 else None
-        # 错字池：只在长句上下手，链接/@/数字不碰
-        slip = typo.maybe_typo(seg)
-        payload = slip.text if slip else seg
+        # 错字池已停用：纠错补发被砍掉之后，故意打错字会永久留在群里
+        payload = seg
         await send_group_message(ws, group_id, payload, is_command_report=False,
                                  at_user_id=target_at, emoji_ratio=profile["emoji_keep"])
 

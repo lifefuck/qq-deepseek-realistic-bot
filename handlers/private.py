@@ -22,6 +22,38 @@ def bind(host):
     bot = host
 
 
+def _apply_favor_everywhere(target_qq: int, *, new_value: int = None, delta: int = None) -> tuple[int, int]:
+    """好感度写进这个人在所有群的分区，并返回 (改前值, 影响分区数)。
+
+    以前只写 user_memories["private"]，群回复读的是群号桶，私聊改完等于没改。
+    """
+    uid = str(target_qq)
+    touched = 0
+    old_val = 50
+    for scope_key, scope in bot.user_memories.items():
+        mem = scope.get(uid)
+        if not isinstance(mem, dict):
+            continue
+        try:
+            old_val = int(mem.get("favor", 50))
+        except (TypeError, ValueError):
+            old_val = 50
+        if new_value is not None:
+            mem["favor"] = max(0, min(100, new_value))
+        else:
+            mem["favor"] = max(0, min(100, old_val + (delta or 0)))
+        mem["updated_at"] = time.time()
+        touched += 1
+    if not touched:
+        mem = bot.get_or_create_user_memory(target_qq, group_id=None)
+        old_val = int(mem.get("favor", 50))
+        mem["favor"] = max(0, min(100, new_value if new_value is not None else old_val + (delta or 0)))
+        mem["updated_at"] = time.time()
+        touched = 1
+    bot.save_user_memories()
+    return old_val, touched
+
+
 async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dict):
     """管理员私聊流水线"""
     sender_id = event.get("user_id")
@@ -53,9 +85,9 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         try:
             media_info = await media_resolver.parse_media_content(session, raw_message)
             if media_info and media_info.get("summary"):
-                await bot.send_private_message(ws, user_id, media_info["summary"].strip())
+                await bot.send_private_message(ws, sender_id, media_info["summary"].strip())
         except Exception as e:
-            bot.logger.warning("[私聊] 链接解析异常: %s", e)
+            bot.logger.warning("[私聊] 链接解析/发送异常: %s", e)
 
     clean_body = bot.clean_cq_codes(raw_message).strip()
     clean_body = re.sub(r"\[CQ:reply,id=-?\d+\]", "", clean_body).strip()
@@ -123,15 +155,15 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
             return
 
         # 2. 增减某人好感度: 给 123456 加 10 点好感度 / 扣除 123456 20 好感度 / 把 123456 好感度 +5 / 扣 123456 好感 10
-        m_delta = re.search(r"(?:把|给|针对|对)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)\s*(?:的)?\s*(?:好感度|好感|favor)?\s*(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(\d+)", clean_body, re.IGNORECASE)
+        m_delta = re.search(r"(?:把|给|针对|对)?\s*(?:用户|群友)?\s*((?<!\d)\d{5,11}(?!\d))\s*(?:的)?\s*(?:好感度|好感|favor)?\s*(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(\d+)", clean_body, re.IGNORECASE)
         if not m_delta:
-            m_delta = re.search(r"(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(?:用户|群友)?\s*(\b\d{5,11}\b)\s*(?:的)?\s*(?:好感度|好感|favor)?\s*(\d+)", clean_body, re.IGNORECASE)
+            m_delta = re.search(r"(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(?:用户|群友)?\s*((?<!\d)\d{5,11}(?!\d))\s*(?:的)?\s*(?:好感度|好感|favor)?\s*(\d+)", clean_body, re.IGNORECASE)
             if m_delta:
                 op_sign = m_delta.group(1)
                 target_qq = int(m_delta.group(2))
                 delta_val = int(m_delta.group(3))
             else:
-                m_delta = re.search(r"(?:好感度|好感|favor)?\s*(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)", clean_body, re.IGNORECASE)
+                m_delta = re.search(r"(?:好感度|好感|favor)?\s*(加|增加|提升|涨|上升|\+|减|扣除|扣|降低|跌|下降|\-)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*((?<!\d)\d{5,11}(?!\d))", clean_body, re.IGNORECASE)
                 if m_delta:
                     op_sign = m_delta.group(1)
                     delta_val = int(m_delta.group(2))
@@ -144,39 +176,29 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         if m_delta:
             is_sub = any(s in op_sign for s in ["减", "扣", "降低", "跌", "下降", "-"])
             actual_delta = -delta_val if is_sub else delta_val
-            mem = bot.get_or_create_user_memory(target_qq, group_id=None)
-            old_f = mem.get("favor", 50)
+            old_f, scope_n = _apply_favor_everywhere(target_qq, delta=actual_delta)
             new_f = max(0, min(100, old_f + actual_delta))
-            mem["favor"] = new_f
-            mem["updated_at"] = time.time()
-            bot.save_user_memories()
             action_desc = f"扣除 {delta_val}" if is_sub else f"增加 {delta_val}"
-            report = f"已为 (QQ {target_qq}) {action_desc} 点好感度，当前好感度: {old_f} -> {new_f}/100"
+            report = f"已为 (QQ {target_qq}) {action_desc} 点好感度: {old_f} -> {new_f}/100（影响 {scope_n} 个群）"
             await bot.send_private_message(ws, bot.ADMIN_QQ, report, is_command_report=True)
             return
 
         # 3. 绝对值修改某人好感度
-        m_favor = re.search(r"(?:把|将|改|设置)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)\s*(?:的)?\s*(?:好感度|favor)?\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)", clean_body, re.IGNORECASE)
+        m_favor = re.search(r"(?:把|将|改|设置)?\s*(?:用户|群友)?\s*((?<!\d)\d{5,11}(?!\d))\s*(?:的)?\s*(?:好感度|favor)?\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)", clean_body, re.IGNORECASE)
         if not m_favor:
-            m_favor = re.search(r"(?:好感度|favor)\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*(\b\d{5,11}\b)", clean_body, re.IGNORECASE)
+            m_favor = re.search(r"(?:好感度|favor)\s*(?:设为|改为|变更为|调至|调成|调为|调节为|设置为|为|\=|\s+)\s*(\d+)\s*(?:给|针对|对)?\s*(?:用户|群友)?\s*((?<!\d)\d{5,11}(?!\d))", clean_body, re.IGNORECASE)
             if m_favor:
                 new_favor = max(0, min(100, int(m_favor.group(1))))
                 target_qq = int(m_favor.group(2))
-                mem = bot.get_or_create_user_memory(target_qq, group_id=None)
-                mem["favor"] = new_favor
-                mem["updated_at"] = time.time()
-                bot.save_user_memories()
-                report = f"已将 (QQ {target_qq}) 的好感度设为 {new_favor}/100"
+                _, scope_n = _apply_favor_everywhere(target_qq, new_value=new_favor)
+                report = f"已将 (QQ {target_qq}) 的好感度设为 {new_favor}/100（影响 {scope_n} 个群）"
                 await bot.send_private_message(ws, bot.ADMIN_QQ, report, is_command_report=True)
                 return
         if m_favor:
             target_qq = int(m_favor.group(1))
             new_favor = max(0, min(100, int(m_favor.group(2))))
-            mem = bot.get_or_create_user_memory(target_qq, group_id=None)
-            mem["favor"] = new_favor
-            mem["updated_at"] = time.time()
-            bot.save_user_memories()
-            report = f"已将 (QQ {target_qq}) 的好感度设为 {new_favor}/100"
+            _, scope_n = _apply_favor_everywhere(target_qq, new_value=new_favor)
+            report = f"已将 (QQ {target_qq}) 的好感度设为 {new_favor}/100（影响 {scope_n} 个群）"
             await bot.send_private_message(ws, bot.ADMIN_QQ, report, is_command_report=True)
             return
 

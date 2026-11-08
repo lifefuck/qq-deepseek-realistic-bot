@@ -591,13 +591,6 @@ onMounted(() => {
                 </div>
               </div>
 
-              <div class="divider"></div>
-              <MiuixSwitchPreference
-                title="完整猫娘人设"
-                summary="深度人设、好感度判定与个性化语气"
-                :modelValue="cfg.mode === 'user'"
-                @update:modelValue="(v: boolean) => saveConfig('mode', v ? 'user' : 'default')"
-              />
             </div>
           </section>
 

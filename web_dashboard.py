@@ -12,15 +12,11 @@ import time
 # 模块级 logger：面板各处理函数都要用它记录异常
 logger = logging.getLogger("qqbot.dashboard")
 import base64
-import collections
-import datetime
 import hashlib
 import hmac
-import html
 import logging
 import os
 import secrets
-import time
 from typing import Callable, Deque, Dict, Any, Optional
 from aiohttp import web
 
@@ -1045,6 +1041,10 @@ def load_sessions() -> Dict[str, float]:
     """从磁盘加载持久化会话，杜绝服务重启/重载丢会话"""
     if os.path.exists(SESSION_FILE):
         try:
+            try:
+                os.chmod(SESSION_FILE, 0o600)
+            except OSError:
+                pass
             with open(SESSION_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 now = time.time()
@@ -1059,11 +1059,17 @@ def save_sessions():
         now = time.time()
         valid = {k: v for k, v in ACTIVE_SESSIONS.items() if v > now}
         tmp = f"{SESSION_FILE}.{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        # 先按 0600 建文件再写，免得中间有一小段是 0664 可被同机其他用户读走
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(valid, f)
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp, SESSION_FILE)
+        try:
+            os.chmod(SESSION_FILE, 0o600)
+        except OSError:
+            pass
     except Exception as e:
         logger.warning("保存面板会话失败: %s", e)
 
@@ -1247,15 +1253,20 @@ def check_authenticated(request: web.Request) -> bool:
     # 2. 检查 HTTP Basic Header (供自动化脚本与 API 调试)
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Basic "):
+        ip = get_client_ip(request)
+        if check_rate_limit(ip):
+            return False
         try:
             raw_creds = base64.b64decode(auth_header[6:]).decode("utf-8")
             if ":" in raw_creds:
                 u, p = raw_creds.split(":", 1)
                 valid_user, salt, expected_hash = get_auth_credentials()
                 if hmac.compare_digest(u, valid_user) and verify_password(p, salt, expected_hash):
+                    record_login_attempt(ip, True)
                     return True
         except Exception:
             pass
+        record_login_attempt(ip, False)
 
     return False
 

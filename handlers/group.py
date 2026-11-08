@@ -264,8 +264,6 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             return
 
     # 3. 两段式搜番/搜动画截图出处拦截（必须是主动问番/查出处，排除带图描述的误触）
-    if is_at or is_reply_to_bot or not is_admin:
-        pass
     if re.search(r"(?:什么番|哪部番|谁画的|搜番|搜截图|找番|查出处|求出处)", clean_body) or re.search(r"(?:这|那|发|张|个)图?的出处", clean_body):
         # 寻找群内 90 秒内的有效图片（优先匹配提问者自己发过的图）
         now_ts = time.time()
@@ -551,22 +549,18 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         extra_note = ""
         if is_attacking_admin:
             extra_note = (
-                "【特别警报（最高优先级护主反击）】：\n"
-                "该群友刚才在群里挑衅/辱骂/阴阳怪气你的最高主人(life)！\n"
-                "你必须无条件立刻帮主人狠狠骂回去！严禁装清高、严禁讲道理、严禁拐弯抹角阴阳怪气！\n"
-                "用互联网老哥真实对线的凶悍力道迎头痛击，善用常用谐音（如煞笔/脑瘫/小脑萎缩/叫什么叫/小丑等）正面硬刚回喷，给主人狠狠出气！"
+                "【护主】：这个人刚才在挑衅/阴你的主人 life。\n"
+                "护短、凶一点，直接怼回去，别讲道理也别假客气；用你自己的话说，别套网上的骂人模板。\n"
+                "只怼他本人，旁边搭话的人不许牵连；不带器官/家属类脏词，骂两句就收，别刷屏。"
             )
         elif is_sleeping_now:
             extra_note = (
                 "【当前为夜间作息睡眠时段】：\n"
                 "你正处于睡眠中刚被叫醒的状态，整个人很困、睡意朦胧、哈欠连天。\n"
-                "要求：只能通过真实的口癖与语气词呈现睡意（例如句首或句中带哈欠声、唔……、呼、困死了、大半夜的等自然口语），严禁带括号动作描写（如严禁写括号揉眼睛/打哈欠等动作），保持真实松弛的对话。"
+                "要求：状态是困、反应慢、不想多说，句子比平时更短；别写括号动作，别用固定拟声词凑睡意，像被吵醒的人那样随口应一句就行。"
             )
 
-        if bot.group_gen_locks[group_id].locked():
-            bot.logger.info("[群 %s] 已有生成任务在跑，本次触发忽略，消息仍留在时间线里", group_id)
-            return
-
+        # 锁被占时以前直接 return，这声 @ 就永久消失了；改成排队等上一轮说完再回
         _task = asyncio.create_task(process_group_trigger(
             ws, group_id,
             is_at=is_at or is_reply_to_bot or is_attacking_admin,
@@ -644,11 +638,15 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
 async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = "", src_msg_id=None):
     """同群串行入口：已有请求在跑就直接放弃这次触发，避免并发双开模型"""
     lock = bot.group_gen_locks[group_id]
-    if lock.locked():
-        bot.logger.info("[群 %s] 生成锁被占用，跳过重复触发", group_id)
+    try:
+        await asyncio.wait_for(lock.acquire(), timeout=25)
+    except asyncio.TimeoutError:
+        bot.logger.warning("[群 %s] 等生成锁超时，放弃本次触发", group_id)
         return
-    async with lock:
+    try:
         await _process_group_trigger(ws, group_id, is_at=is_at, sender_nick=sender_nick, is_admin=is_admin, is_mention=is_mention, target_uid=target_uid, user_text=user_text, is_follow_up=is_follow_up, extra_instruction=extra_instruction, src_msg_id=src_msg_id)
+    finally:
+        lock.release()
 
 
 # 接着上一句说的信号：指向你、提问、或者就是个短半句

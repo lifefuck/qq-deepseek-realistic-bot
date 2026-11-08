@@ -42,6 +42,8 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
         cfg["muted"] = not turn_on
         bot.save_group_configs()
         if turn_on:
+            # /stop 会写静默保护期，不在这里清掉就会「回执说全开了，实际十分钟不说话」
+            bot.group_silence_until.pop(group_id, None)
             reply = "全开了，群里该说说该闹闹"
         else:
             reply = "全关了，从现在起群里我就当没听见，发 /on 才回来"
@@ -50,7 +52,8 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
 
 
     # 1. /new - 重置上下文 (支持 /new all 重置所有群与私聊)
-    if cmd_lower.startswith("/new"):
+    _cmd_head = cmd_lower.split()[0] if cmd_lower.split() else ""
+    if _cmd_head == "/new":
         args = cmd.split()
         if len(args) > 1 and args[1].lower() in ["all", "所有", "全部"]:
             bot.group_timelines.clear()
@@ -83,7 +86,7 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
         return True
 
     # 2. /stop - 一键紧急刹车中止所有思考与排队任务并开启静默
-    elif cmd_lower.startswith("/stop"):
+    elif _cmd_head == "/stop":
         stopped_count = 0
         # 1. 取消所有群的防抖任务
         for gid, task in list(bot.group_debounce_tasks.items()):
