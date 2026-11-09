@@ -392,6 +392,9 @@ def test_action_intents():
     check("不误伤正常讨论", not actions.RE_ATTACK_ALL.search("这游戏攻击力多少"))
     check("越线台词被拦下", actions._clean_line("你全家都傻") == "")
     check("正常损话留着", actions._clean_line("就你这发言水平") == "就你这发言水平")
+    check("识别搜索", bool(actions.RE_SEARCH.search("查一下今天的金价")))
+    check("空指代不搜", not actions.RE_SEARCH.search("这是什么意思"))
+    check("识别B站热榜", bool(actions.RE_BILI.search("b站热榜有什么好看的")))
 
 
 if __name__ == "__main__":

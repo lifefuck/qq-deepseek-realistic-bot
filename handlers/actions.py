@@ -14,6 +14,8 @@ import random
 import re
 from typing import Optional
 
+import connectors
+
 
 class _BotProxy:
     """`python bot.py` 跑起来时 __main__ 和 bot 是两个模块对象，
@@ -47,6 +49,14 @@ RE_ATTACK_ALL = re.compile(
 )
 # 「骂一下小明」「给我喷那个神人」「怼回去」——后者由 llm 的空转重试处理
 RE_TARGET = re.compile(r"^(?:给我|帮我|去)?\s*(?:骂|怼|喷|嘲讽|损)(?:一下|一句)?\s*(.+)$")
+
+# 「查一下今天有什么新闻」「搜搜那个梗」「XX 是什么」
+RE_SEARCH = re.compile(
+    r"^(?:给我|帮我|你)?(?:去)?(?:查|搜|搜索|查一下|搜一下|查查|搜搜)(?:一下|一查)?\s*(.+)$"
+    r"|^(.{2,20}?)(?:是什么|啥意思|怎么回事|多少钱|几点|在哪)"
+)
+# 「B站热榜」「有什么好看的」
+RE_BILI = re.compile(r"(b站|B站|哔哩).{0,4}(热榜|热门|排行|好看)|(热榜|热门|排行).{0,3}(b站|B站)|有什么好看的")
 
 # 模型抽风时的兜底：宁可普通，也别空转
 _FALLBACK_LINES = (
@@ -143,6 +153,73 @@ async def _gen_lines(people: list, mood: str) -> dict:
         return {}
 
 
+async def _chat(user_prompt: str, max_tokens: int = 120, effort: str = "low",
+                temperature: float = 0.7) -> str:
+    """一次短问答，只拿来把搜索结果说成人话。"""
+    payload = bot.get_base_chat_payload(
+        model=bot.MODEL_NAME,
+        messages=[
+            {"role": "system", "content": bot.SYSTEM_PROMPT},
+            {"role": "user", "content": user_prompt},
+        ],
+        max_tokens=max_tokens,
+        temperature=temperature,
+        effort=effort,
+    )
+    try:
+        async with bot.llm_semaphore:
+            async with bot.get_http_session().post(
+                bot.SILICONFLOW_API_URL,
+                headers={"Authorization": f"Bearer {bot.SILICONFLOW_API_KEY}",
+                         "Content-Type": "application/json"},
+                json=payload, timeout=25,
+            ) as resp:
+                if resp.status != 200:
+                    logger.warning("[动作层] 问答失败 HTTP %d", resp.status)
+                    return ""
+                data = await resp.json()
+    except Exception as e:
+        logger.warning("[动作层] 问答异常: %s", e)
+        return ""
+    return (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "").strip()
+
+
+async def _do_search(ws, group_id: int, query: str) -> None:
+    res = await connectors.search_web_brief(bot.get_http_session(), query, limit=3)
+    if not res:
+        await bot.call_action(ws, "send_group_msg",
+                              {"group_id": group_id, "message": "没搜到，换个说法再问"})
+        return
+    ctx = "\n".join(f"- {r['title']}：{(r.get('snippet') or '')[:120]}" for r in res)
+    ans = await _chat(
+        f"群友问：{query}\n我只搜到这些：\n{ctx}\n\n"
+        f"用一两句口语回答他，总长不超过 40 字，别复述「我搜到」这种过程，"
+        f"没有把握就说不知道，别编。",
+        max_tokens=120, temperature=0.5,
+    )
+    if not ans:
+        ans = f"搜到一条：{res[0]['title']}"
+    for line in [x.strip() for x in ans.split("\n") if x.strip()][:2]:
+        await bot.call_action(ws, "send_group_msg", {"group_id": group_id, "message": line})
+    logger.info("[动作层] 搜索 %r -> %s", query, ans[:40])
+
+
+async def _do_bili(ws, group_id: int) -> None:
+    vids = await connectors.fetch_bilibili_hot_videos(bot.get_http_session(), limit=3)
+    titles = [v.get("title", "").strip() for v in vids if v.get("title")]
+    if not titles:
+        await bot.call_action(ws, "send_group_msg",
+                              {"group_id": group_id, "message": "B站这会儿抓不到，等会儿再看"})
+        return
+    head = "B站现在火的是" + "、".join(f"「{t}」" for t in titles[:2])
+    await bot.call_action(ws, "send_group_msg", {"group_id": group_id, "message": head})
+    if len(titles) > 2:
+        await bot.call_action(ws, "send_group_msg",
+                              {"group_id": group_id, "message": f"还有个「{titles[2]}」"})
+    logger.info("[动作层] B站热榜 %d 条", len(titles))
+
+
+
 async def _send(ws, group_id: int, qq: int, line: str) -> None:
     line = _clean_line(line)
     if not line:
@@ -188,6 +265,25 @@ async def maybe_run(ws, group_id: int, sender_id: int, sender_nick: str,
         qq, nick = target
         lines = await _gen_lines([target], "损")
         await _send(ws, group_id, qq, lines.get(str(qq)) or random.choice(_FALLBACK_LINES))
+        return True
+
+    # 「B站热榜」这类固定来源，先于搜索匹配，不然「B站」会被当成搜索词
+    if RE_BILI.search(body):
+        await _do_bili(ws, group_id)
+        return True
+
+    # 联网查东西：以前只有「梗」才触发搜索，其他问题全靠模型硬编
+    m = RE_SEARCH.search(body)
+    if m:
+        query = (m.group(1) or m.group(2) or "").strip(" ，。,.")
+        # 「这是什么意思」这种空指代搜不出东西，还会显得乱接话
+        if len(query) >= 3 and not re.match(r"^[这那你我他她它]", query):
+            await _do_search(ws, group_id, query)
+            return True
+
+    # 「今天天气怎么样」「明天什么新闻」——没有明确动词，但确实是问实时信息
+    if re.search(r"(天气|气温|下雨|新闻|股价|金价|汇率|比分|赛程|上映|航班)", body):
+        await _do_search(ws, group_id, body)
         return True
 
     return False
