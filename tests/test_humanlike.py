@@ -333,6 +333,56 @@ def test_interject():
     check("分数不越界", 0 <= s <= 1, f"{s:.2f}")
 
 
+def test_long_clause_split():
+    """线上实测：模型一口气写 20 多字不带逗号，「2~10 字」的规则等于没有。"""
+    from services import messaging
+
+    segs = messaging.shape_short(["你们是集体被devinfo分区吸进去了还是咋的"])
+    check("无逗号长句也切开", len(segs) >= 2, str(segs))
+    check("切完每条不超过 18 字", all(len(x) <= 18 for x in segs), str(segs))
+    check("不切出俩字残句", all(len(x) >= 4 for x in segs), str(segs))
+
+    segs2 = messaging.shape_short(["[CQ:at,qq=1234567890] 这个仓库 https://github.com/a/b 你自己看吧"])
+    joined = "".join(segs2)
+    check("CQ 码没被从中间切断", joined.count("[CQ:at,qq=1234567890]") == 1, str(segs2))
+    check("链接整段保留", "https://github.com/a/b" in joined, str(segs2))
+
+
+def test_de_cliche():
+    """「这波/属于是」连着几条出现，是 AI 味最明显的指纹。"""
+    from services import messaging
+
+    check("重复出现的模板词被摘掉",
+          messaging.de_cliche("拼多多这波是真把我看傻了", ["上一条也这波"]) == "拼多多是真把我看傻了",
+          messaging.de_cliche("拼多多这波是真把我看傻了", ["上一条也这波"]))
+    check("没重复就保留原句",
+          messaging.de_cliche("拼多多这波是真把我看傻了", []) == "拼多多这波是真把我看傻了")
+    check("删词不把句子删没", messaging.de_cliche("这波", ["这波"]) == "这波")
+
+
+def test_context_hygiene():
+    """自己的长篇历史会被模型当范文照抄；裸 QQ 号会被当成名字念。"""
+    import bot as host
+    from handlers import group as gh
+
+    bot_qq = host.BOT_QQ
+    timeline = [
+        {"sender": f"小鲸鱼(你自己)(QQ {bot_qq})", "sender_id": bot_qq, "content": "更早那句自己说的"},
+        {"sender": "甲(QQ 1)", "sender_id": 1, "content": "人呢"},
+        {"sender": f"小鲸鱼(你自己)(QQ {bot_qq})", "sender_id": bot_qq, "content": "刚说的那句"},
+        {"sender": "乙(QQ 2)", "sender_id": 2, "content": "在"},
+    ]
+    kept = gh._compose_dialogue(timeline, 8)
+    own = [m for m in kept if m["sender_id"] == bot_qq]
+    check("上下文里自己只留最近一条", len(own) == 1 and own[0]["content"] == "刚说的那句", str(kept))
+    check("别人的话一条不少", len([m for m in kept if m["sender_id"] != bot_qq]) == 2)
+
+    host.group_member_nicks[999] = {123456: "老王"}
+    check("裸 QQ 号补上昵称", gh._annotate_qq("骂123456", 999) == "骂老王(QQ 123456)",
+          gh._annotate_qq("骂123456", 999))
+    check("不认识的号原样保留", gh._annotate_qq("骂123456", 998) == "骂123456")
+
+
 if __name__ == "__main__":
     test_pacing()
     test_anti_template()
@@ -343,6 +393,9 @@ if __name__ == "__main__":
     test_echo_and_particle()
     test_newline_split()
     test_short_bubbles()
+    test_long_clause_split()
+    test_de_cliche()
+    test_context_hygiene()
     test_offtopic_gate()
     test_meme_recall()
     test_quote_reply()
