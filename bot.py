@@ -80,25 +80,46 @@ SILICONFLOW_API_URL = os.environ.get("DEEPSEEK_API_URL", "https://api.siliconflo
 # 密钥只从环境变量读，仓库里只有占位符；本地放 ~/.config/qq-deepseek-bot.env，由 systemd 注入
 SILICONFLOW_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-your-key-here")
 MODEL_NAME = os.environ.get("DEEPSEEK_MODEL", "deepseek-ai/DeepSeek-V3")
-DISABLE_THINKING = os.environ.get("DISABLE_THINKING", "1").lower() in ("1", "true", "yes")
+DISABLE_THINKING = os.environ.get("DISABLE_THINKING", "0").lower() in ("1", "true", "yes")
+# 日常群聊的默认档位：low 已经够它读懂上下文，不比关思考慢多少
+DEFAULT_EFFORT = os.environ.get("DEEPSEEK_EFFORT", "low")
 
-def get_base_chat_payload(model: str, messages: list, max_tokens: int, temperature: float = 0.8) -> dict:
-    """构建统一请求载荷，自适应关闭思考或为思考模型预留安全 token 配额"""
+def think_effort(is_at: bool = False, is_admin: bool = False, is_mention: bool = False,
+                 is_follow_up: bool = False, text: str = "") -> str:
+    """按场景给思考档位：闲聊 low 保速度，真在问事/被点名才 high。
+
+    关掉思考的 flash 只会复述模板句（实测 reasoning_tokens=0），
+    但全开 max 会让一句「笑死」也磨半天，群里节奏就废了。
+    """
+    if text:
+        q = text.strip()
+        # 问事、算法、要答案的，才值得多花那几百毫秒
+        if any(k in q for k in ("怎么", "为什么", "为啥", "是什么", "多少", "哪个", "?", "？", "帮我", "查一下", "写个", "算")):
+            return "high"
+    if is_at or is_mention or is_follow_up or is_admin:
+        return "high"
+    return os.environ.get("DEEPSEEK_EFFORT", "low")
+
+
+def get_base_chat_payload(model: str, messages: list, max_tokens: int, temperature: float = 0.8,
+                          effort: Optional[str] = None) -> dict:
+    """构建统一请求载荷：默认带思考档位，关思考只留作应急开关"""
     # 思考/推理模型判定
     is_reasoning_model = any(k in model.lower() for k in ("r1", "reasoner", "flash", "pro", "cot"))
-    
+
     payload = {
         "model": model,
         "messages": messages,
         "temperature": temperature
     }
-    
+
     if DISABLE_THINKING:
-        # 主动关闭思考协议（TaoToken / NewAPI / OpenAI 扩展格式）
+        # 应急专用：显式设 DISABLE_THINKING=1 才走这里，省 token 但说话会变模板
         payload["thinking"] = {"type": "disabled"}
         payload["max_tokens"] = max_tokens
     else:
-        # 若开启思考，针对短文本互动动态放大 max_tokens，避免 reasoning 耗尽配额导致 content 截断为空
+        payload["reasoning_effort"] = effort or DEFAULT_EFFORT
+        # 带思考时 content 前面可能先烧 reasoning token，留够量免得正文被截空
         safe_tokens = max(max_tokens, 240) if is_reasoning_model else max_tokens
         payload["max_tokens"] = safe_tokens
 
