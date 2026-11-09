@@ -12,9 +12,12 @@ import json
 import logging
 import random
 import re
+import time
 from typing import Optional
 
 import connectors
+import meme_catalog
+from services import vision
 
 
 class _BotProxy:
@@ -58,6 +61,14 @@ RE_SEARCH = re.compile(
 # 「B站热榜」「有什么好看的」
 RE_BILI = re.compile(r"(b站|B站|哔哩).{0,4}(热榜|热门|排行|好看)|(热榜|热门|排行).{0,3}(b站|B站)|有什么好看的")
 
+# 「这张图啥意思」「看看这个截图」
+RE_IMAGE = re.compile(r"(这张图|这图|图里|看图|识图|图是啥|什么图|什么番|这截图|图里的)")
+# 「发个表情包」「来张图」「斗图」
+RE_MEME = re.compile(r"(发|来|整|甩)(个|张|一张)?(表情包|表情|图)|斗图|发表情")
+# 群管理：只认主人的话，且目标必须能对上具体的人
+RE_BAN = re.compile(r"^(?:给我|帮我)?\s*(?:把)?\s*(?:禁言|闭嘴|让他闭嘴)\s*(.*)$")
+RE_KICK = re.compile(r"^(?:给我|帮我)?\s*(?:把)?\s*(?:踢|踹)(?:出去|掉|了)?\s*(.*)$")
+
 # 模型抽风时的兜底：宁可普通，也别空转
 _FALLBACK_LINES = (
     "就你这发言水平也好意思开口",
@@ -100,6 +111,11 @@ def _resolve_target(group_id: int, text: str) -> Optional[tuple]:
     for uid, nick in sorted(nicks.items(), key=lambda kv: -len(str(kv[1]))):
         if nick and str(nick) in body:
             return int(uid), str(nick)
+    # 名片缓存没刷到（新群/刚重启）时，从最近发言人里对
+    for m in reversed(bot.group_timelines.get(group_id, ())):
+        s = re.sub(r"\(QQ.*?\)|\(你自己\)", "", str(m.get("sender", ""))).strip()
+        if s and s in body and m.get("sender_id"):
+            return int(m["sender_id"]), s
     m = re.search(r"(\d{5,12})", body)
     if m:
         return int(m.group(1)), str(m.group(1))
@@ -220,6 +236,109 @@ async def _do_bili(ws, group_id: int) -> None:
 
 
 
+async def _do_image(ws, group_id: int, sender_id: int) -> None:
+    """看群友刚发的图。图在 group_recent_images 里，优先取他自己发的。"""
+    pool = list(bot.group_recent_images.get(group_id, ()))
+    if not pool:
+        await bot.send_group_message(ws, group_id, "哪有图，我瞎了", at_user_id=sender_id)
+        return
+    now = time.time()
+    url, owner = None, None
+    for item in reversed(pool):
+        u, ts = item[0], item[1]
+        if now - ts > 300:
+            continue
+        sid = item[2] if len(item) >= 3 else None
+        if url is None:
+            url, owner = u, sid
+        if sid == sender_id:
+            url, owner = u, sid
+            break
+    if not url or not bot.http_session:
+        await bot.send_group_message(ws, group_id, "图裂了，重发一张", at_user_id=sender_id)
+        return
+    desc = await vision.describe_image(bot.http_session, url)
+    if not desc:
+        await bot.send_group_message(ws, group_id, "这图我看不明白", at_user_id=sender_id)
+        return
+    desc = re.sub(r"\s+", " ", desc).strip()
+    await bot.send_group_message(ws, group_id, desc[:80], at_user_id=sender_id)
+    logger.info("[动作层] 识图 -> %s", desc[:50])
+
+
+async def _do_meme(ws, group_id: int, sender_id: int, body: str) -> None:
+    b64 = meme_catalog.pick_b64(None, body)
+    if not b64:
+        await bot.send_group_message(ws, group_id, "库存空了，明天再整", at_user_id=sender_id)
+        return
+    await bot.send_meme_message(ws, group_id=group_id, b64_data=b64)
+    logger.info("[动作层] 发了一张表情包")
+
+
+def _parse_duration(text: str) -> tuple:
+    """「10分钟」「半小时」「1小时」→ 秒；解析不出按 10 分钟。"""
+    if "半小时" in text:
+        return 1800, text.replace("半小时", "").replace("半钟头", "")
+    m = re.search(r"(\d+)\s*(秒|分钟|分|小时|钟头|天)", text)
+    if not m:
+        return 600, text
+    n, unit = int(m.group(1)), m.group(2)
+    mult = {"秒": 1, "分钟": 60, "分": 60, "小时": 3600, "钟头": 3600, "天": 86400}[unit]
+    return max(60, min(n * mult, 12 * 3600)), (text[:m.start()] + text[m.end():])
+
+
+async def _is_group_admin(ws, group_id: int, uid: int) -> bool:
+    if uid == bot.ADMIN_QQ:
+        return True
+    res = await bot.call_action(ws, "get_group_member_info",
+                                {"group_id": group_id, "user_id": uid, "no_cache": True}, timeout=5.0)
+    return bool(res and res.get("status") == "ok"
+                and (res.get("data") or {}).get("role") in ("admin", "owner"))
+
+
+async def _do_ban(ws, group_id: int, sender_id: int, body: str) -> None:
+    if not await _is_group_admin(ws, group_id, sender_id):
+        await bot.send_group_message(ws, group_id, "你说话不好使", at_user_id=sender_id)
+        return
+    secs, rest = _parse_duration(body)
+    target = _resolve_target(group_id, rest)
+    if not target:
+        await bot.send_group_message(ws, group_id, "禁谁啊，说个名字", at_user_id=sender_id)
+        return
+    qq, nick = target
+    if qq in (bot.BOT_QQ, bot.ADMIN_QQ):
+        await bot.send_group_message(ws, group_id, "这个不行，换个人", at_user_id=sender_id)
+        return
+    res = await bot.call_action(ws, "set_group_ban",
+                                {"group_id": group_id, "user_id": qq, "duration": secs}, timeout=6.0)
+    if res and res.get("status") == "ok":
+        await bot.send_group_message(ws, group_id, f"{nick} 闭嘴 {secs // 60} 分钟")
+    else:
+        logger.warning("[动作层] 禁言失败: %s", res)
+        await bot.send_group_message(ws, group_id, "我禁不动他，看看我是不是管理员")
+
+
+async def _do_kick(ws, group_id: int, sender_id: int, body: str) -> None:
+    if not await _is_group_admin(ws, group_id, sender_id):
+        await bot.send_group_message(ws, group_id, "你说话不好使", at_user_id=sender_id)
+        return
+    target = _resolve_target(group_id, body)
+    if not target:
+        await bot.send_group_message(ws, group_id, "踢谁，说清楚", at_user_id=sender_id)
+        return
+    qq, nick = target
+    if qq in (bot.BOT_QQ, bot.ADMIN_QQ):
+        await bot.send_group_message(ws, group_id, "这个不行，换个人", at_user_id=sender_id)
+        return
+    res = await bot.call_action(ws, "set_group_kick",
+                                {"group_id": group_id, "user_id": qq, "reject_add_request": False}, timeout=6.0)
+    if res and res.get("status") == "ok":
+        await bot.send_group_message(ws, group_id, f"{nick} 送走了")
+    else:
+        logger.warning("[动作层] 踢人失败: %s", res)
+        await bot.send_group_message(ws, group_id, "踢不动，权限不够")
+
+
 async def _send(ws, group_id: int, qq: int, line: str) -> None:
     line = _clean_line(line)
     if not line:
@@ -265,6 +384,24 @@ async def maybe_run(ws, group_id: int, sender_id: int, sender_nick: str,
         qq, nick = target
         lines = await _gen_lines([target], "损")
         await _send(ws, group_id, qq, lines.get(str(qq)) or random.choice(_FALLBACK_LINES))
+        return True
+
+    # 群管理：破坏性动作必须点名到具体的人，权限在 _do_* 里查
+    if ("禁言" in body or "闭嘴" in body) and len(body) <= 20 and _resolve_target(group_id, body):
+        await _do_ban(ws, group_id, sender_id, body)
+        return True
+    if re.search(r"(踢|踹)", body) and len(body) <= 20 and _resolve_target(group_id, body):
+        await _do_kick(ws, group_id, sender_id, body)
+        return True
+
+    # 看图：「这张图啥意思」——图已经在 group_recent_images 里躺着了
+    if RE_IMAGE.search(body):
+        await _do_image(ws, group_id, sender_id)
+        return True
+
+    # 「发个表情包」
+    if RE_MEME.search(body) and len(body) <= 12:
+        await _do_meme(ws, group_id, sender_id, body)
         return True
 
     # 「B站热榜」这类固定来源，先于搜索匹配，不然「B站」会被当成搜索词
