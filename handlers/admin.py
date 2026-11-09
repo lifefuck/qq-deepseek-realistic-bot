@@ -320,7 +320,8 @@ async def generate_agent_command_reply(action_type: str, detail: str = "", is_pr
             {"role": "user", "content": prompt}
         ],
         max_tokens=50,
-        temperature=0.85
+        temperature=0.85,
+        effort="high",
     )
 
     try:

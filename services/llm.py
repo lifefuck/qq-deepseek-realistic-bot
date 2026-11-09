@@ -350,7 +350,9 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             {"role": "user", "content": user_prompt}
         ],
         max_tokens=max_tokens_val,
-        temperature=temperature_val
+        temperature=temperature_val,
+        effort=bot.think_effort(is_at=is_at, is_admin=is_admin, is_mention=is_mention,
+                                is_follow_up=is_follow_up, text=latest_line),
     )
     
     bot.get_http_session()
@@ -454,7 +456,8 @@ async def call_deepseek_poke(sender_nick: str, is_admin: bool, group_id: Optiona
             {"role": "user", "content": user_prompt}
         ],
         max_tokens=40,
-        temperature=0.9
+        temperature=0.9,
+        effort="low",
     )
 
     session = bot.get_http_session()
@@ -520,7 +523,8 @@ async def evaluate_favor_with_ai(user_id: int, sender_nick: str, dialogue_snippe
             {"role": "user", "content": user_prompt}
         ],
         max_tokens=80,
-        temperature=0.1
+        temperature=0.1,
+        effort="low",
     )
     payload["response_format"] = {"type": "json_object"}
     
