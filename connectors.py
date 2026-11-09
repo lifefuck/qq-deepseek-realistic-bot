@@ -101,36 +101,58 @@ async def search_anime_by_image(session: aiohttp.ClientSession, image_url: str) 
 
 # ==================== 免 Key 网页轻量检索 ====================
 async def search_web_brief(session: aiohttp.ClientSession, query: str, limit: int = 3) -> List[Dict[str, str]]:
-    """通过 DuckDuckGo HTML 引擎免 Key 抓取前 3 条网页摘要作为大模型补充上下文"""
-    search_url = "https://html.duckduckgo.com/html/"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Referer": "https://html.duckduckgo.com/"
-    }
-    data = {"q": query, "b": ""}
-    results = []
+    """免 Key 网页检索：cn.bing.com 优先，拿不到退回搜狗。
+
+    原先用 DuckDuckGo HTML，在国内网络下直接超时，搜索是静默失败的——
+    表现就是「问它点什么它都答不上来」，其实是网络层没通。
+    """
+    ua = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+          "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+    results: List[Dict[str, str]] = []
+
+    def _clean(raw: str) -> str:
+        txt = re.sub(r"<[^>]+>", "", raw or "")
+        txt = txt.replace("&ensp;", " ").replace("&#0183;", " ").replace("&nbsp;", " ")
+        txt = re.sub(r"&[a-z]+;", " ", txt)
+        return re.sub(r"\s+", " ", txt).strip()
+
     try:
-        async with session.post(search_url, data=data, headers=headers, timeout=8.0) as resp:
+        async with session.get("https://cn.bing.com/search", params={"q": query},
+                               headers={"User-Agent": ua}, timeout=10.0) as resp:
             if resp.status == 200:
                 html = await resp.text()
-                # 按 result 整块解析：标题和摘要必须同源。
-                # 以前是两个独立正则按下标对齐，DDG 一改版就「标题 A + 摘要 B」喂给模型。
-                blocks = re.findall(r'<div class="result results_links[\s\S]*?</div>\s*</div>', html)
-                if not blocks:
-                    blocks = re.findall(r'<div class="result__body">([\s\S]*?)</div>', html)
-                for block in blocks:
-                    tm = re.search(r'<a class="result__a"[^>]*>([\s\S]*?)</a>', block)
+                for block in re.findall(r'<li class="b_algo".*?</li>', html, re.S):
+                    tm = re.search(r"<h2[^>]*>.*?<a[^>]*>(.*?)</a>", block, re.S)
                     if not tm:
                         continue
-                    sm = re.search(r'<a class="result__snippet"[^>]*>([\s\S]*?)</a>', block)
-                    t = re.sub(r'<[^>]+>', '', tm.group(1)).strip()
-                    sn = re.sub(r'<[^>]+>', '', sm.group(1)).strip() if sm else ""
-                    if t:
-                        results.append({"title": t, "snippet": sn})
+                    sm = re.search(r"<p[^>]*>(.*?)</p>", block, re.S)
+                    title = _clean(tm.group(1))
+                    if title:
+                        results.append({"title": title, "snippet": _clean(sm.group(1)) if sm else ""})
                     if len(results) >= limit:
                         break
     except Exception as e:
-        logger.debug("网页检索异常: %s", e)
+        logger.debug("bing 检索异常: %s", e)
+
+    # 必应被限流时换搜狗，两家同时挂才认命
+    if not results:
+        try:
+            async with session.get("https://www.sogou.com/web", params={"query": query},
+                                   headers={"User-Agent": ua}, timeout=10.0) as resp:
+                if resp.status == 200:
+                    html = await resp.text()
+                    heads = re.findall(r"<h3[^>]*>\s*<a[^>]*>(.*?)</a>", html, re.S)
+                    snips = re.findall(r'<div class="fz-mid space-txt">(.*?)</div>', html, re.S)
+                    for i, h in enumerate(heads):
+                        title = _clean(h)
+                        if title:
+                            results.append({"title": title,
+                                            "snippet": _clean(snips[i]) if i < len(snips) else ""})
+                        if len(results) >= limit:
+                            break
+        except Exception as e:
+            logger.debug("搜狗检索异常: %s", e)
+
     return results
 
 # ==================== B 站热门/新番动态免登录抓取 ====================
