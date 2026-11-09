@@ -232,11 +232,16 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"5. 【接话要有落点】：只接群里正在说的那件具体的事（谁、干了啥、哪个梗）；说不出具体东西就输出 [PASS]，别发感慨、别发万能吐槽；\n"
             f"6. 【说话习惯】：闲聊一条两三个字到十来个字，最多一句；想到哪说到哪，别总结别解释；\n"
             f"7. 标着「[机器人]」的发言是别的机器人，不是人：别把它当群友接茬，更别跟它对吵，最多一句阴阳就收手；\n"
+            f"8. 【被要求骂人时】必须骂到点子上：拿 TA 刚才那句话或干的事当由头，一句带刺的话说完。"
+            f"严禁只回「哼」「你才傻」「滚」「切」这种没内容的，也别说「我不骂人」装清高；"
+            f"但不许扯家人、不许骂身体、不许诅咒，损的是他干的事，不是他爹妈；\n"
         )
 
     # 三成概率只许回一两个词：群里真人一多半的回应就是「哦」「笑死」「啊？」
-    # 全长句的 bot 一眼就假；短回这一档必须由代码强制，模型自己不会选
-    if not is_private and random.random() < 0.3:
+    # 全长句的 bot 一眼就假；短回这一档必须由代码强制，模型自己不会选。
+    # 但被要求骂人时不能进这一档，否则就是「啊？」「哼」这种空转。
+    _asking_for_insult = bool(re.search(r"(骂|怼)(回去|他|她)", latest_line or ""))
+    if not is_private and not _asking_for_insult and random.random() < 0.3:
         user_prompt += (
             "\n【这条短回】：这次就回一两个词，1~4 个字，别成句（比如 哦 / 笑死 / 啊？ / 真的假的 / 行吧）。"
         )
@@ -343,6 +348,12 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         user_prompt = bot.sanitize_text(user_prompt + f"\n【实时突发情境指令（请严格融入人设自由发挥）】：\n{extra_system_instruction}\n")
     max_tokens_val = bot.MAX_OUTPUT_TOKENS
     temperature_val = 0.8
+    # 有人原样复读它上一句时，模型很容易跟着复读回去，接着就变成两句「啊？」对轰。
+    # 这里直接把局面点破，让它换招或者收手。
+    _own_recent = list(bot.recent_bot_replies.get(group_id, ()))
+    if _own_recent and latest_line.strip() and latest_line.strip() == str(_own_recent[-1]).strip():
+        user_prompt += "\n【他在原样复读你上一句】：别重复同一句话，换个角度损他一句，或者只回一个字晾着他。"
+
     payload = bot.get_base_chat_payload(
         model=bot.MODEL_NAME,
         messages=[
@@ -397,6 +408,18 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                                 continue
                             logger.error("模型连续返回空内容，放弃本次回复")
                             return None
+                        # 让它骂人，它回一个「哼」——这不是嘴笨，是空转，白白浪费一次机会
+                        _thin = reply.strip("。！？!?~～ ")
+                        _too_far = re.search(r"(全家|你妈|你爸|爹妈|祖宗|家里人|去死|死了|断子绝孙)", reply)
+                        if attempt < 2 and re.search(r"(骂|怼)(回去|他|她|它)", latest_line or "") and (
+                                _thin in {"哼", "你才傻", "滚", "切", "你才傻啊", "啊？", "啊?", "嗯？", "哈？", "哦"} or _too_far):
+                            logger.info("[空转重试] 骂人回得不合格 %r，带上由头重来一次", reply)
+                            payload["messages"][-1]["content"] += (
+                                "\n【上一版是「" + reply + "」，不合格：要么没内容，要么骂到家人身上了。"
+                                "这次只损 TA 刚说的那句话或干的事，不扯家人身体，一句说完】"
+                            )
+                            await asyncio.sleep(0.3)
+                            continue
                         # 顺手记下档位和思考 token：这两项是判断「是不是真在思考」的唯一凭据
                         _u = data.get("usage") or {}
                         _rt = (_u.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
