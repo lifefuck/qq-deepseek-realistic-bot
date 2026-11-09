@@ -7,6 +7,7 @@
 from typing import Optional
 import aiohttp
 import asyncio
+from handlers import actions
 import connectors
 import cross_interaction
 import cross_memory
@@ -501,6 +502,14 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             mem = bot.get_or_create_user_memory(sender_id, sender_nick, group_id=group_id)
             mem["favor"] = max(0, mem.get("favor", 50) - 10)
             bot.logger.info("[群 %d] 恶性攻击主人行为惩罚：群友 %s 好感度降至 %d", group_id, sender_nick, mem["favor"])
+
+    # 光会聊天不行：主人或 @ 它的人让它「骂谁 / 无差别攻击」时，先走动作层真执行
+    try:
+        if await actions.maybe_run(ws, group_id, sender_id, sender_nick, is_admin,
+                                   clean_body, is_at or is_reply_to_bot):
+            return
+    except Exception as e:
+        bot.logger.warning("[群 %d] 动作层异常，退回闲聊: %s", group_id, e)
 
     # 检查是否处于连续对话追问窗口（5分钟内免 @ 回答 5 次，有新的 @ 则重置）
     user_conv_key = (group_id, sender_id)
