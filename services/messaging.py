@@ -125,7 +125,109 @@ def _split_long_clause(s: str, min_len: int = 34) -> Optional[list[str]]:
     return best
 
 
-_MAX_BUBBLE_CHARS = 10  # 单条气泡的目标长度：真人聊天很少一口气超过十个字
+_MAX_BUBBLE_CHARS = 10   # 合并目标：真人聊天很少一口气超过十个字
+_HARD_BUBBLE_CHARS = 16  # 分句超过这个长度才考虑断；再往下硬切会切出「满爆能器是吧」这种残词
+
+# 换气点：这些字后面天然可以停一下（「冻成冰壳子吧」→ 停在「吧」后）
+_PAUSE_AFTER = "吧呢啊呀嘛啦了哦喔呗哦哈"
+# 这些字前面往往是新的一句开头（「还行」「就是把」「都三个小时」）
+_PAUSE_BEFORE = "都就还也又再才把给让被跟在很太更最别没不"
+
+
+def _avoid_token_cut(s: str, cut: int) -> int:
+    """别把 CQ 码、链接、英文单词从中间劈开——群里会看见半截 [CQ:at,q。"""
+    if cut <= 0 or cut >= len(s):
+        return cut
+    # 链接整段不切：宁可这一条长一点，也不能发出去半截 URL
+    for m in re.finditer(r"https?://\S+", s):
+        if m.start() < cut < m.end():
+            return m.start() if m.start() > 0 else m.end()
+    open_i = s.rfind("[", 0, cut)
+    if open_i != -1 and s.find("]", open_i) >= cut:
+        return open_i
+    # 只在真正落在英文/数字串中间时挪位；切在串尾或空格旁就别动
+    prev_ascii = s[cut - 1].isascii() and not s[cut - 1].isspace()
+    next_ascii = s[cut].isascii() and not s[cut].isspace()
+    if prev_ascii and next_ascii:
+        start = cut
+        while start > 0 and s[start - 1].isascii() and not s[start - 1].isspace():
+            start -= 1
+        end = cut
+        while end < len(s) and s[end].isascii() and not s[end].isspace():
+            end += 1
+        if start > 0:
+            return start
+        return end
+    return cut
+
+
+def _split_long_part(part: str) -> list[str]:
+    """分句内部没有逗号也要断：模型经常一口气写 25 字不带标点。
+
+    shape_short 以前只在逗号处下刀，模型写的分句本身超过 10 字就永远切不动，
+    于是「一句 2~10 字」这条规则形同虚设（实测中位 21 字）。这里补第二刀：
+    优先停在虚词换气点，没有就在 10 字处硬断。
+    """
+    part = (part or "").strip()
+    if len(part) <= _HARD_BUBBLE_CHARS:
+        return [part] if part else []
+    out: list[str] = []
+    while len(part) > _HARD_BUBBLE_CHARS:
+        hi = min(len(part) - 4, _HARD_BUBBLE_CHARS)
+        lo = 7  # 6 字以下断出来就是个残句（「星染这是要」），不如不断
+        cut = None
+        # 先找「吧/呢/啊…」这种天然换气点，再退而求其次找新句开头
+        for i in range(hi, lo - 1, -1):
+            if part[i - 1] in _PAUSE_AFTER:
+                cut = i
+                break
+        if cut is None:
+            for i in range(hi, lo - 1, -1):
+                if part[i] in _PAUSE_BEFORE:
+                    cut = i
+                    break
+        if cut is None:
+            # 英文/数字串前也是天然断点（「…属于是 | QQ 频道」）：切在串前面
+            for m in re.finditer(r"[A-Za-z0-9]{2,}", part[:hi + 1]):
+                if m.start() >= lo:
+                    cut = m.start()
+        if cut is None:
+            # 再退一步：切在串后面，至少别让后半句一直长下去
+            for m in re.finditer(r"[A-Za-z0-9]{2,}", part):
+                if lo <= m.end() <= len(part) - 4:
+                    cut = m.end()
+                    break
+        if cut is None:
+            # 实在找不到换气点就别硬切：宁可这一条长两三字，也不能切出半个词
+            break
+        cut = _avoid_token_cut(part, cut)
+        if cut <= 2 or cut >= len(part):
+            break
+        out.append(part[:cut].strip(" ，,、"))
+        part = part[cut:].strip(" ，,、")
+    if part:
+        out.append(part)
+    return [p for p in out if p]
+
+
+# CQ 码和裸链接：内部可能带逗号，切句前一并保护
+_TOKEN_RE = re.compile(r"\[CQ:[^\]]*\]|https?://[^\s，。！？、；\u4e00-\u9fff]+")
+_TOKEN_RE_PLACEHOLDER = re.compile(r"\x00(\d+)\x00")
+
+
+def _mask_tokens(s: str):
+    """把 CQ 码和链接换成占位符，避免按逗号切句时把它们切成半截。"""
+    keep: list[str] = []
+
+    def repl(m):
+        keep.append(m.group(0))
+        return f"\x00{len(keep) - 1}\x00"
+
+    return _TOKEN_RE.sub(repl, s), keep
+
+
+def _unmask_tokens(s: str, keep: list[str]) -> str:
+    return _TOKEN_RE_PLACEHOLDER.sub(lambda m: keep[int(m.group(1))], s)
 
 
 def shape_short(segments: list[str], limit: int = 4) -> list[str]:
@@ -133,34 +235,60 @@ def shape_short(segments: list[str], limit: int = 4) -> list[str]:
 
     真人打字是一段一段蹦出来的：先说「刚吃完饭」，再补「去买了杯咖啡」。
     模型爱写「刚吃完饭，然后去楼下买了杯咖啡，顺手把快递也拿了」这种一整条，
-    切段器只在句末标点处下刀，切完仍是十几个字一条，所以这里补一刀按逗号断。
-    只在逗号处切，不切词、不切数字；短句原样放过，免得把「就这」拆散。
+    切段器只在句末标点处下刀，切完仍是十几个字一条，所以这里补两刀：
+    先按逗号拆，再按虚词/字数断长分句，最后把碎片合并到 10 字左右。
     """
     out: list[str] = []
     for seg in segments:
         seg = (seg or "").strip()
         if not seg:
             continue
-        if len(seg) <= _MAX_BUBBLE_CHARS or not re.search(r"[，,、]", seg):
-            out.append(seg)
-            continue
+        # CQ 码和链接里自带逗号，直接按逗号切会把 [CQ:at,qq=...] 拆成两半，
+        # 发出去就是半截代码。先整体换成占位符，切完再换回来
+        masked, keep = _mask_tokens(seg)
+        parts = [p.strip() for p in re.split(r"[，,、；;]", masked) if p.strip()] or [masked]
+        pieces: list[str] = []
+        for part in parts:
+            pieces.extend(_split_long_part(part))
         buf = ""
-        for part in re.split(r"[，,、]", seg):
-            part = part.strip()
-            if not part:
-                continue
+        for p in pieces:
             if not buf:
-                buf = part
-            elif len(buf) + len(part) + 1 <= _MAX_BUBBLE_CHARS:
-                buf = f"{buf}，{part}"
+                buf = p
+            elif len(buf) + len(p) + 1 <= _MAX_BUBBLE_CHARS:
+                buf = f"{buf}，{p}"
             else:
-                out.append(buf)
-                buf = part
+                out.append(_unmask_tokens(buf, keep))
+                buf = p
         if buf:
-            out.append(buf)
+            out.append(_unmask_tokens(buf, keep))
     if len(out) > limit:
         out = out[: limit - 1] + ["，".join(out[limit - 1:])]
     return [s.strip(" ，,、") for s in out if s.strip(" ，,、")]
+
+
+# 群聊里被用烂的模板词：它们本身不算错，但连着几条都用就成了「AI 味」的证据
+_CLICHE_WORDS = ("这波属于是", "属于是", "这波", "整不会", "绷不住", "破防了")
+_CLICHE_NEUTRAL = {"这波属于是": "就是", "属于是": "就是", "这波": "", "整不会": "", "绷不住": "", "破防了": ""}
+
+
+def de_cliche(text: str, recent: list[str] | None = None) -> str:
+    """把最近几句已经用过的模板词删掉，而不是把整句毙掉。
+
+    模型不会因为提示词里写着「别用这波」就不写；但看见自己刚说过，
+    再让代码把重复的那个词摘掉，句子还在，腔调就换了。
+    """
+    if not text:
+        return text
+    recent_text = " ".join(recent or ())
+    out = text
+    for w in _CLICHE_WORDS:
+        if w not in out:
+            continue
+        if w in recent_text or out.count(w) > 1:
+            out = out.replace(w, _CLICHE_NEUTRAL[w])
+    out = re.sub(r"[，,]{2,}", "，", out).strip(" ，,、")
+    # 删词是减法，删空了就退回原句——宁可土一点也不能把一句话弄没
+    return out if len(out) >= 3 else text
 
 
 def _fold_overflow(segs: list[str], limit: int = 3) -> list[str]:
@@ -365,6 +493,8 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         text = normalize_punctuation(text)
     if not is_command_report:
         text = bot.de_template(text, group_id)
+        # 模板词限流放在最后一道：前几步可能又把「这波」拼回来
+        text = de_cliche(text, list(bot.recent_bot_replies.get(group_id, ()))[-6:])
     # [MEME:xx] 是给选图用的，正文不能带出去，也不能被切段切开
     text, meme_tag = meme_catalog.extract_tag(text)
     if not text and not meme_tag:

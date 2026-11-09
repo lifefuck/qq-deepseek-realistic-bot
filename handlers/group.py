@@ -10,6 +10,7 @@ import asyncio
 import connectors
 import cross_interaction
 import cross_memory
+import difflib
 import fun_features
 import games
 import media_resolver
@@ -642,7 +643,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     bot.track_reply_task(src_msg_id, _task, group_id)
 
 
-async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = "", src_msg_id=None):
+async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = "", src_msg_id=None, cold_nudge: bool = False):
     """同群串行入口：已有请求在跑就直接放弃这次触发，避免并发双开模型"""
     lock = bot.group_gen_locks[group_id]
     try:
@@ -651,7 +652,7 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
         bot.logger.warning("[群 %s] 等生成锁超时，放弃本次触发", group_id)
         return
     try:
-        await _process_group_trigger(ws, group_id, is_at=is_at, sender_nick=sender_nick, is_admin=is_admin, is_mention=is_mention, target_uid=target_uid, user_text=user_text, is_follow_up=is_follow_up, extra_instruction=extra_instruction, src_msg_id=src_msg_id)
+        await _process_group_trigger(ws, group_id, is_at=is_at, sender_nick=sender_nick, is_admin=is_admin, is_mention=is_mention, target_uid=target_uid, user_text=user_text, is_follow_up=is_follow_up, extra_instruction=extra_instruction, src_msg_id=src_msg_id, cold_nudge=cold_nudge)
     finally:
         lock.release()
 
@@ -683,7 +684,48 @@ def _nick_of(group_id: int, qq) -> str:
     for m in reversed(bot.group_timelines.get(group_id, ())):
         if m.get("sender_id") == qq:
             return m["sender"].split("(QQ")[0].replace("(你自己)", "").strip()
+    # 时间线只有最近 8 条，几小时前说过话的人早滚出去了；退到群成员缓存，
+    # 否则模型只会看见一串数字（「3803303988 是哪个」就是这么来的）
+    cached = (bot.group_member_nicks.get(group_id) or {}).get(qq)
+    if cached:
+        return cached
     return str(qq)
+
+
+def _annotate_qq(text: str, group_id: int) -> str:
+    """把消息里的裸 QQ 号换成「昵称(QQ 号)」。
+
+    主人说「骂 3803303988」时，模型手里没有这个人是谁的任何线索，只能念数字；
+    换成带昵称的写法，它才知道该冲谁说话。
+    """
+    def repl(m):
+        raw = m.group(0)
+        try:
+            qq = int(raw)
+        except ValueError:
+            return raw
+        nick = (bot.group_member_nicks.get(group_id) or {}).get(qq)
+        return f"{nick}(QQ {qq})" if nick and nick != raw else raw
+    return re.sub(r"(?<!\d)\d{5,11}(?!\d)", repl, text or "")
+
+
+def _compose_dialogue(timeline, limit: int) -> list[dict]:
+    """取最近 N 条上下文，自己的历史发言只留最近一条。
+
+    模型看见自己前几句 20 多字的完整评论，会照着这个长度和句式往下写；
+    提示词写「一条 2~10 字」也压不住自己的前文——先把负样本抽掉。
+    """
+    recent = list(timeline)[-limit:]
+    own_seen = False
+    kept: list[dict] = []
+    for m in reversed(recent):
+        if m.get("sender_id") == bot.BOT_QQ:
+            if own_seen:      # 更早的自己说过的话直接不给看
+                continue
+            own_seen = True
+        kept.append(m)
+    kept.reverse()
+    return kept
 
 
 def _timeline_line(m: dict) -> str:
@@ -692,7 +734,7 @@ def _timeline_line(m: dict) -> str:
     return f"{m['sender']} {addr}: {m['content']}" if addr else f"{m['sender']}: {m['content']}"
 
 
-async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = "", src_msg_id=None):
+async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = "", src_msg_id=None, cold_nudge: bool = False):
     """汇总群时间线向模型发起决策"""
     # 消息在排队期间被撤回了，连模型都不用调
     if bot.was_recalled(src_msg_id):
@@ -702,17 +744,20 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
     if not timeline and not user_text:
         return
         
+    # 裸 QQ 号换成「昵称(QQ)」：不然模型只会对着数字说话
+    user_text = _annotate_qq(user_text, group_id)
+
     # 闲聊只传当前发言和少量未读上下文，避免历史越堆越长，也防止认错人
     if is_admin:
         # 主人追问/呼叫时只喂最近几句：单独一个「乐乐」递过去，模型只能当寒暄敷衍
-        recent_lines = list(timeline)[-8:] if timeline else []
+        recent_lines = _compose_dialogue(timeline, 8) if timeline else []
         dialogue_text = "\n".join(_timeline_line(m) for m in recent_lines) or (user_text or "")
     else:
         # 群友直接找机器人时也给几行上下文，免得它把一句「乐乐」当成初次见面打招呼
         # 追问态下对方常只丢半句，上下文给宽一点才接得住
-        recent_lines = list(timeline)[-(8 if is_follow_up else 6):] if timeline else []
+        recent_lines = _compose_dialogue(timeline, 8 if is_follow_up else 6) if timeline else []
         dialogue_text = "\n".join(_timeline_line(m) for m in recent_lines) or (user_text or "")
-    
+
     bot.logger.info("[群 %d] 触发轻量会话分析 (is_at=%s, is_follow_up=%s, is_admin=%s), 发言内容: %s", group_id, is_at, is_follow_up, is_admin, dialogue_text[:40])
     
     # 异步触发「对方正在输入中」状态，消除纯等待的生硬机器感
@@ -758,6 +803,17 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
         bot.logger.info("[群 %d] 拦截到模型静默解释独白: %s，直接丢弃。", group_id, reply)
         return
 
+    # 冷场抛话最忌讳元话题：连着两次都在说「怎么没人说话」，比不开口还糟
+    if cold_nudge:
+        meta_talk = ("没动静", "没人说话", "没有人说话", "安静", "冷清", "死群", "冒泡", "在吗", "集体失踪")
+        if any(k in reply for k in meta_talk):
+            bot.logger.info("[群 %d] 冷场唤醒又聊到「没人说话」，丢弃: %s", group_id, reply)
+            return
+        prev_nudge = bot.group_last_nudge.get(group_id, "")
+        if prev_nudge and difflib.SequenceMatcher(None, prev_nudge, reply).ratio() > 0.55:
+            bot.logger.info("[群 %d] 冷场唤醒复读上次的梗，丢弃: %s", group_id, reply)
+            return
+
     # 旁观插话时（非 @ 且非管理员）：若模型生成的内容属于没搞懂语境的反问、敷衍套话，一律丢弃
     # 追问态不算旁观：人家就是来找你说话的，「你说啥」这种反问至少是个回应，别拦
     if not is_at and not is_admin and not is_follow_up:
@@ -802,6 +858,9 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
         }
         bot.group_timelines[group_id].append(bot_record)
         bot.group_history_pool[group_id].append(bot_record)
+        if cold_nudge:
+            # 记下这次冷场抛的话：四小时后再抛，别换个说法把同一个梗复读一遍
+            bot.group_last_nudge[group_id] = clean_reply_record
 
     # 成功发回后，更新追问窗口状态
     if target_uid:

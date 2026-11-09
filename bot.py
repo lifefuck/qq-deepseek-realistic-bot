@@ -129,6 +129,12 @@ user_fatigue_until: Dict[tuple, float] = collections.defaultdict(float)
 group_last_msg_time: Dict[int, float] = collections.defaultdict(float)        # 群内上一条消息时间
 group_last_bot_reply_time: Dict[int, float] = collections.defaultdict(float)  # 机器人在该群上次说话时间
 
+# 群成员昵称缓存：群名片 -> QQ。时间线只有最近 8 条，光靠它认不出几小时前
+# 说过话的人，模型就只能对着 QQ 号念数字（「3803303988 是哪个」）
+group_member_nicks: Dict[int, Dict[int, str]] = {}
+# 冷场抛话记录：同一句梗四小时后再抛就成了复读机
+group_last_nudge: Dict[int, str] = collections.defaultdict(str)
+
 # 反模板套路削平队列 (记录最近发出的 6 条回复)
 # 每个群各自记一份最近发言，跨群混在一起会让 A 群看到 B 群说过的话
 recent_bot_replies: Dict[int, Deque[str]] = collections.defaultdict(lambda: collections.deque(maxlen=8))
@@ -2029,6 +2035,52 @@ async def _favor_keeper():
             logger.error("[好感守护] 异常: %s", e)
 
 
+async def _refresh_group_member_nicks(ws, group_id: int) -> None:
+    """把群成员昵称缓存下来，给「@了谁」和裸 QQ 号翻译用。
+
+    缓存只在冷场巡检和首次进群时刷新，不做逐条消息查询——群消息频率下
+    每次调 get_group_member_list 会把自己刷限流。
+    """
+    try:
+        res = await call_action(ws, "get_group_member_list", {"group_id": group_id}, timeout=8.0)
+    except Exception as e:
+        logger.debug("[群 %d] 拉取群成员失败: %s", group_id, e)
+        return
+    data = (res or {}).get("data") or []
+    if not isinstance(data, list):
+        return
+    mapping: Dict[int, str] = {}
+    for m in data:
+        try:
+            qq = int(m.get("user_id"))
+        except (TypeError, ValueError):
+            continue
+        # 优先群名片，其次昵称：群里认的是名片
+        nick = (m.get("card") or m.get("nickname") or "").strip()
+        if nick:
+            mapping[qq] = nick[:16]
+    if mapping:
+        group_member_nicks[group_id] = mapping
+        logger.info("[群 %d] 群成员昵称缓存已更新：%d 人", group_id, len(mapping))
+
+
+async def _member_nick_refresher():
+    """每 30 分钟刷一次成员昵称，缓存过期也不至于把新人认成数字。"""
+    await asyncio.sleep(20)
+    while True:
+        try:
+            if current_ws and not current_ws.closed:
+                for gid in list(ALLOWED_GROUPS):
+                    await _refresh_group_member_nicks(current_ws, gid)
+                    await asyncio.sleep(1.0)   # 别把三条请求连成一串打出去
+            await asyncio.sleep(1800)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.debug("[昵称缓存守护] 巡检异常: %s", e)
+            await asyncio.sleep(300)
+
+
 async def _cold_group_activator():
     """群聊冷场智能唤醒：白天时段（10:00~21:00）若白名单群安静超过 3 小时，且群开启插话，随性唤醒"""
     # 启动等待 5 分钟避免刚连上就触发
@@ -2060,6 +2112,24 @@ async def _cold_group_activator():
                         logger.info("[群 %d] 检测到白天冷场超过 3 小时，触发轻量随性抛话唤醒", gid)
                         group_last_active_reply[gid] = now_ts
                         group_last_msg_time[gid] = now_ts
+                        # 素材：把最近真实聊过的话摆给它。没有素材时模型只能聊
+                        # 「怎么没人说话」，一冷场就复读同一个梗
+                        humans = [
+                            m.get("content", "").strip()
+                            for m in list(group_history_pool.get(gid) or ())[-16:]
+                            if m.get("sender_id") != BOT_QQ and m.get("content", "").strip()
+                        ]
+                        material = " / ".join(humans[-6:])[:200]
+                        extra = (
+                            "当前群聊已经冷场三个多小时。你随手冒个泡，就像翻到一句旧话顺口接一句。"
+                            "只许一两句，2~12 字，不用句号。"
+                            "禁止聊「怎么没人说话/好安静/冷清/都没人」这类空话题，也别报时间。"
+                        )
+                        if material:
+                            extra += f"\n【最近群里真实聊过的内容，挑一个具体的点接】：{material}"
+                        prev_nudge = group_last_nudge.get(gid, "")
+                        if prev_nudge:
+                            extra += f"\n【你上次冷场抛的是「{prev_nudge}」，这次换个话题，别换句话重复它】"
                         # 委托 process_group_trigger 发起一次冷场唤醒
                         from handlers.group import process_group_trigger
                         spawn(process_group_trigger(
@@ -2069,7 +2139,8 @@ async def _cold_group_activator():
                             is_admin=False,
                             target_uid=None,
                             user_text="（大家怎么突然都不说话了呀，悄悄冒个泡）",
-                            extra_instruction="当前群聊已经冷场安静了3个多小时。你作为群里的常驻成员，随性伸个懒腰冒个泡、或者对之前的残余话题丢句俏皮的吐槽/引子打破冷场（严禁机械报时，1句傲娇随意的短句，绝不用句号）。"
+                            extra_instruction=extra,
+                            cold_nudge=True,
                         ))
         except asyncio.CancelledError:
             raise
@@ -2106,6 +2177,7 @@ async def main():
     asyncio.create_task(_favor_keeper())
     asyncio.create_task(_affect_keeper())
     asyncio.create_task(_cold_group_activator())
+    asyncio.create_task(_member_nick_refresher())
 
     # 启动轻量现代浅色 Web 仪表盘（只绑 127.0.0.1，外网走 Cloudflare 隧道）
     try:
