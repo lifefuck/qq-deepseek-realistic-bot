@@ -395,6 +395,11 @@ def test_action_intents():
     check("识别搜索", bool(actions.RE_SEARCH.search("查一下今天的金价")))
     check("空指代不搜", not actions.RE_SEARCH.search("这是什么意思"))
     check("识别B站热榜", bool(actions.RE_BILI.search("b站热榜有什么好看的")))
+    check("禁言默认十分钟", actions._parse_duration("禁言小明")[0] == 600)
+    check("禁言按分钟解析", actions._parse_duration("禁言10分钟")[0] == 600)
+    check("禁言按小时解析", actions._parse_duration("禁言2小时")[0] == 7200)
+    check("半小时", actions._parse_duration("禁言半小时")[0] == 1800)
+    check("禁言封顶12小时", actions._parse_duration("禁言99天")[0] == 12 * 3600)
 
 
 if __name__ == "__main__":
