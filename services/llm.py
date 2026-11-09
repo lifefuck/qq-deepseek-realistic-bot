@@ -397,7 +397,11 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                                 continue
                             logger.error("模型连续返回空内容，放弃本次回复")
                             return None
-                        logger.info("模型生成完成 (耗时 %.2fs): %s", elapsed, reply[:30])
+                        # 顺手记下档位和思考 token：这两项是判断「是不是真在思考」的唯一凭据
+                        _u = data.get("usage") or {}
+                        _rt = (_u.get("completion_tokens_details") or {}).get("reasoning_tokens", 0)
+                        _eff = payload.get("reasoning_effort") or ("off" if payload.get("thinking") else "-")
+                        logger.info("模型生成完成 (耗时 %.2fs, 档 %s, rt %s): %s", elapsed, _eff, _rt, reply[:30])
                         # 回声开场是最像机器人的一处：把对方的词原样搬回来加个问号
                         stripped = anti_template.strip_echo_opener(reply, latest_line)
                         if stripped != reply:
