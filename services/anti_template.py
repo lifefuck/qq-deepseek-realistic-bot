@@ -30,6 +30,8 @@ def _clean(text: str) -> str:
 
 
 _PARTICLES = "啊呀呢吧嘛哦哈啦"
+# 摘掉语气词后如果落在这类字上，说明句子还没说完（是/的/了/不/就…），不能摘
+_DANGLING_TAIL = "是的了不没也就都还又才很挺太在和把被给跟与或而但如所因"
 
 
 def strip_echo_opener(reply: str, user_text: str, min_keep: int = 4) -> str:
@@ -64,7 +66,12 @@ def trim_particle(text: str, recent) -> str:
     tail = text[-1]
     same = sum(1 for r in (recent or [])[-2:] if r and str(r).strip()[-1:] == tail)
     if same >= 2:
-        return text[:-1].rstrip("，, ")
+        cut = text[:-1].rstrip("，, ")
+        # 「复读机是吧」摘成「复读机是」是残句：摘完的末字要是只能连着下文的，
+        # 说明这刀切在词中间，宁可保留语气词，也别发半句话出去
+        if len(cut) < 4 or cut[-1] in _DANGLING_TAIL:
+            return text
+        return cut
     return text
 
 
