@@ -383,6 +383,17 @@ def test_context_hygiene():
     check("不认识的号原样保留", gh._annotate_qq("骂123456", 998) == "骂123456")
 
 
+def test_action_intents():
+    """「命令」得真执行，不能又回一句「攻击谁啊」。"""
+    from handlers import actions
+
+    check("识别无差别攻击", bool(actions.RE_ATTACK_ALL.search("给我无差别攻击所有人")))
+    check("识别群嘲", bool(actions.RE_ATTACK_ALL.search("群嘲一下他们")))
+    check("不误伤正常讨论", not actions.RE_ATTACK_ALL.search("这游戏攻击力多少"))
+    check("越线台词被拦下", actions._clean_line("你全家都傻") == "")
+    check("正常损话留着", actions._clean_line("就你这发言水平") == "就你这发言水平")
+
+
 if __name__ == "__main__":
     test_pacing()
     test_anti_template()
@@ -396,6 +407,7 @@ if __name__ == "__main__":
     test_long_clause_split()
     test_de_cliche()
     test_context_hygiene()
+    test_action_intents()
     test_offtopic_gate()
     test_meme_recall()
     test_quote_reply()

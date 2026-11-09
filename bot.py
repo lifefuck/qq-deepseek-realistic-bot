@@ -59,10 +59,11 @@ import services.llm as _svc_llm
 import handlers.admin as _h_admin
 import handlers.private as _h_private
 import handlers.group as _h_group
+import handlers.actions as _h_actions
 
 # 把当前模块交给服务层。python bot.py 跑起来时 __main__ 和 bot 是两个不同的模块对象，
 # 服务层自己 import bot 会读到另一份全局状态，所以只认这里注入的实例。
-for _mod in (_svc_messaging, _svc_llm, _h_admin, _h_private, _h_group, fun_features):
+for _mod in (_svc_messaging, _svc_llm, _h_admin, _h_private, _h_group, _h_actions, fun_features):
     _mod.bind(sys.modules[__name__])
 
 # ==================== 基础配置 ====================
