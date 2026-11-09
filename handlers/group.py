@@ -523,7 +523,11 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     elif follow_up_info and now < follow_up_info.get("expire", 0.0):
         # 处于 5 分钟窗口内，检查剩余次数配额
         remain_cnt = follow_up_info.get("remain", 0)
-        if remain_cnt > 0 and not _looks_like_continuation(clean_body):
+        if is_admin and _looks_like_continuation(clean_body):
+            # 主人不设配额：life 连着说两三句就被掐，体验最差的就是这里
+            is_follow_up = True
+            bot.logger.info("[群 %d] 主人追问，跳过配额限制", group_id)
+        elif remain_cnt > 0 and not _looks_like_continuation(clean_body):
             # 窗口没过，但这句话既没指你也不像在接你的话，大概率是在跟别人聊
             bot.logger.info("[群 %d] 用户 %s 追问窗口内这句不像对你说，按旁观处理: %s", group_id, sender_nick, clean_body[:20])
         elif remain_cnt > 0:
