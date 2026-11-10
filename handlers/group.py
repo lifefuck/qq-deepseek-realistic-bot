@@ -618,11 +618,11 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         has_image=bool(vision_desc and len(vision_desc) >= 5),
     )
 
-    # 如果检测到群友分享了多媒体/视频/GitHub/图文卡片，且不是问项目自身地址，则自动触发插话进行省流与锐评
+    # 群友分享视频/GitHub/卡片时不再无条件插话：以前一有卡片就触发，结果每条链接下面
+    # 都挂一句「这视频挺有意思」，像审查员。带卡片只在质量分够（has_media 已 +0.20）时才接。
     is_media_share = bool(media_info and media_info.get("summary"))
     if is_media_share and not is_asking_own_repo:
-        should_trigger = True
-        bot.logger.info("[群 %d] 捕获到群友分享视频/GitHub/媒体卡片 (%s)，自动触发解析与评价", group_id, media_info.get("type"))
+        bot.logger.info("[群 %d] 群友分享媒体卡片（%s），交由接话评分判定是否开口", group_id, media_info.get("type"))
 
     bot.group_last_msg_time[group_id] = now
     if not should_trigger:
@@ -672,6 +672,25 @@ async def process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: i
 
 # 接着上一句说的信号：指向你、提问、或者就是个短半句
 _CONTINUATION_HINTS = ("你", "您", "鲸鱼", "？", "?", "咋", "为啥", "在吗", "呢")
+
+# 旁观插话里的「解说员口吻」：总结、点评、观察别人的聊天进展。
+# 这是最露馅的一类——真人不会站在场外评价你们聊得怎么样。
+META_COMMENTARY_PATTERNS = (
+    r"你们(这|那)(聊|说|讨论)",
+    r"你们(俩|几个|这群)",
+    r"这(个)?话题",
+    r"聊得(挺|真|好|这么)",
+    r"看得出来",
+    r"(氛围|画风|场面)(挺|真|有点)",
+    r"(总结|点评|锐评|评价)一?下",
+    r"这段?(对话|聊天|记录)",
+    r"继续聊|不打扰(你们)?|我就看看",
+)
+
+
+def _is_meta_commentary(text: str) -> bool:
+    """这句是不是站在场外评价别人的聊天（解说员口吻）。"""
+    return any(re.search(p, text or "") for p in META_COMMENTARY_PATTERNS)
 
 
 def _looks_like_continuation(text: str) -> bool:
@@ -742,9 +761,16 @@ def _compose_dialogue(timeline, limit: int) -> list[dict]:
 
 
 def _timeline_line(m: dict) -> str:
-    """一行时间线：谁、对谁说、说了什么。"""
+    """一行时间线：谁、对谁说、说了什么。
+
+    单条过长（粘贴的报错、整段复制）会挤掉别人的发言，模型就只盯着那一块；
+    超过 120 字截断，留个省略号说明后面还有。
+    """
     addr = m.get("addr") or ""
-    return f"{m['sender']} {addr}: {m['content']}" if addr else f"{m['sender']}: {m['content']}"
+    content = m.get("content") or ""
+    if len(content) > 120:
+        content = content[:120] + "…"
+    return f"{m['sender']} {addr}: {content}" if addr else f"{m['sender']}: {content}"
 
 
 async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = "", src_msg_id=None, cold_nudge: bool = False):
@@ -763,12 +789,12 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
     # 闲聊只传当前发言和少量未读上下文，避免历史越堆越长，也防止认错人
     if is_admin:
         # 主人追问/呼叫时只喂最近几句：单独一个「乐乐」递过去，模型只能当寒暄敷衍
-        recent_lines = _compose_dialogue(timeline, 8) if timeline else []
+        recent_lines = _compose_dialogue(timeline, 16) if timeline else []
         dialogue_text = "\n".join(_timeline_line(m) for m in recent_lines) or (user_text or "")
     else:
         # 群友直接找机器人时也给几行上下文，免得它把一句「乐乐」当成初次见面打招呼
         # 追问态下对方常只丢半句，上下文给宽一点才接得住
-        recent_lines = _compose_dialogue(timeline, 8 if is_follow_up else 6) if timeline else []
+        recent_lines = _compose_dialogue(timeline, 16 if is_follow_up else 14) if timeline else []
         dialogue_text = "\n".join(_timeline_line(m) for m in recent_lines) or (user_text or "")
 
     bot.logger.info("[群 %d] 触发轻量会话分析 (is_at=%s, is_follow_up=%s, is_admin=%s), 发言内容: %s", group_id, is_at, is_follow_up, is_admin, dialogue_text[:40])
@@ -830,6 +856,11 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
     # 旁观插话时（非 @ 且非管理员）：若模型生成的内容属于没搞懂语境的反问、敷衍套话，一律丢弃
     # 追问态不算旁观：人家就是来找你说话的，「你说啥」这种反问至少是个回应，别拦
     if not is_at and not is_admin and not is_follow_up:
+        # 解说员闸：站在场外总结/点评别人的聊天，是它最像 AI 的地方。
+        # 真人插话是「我也遇到过」，不是「你们聊的这个话题很有意思」。
+        if _is_meta_commentary(reply):
+            bot.logger.info("[群 %d] 旁观插话在点评/总结别人的聊天，丢弃: %s", group_id, reply)
+            return
         confused_patterns = [
             r"你在说[啥什么]", r"什么意思[呀呢啊]?", r"不知道你在说", r"没搞[懂明]",
             r"没听懂", r"谁进不去", r"哪款游戏", r"发生了什么事[呀呢啊]?", r"你在聊[啥什么]",
@@ -849,6 +880,8 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
     bot.group_msg_count_since_bot[group_id] = 0
     if not is_at and not is_admin:
         bot.group_last_active_reply[group_id] = time.time()
+        # 只统计「自己凑上去」的开口，被 @ 的回复不算，否则聊得越多配额越早用完
+        bot.group_interject_times[group_id].append(time.time())
 
     # 当群友主动艾特机器人呼叫时，回复必须带上 [CQ:at] 艾特该群友；若为主动旁观插话则自然接话不强行艾特
     at_target = target_uid if is_at else None

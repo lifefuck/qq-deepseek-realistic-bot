@@ -127,9 +127,9 @@ def get_base_chat_payload(model: str, messages: list, max_tokens: int, temperatu
     return payload
 
 # 行为与节奏参数
-TIMELINE_MAX_LEN = 8            # 群时间线保留最近消息条数
-PRIVATE_TIMELINE_MAX_LEN = 10   # 管理员私聊时间线保留条数
-INACTIVITY_TIMEOUT = 300.0      # 超过 5 分钟未说话重置时间线
+TIMELINE_MAX_LEN = 30           # 群时间线保留最近消息条数（8 条只够看半场，接到的话常常对不上前情）
+PRIVATE_TIMELINE_MAX_LEN = 14   # 管理员私聊时间线保留条数
+INACTIVITY_TIMEOUT = 900.0      # 超过 15 分钟未说话才重置时间线（5 分钟会把半场对话洗掉）
 DEBOUNCE_DELAY = 2.0            # 主动插话防抖 2.0 秒
 ACTIVE_INTERRUPT_CD = 45.0      # 主动插话冷却 45 秒
 DIRECT_AT_CD = 2.5              # 被 @ 时的用户级基础冷却（秒）
@@ -156,6 +156,8 @@ group_last_bot_reply_time: Dict[int, float] = collections.defaultdict(float)  # 
 group_member_nicks: Dict[int, Dict[int, str]] = {}
 # 冷场抛话记录：同一句梗四小时后再抛就成了复读机
 group_last_nudge: Dict[int, str] = collections.defaultdict(str)
+# 主动插话时间戳：一小时最多开口几次，防止每个话题都凑一句
+group_interject_times: Dict[int, Deque[float]] = collections.defaultdict(lambda: collections.deque(maxlen=40))
 
 # 反模板套路削平队列 (记录最近发出的 6 条回复)
 # 每个群各自记一份最近发言，跨群混在一起会让 A 群看到 B 群说过的话
@@ -1495,13 +1497,11 @@ def score_message_quality(text: str, group_id: int = 0, has_image: bool = False,
         score += 0.20
         hits.append("提问")
 
-    # 带上"你/小鲸鱼/鱼"说明可能在说机器人
+    # 带上"小鲸鱼/鱼"才算点名；单纯一个「你」在群里十有八九指别人，
+    # 以前把它当 +0.15 的信号，等于给一大堆跟自己无关的话开了绿灯
     if any(w in t for w in ("小鲸鱼", "大肥鱼", "肥鱼")):
         score += 0.25
         hits.append("点名")
-    elif "你" in t:
-        score += 0.15
-        hits.append("指向自己")
 
     # 情绪/玩梗，群里最容易接的一类
     if any(w in t for w in INTERJECT_SLANG_WORDS) or "！" in t or "!" in t:
@@ -1560,7 +1560,16 @@ def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int =
 
     score, why = score_message_quality(text, group_id=group_id, has_image=has_image, has_media=has_media)
     desire = float(cfg.get("interject_prob", 0.25))
-    threshold = max(0.35, min(0.90, 0.80 - 0.8 * desire))
+    # 门槛整体抬高 0.06：旧公式在 desire=0.25 时门槛只有 0.60，一句六字带感叹号的
+    # 闲聊就能过线，于是群里每个话题它都要凑一句
+    threshold = max(0.40, min(0.95, 0.86 - 0.8 * desire))
+
+    # 每小时开口配额：问它话的人随时能 @ 到，主动凑话不该这么勤
+    now_ts = time.time()
+    recent_openings = [t for t in group_interject_times.get(group_id, ()) if now_ts - t < 3600]
+    if len(recent_openings) >= 6:
+        logger.info("[群 %d] 近一小时已主动插话 %d 次，本轮只接 @ 与点名", group_id, len(recent_openings))
+        return False
 
     # 质量分只说明「话题值不值得接」，还不等于「现在该不该开口」：
     # 刚说完话就插嘴是抢话，上一条没人接还追着说是自说自话。

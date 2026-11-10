@@ -12,7 +12,7 @@
 全部本地计算，零 token。
 """
 
-COOLDOWN_SEC = 60.0          # 硬冷却：刚开口一分钟内不再插话
+COOLDOWN_SEC = 300.0         # 硬冷却：刚开口五分钟内不再插话（一分钟一次就是刷屏）
 HOT_WINDOW_SEC = 30 * 60     # 半小时内说过话算「还在聊」
 UNANSWERED_PENALTY = 0.70    # 上一条没人理，降权
 
@@ -28,7 +28,8 @@ def adjust(score: float, *, now: float, last_bot_reply: float,
         score *= 0.55
         reasons.append("刚说过")
     elif gap < HOT_WINDOW_SEC:
-        score *= 1.15
+        # 热聊中只给一点点加权：原来 ×1.15 会把它按在「刚说过 → 继续接」的循环里
+        score *= 1.05
         reasons.append("热聊中")
 
     if msgs_since_bot >= 6:
