@@ -316,7 +316,7 @@ def test_meme_recall():
 def test_interject():
     now = 10000.0
     check("刚说完不抢话", interject_planner.too_soon(now, now - 10))
-    check("隔久了可以接", not interject_planner.too_soon(now, now - 120))
+    check("隔久了可以接", not interject_planner.too_soon(now, now - 301))
 
     s, why = interject_planner.adjust(0.8, now=now, last_bot_reply=now - 10)
     check("刚说完降权", s < 0.8 and "刚说过" in why, f"{s:.2f} {why}")
@@ -402,6 +402,27 @@ def test_action_intents():
     check("禁言封顶12小时", actions._parse_duration("禁言99天")[0] == 12 * 3600)
 
 
+def test_interject_frequency():
+    """插嘴频率与解说员口吻：这两条是「太吵」的直接来源。"""
+    import bot as botmod
+    from handlers import group as g
+    # 单纯一个「你」不再算指向自己：群里这句话多半是对别人说的
+    score_you, _ = botmod.score_message_quality("你昨天那个事办了吗", 0)
+    score_name, _ = botmod.score_message_quality("小鲸鱼你昨天那个事办了吗", 0)
+    check("「你」不算点名", score_you < score_name, f"{score_you:.2f} vs {score_name:.2f}")
+    check("点名才过门槛", score_name >= 0.66 > score_you, f"{score_you:.2f}/{score_name:.2f}")
+    # 解说员口吻必须拦得住
+    for bad in ("你们这聊得挺热闹", "这个话题挺有意思", "总结一下你们刚才说的",
+                "看得出来大家都很闲", "继续聊，我不打扰了"):
+        check(f"拦住解说员: {bad}", g._is_meta_commentary(bad))
+    for good in ("我也遇到过这个", "这破键盘我也买过", "蓝屏八成是内存条"):
+        check(f"别误伤正常接话: {good}", not g._is_meta_commentary(good))
+    # 时间线单行超长要截断，否则一条长文挤掉整场对话
+    line = g._timeline_line({"sender": "某人(QQ 1)", "content": "啊" * 300})
+    check("长消息截断", len(line) < 160 and line.endswith("…"), str(len(line)))
+    check("时间线容量够看一整场", botmod.TIMELINE_MAX_LEN >= 20, str(botmod.TIMELINE_MAX_LEN))
+
+
 if __name__ == "__main__":
     test_pacing()
     test_anti_template()
@@ -421,6 +442,7 @@ if __name__ == "__main__":
     test_quote_reply()
     test_recall_interrupt()
     test_interject()
+    test_interject_frequency()
     print(f"\n{PASSED} passed, {len(FAILED)} failed")
     if FAILED:
         for item in FAILED:
