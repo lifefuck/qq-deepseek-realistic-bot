@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import random
+import os
 import re
 import time
 import datetime
@@ -33,6 +34,34 @@ def bind(host):
     bot = host
 
 logger = logging.getLogger("qqbot.llm")
+
+_STYLE_CACHE = {"mtime": 0.0, "data": []}
+
+
+def style_samples_hint(group_id) -> str:
+    """从本群真实聊天里抽几组「有人说→别人怎么接」，给模型一个语感锚点。
+
+    形容词（别客服腔、两三个字）模型只会理解成一种风格，示例才是它真能模仿的东西。
+    每次随机换一批，避免它把某一组示例背成口头禅。
+    """
+    if not group_id:
+        return ""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "data", "style_fewshot.json")
+    try:
+        mtime = os.path.getmtime(path)
+        if _STYLE_CACHE["mtime"] != mtime:
+            with open(path, encoding="utf-8") as f:
+                _STYLE_CACHE["data"] = json.load(f)
+            _STYLE_CACHE["mtime"] = mtime
+    except Exception:
+        return ""
+    pool = [x for x in _STYLE_CACHE["data"] if str(x.get("gid")) == str(group_id)]
+    if len(pool) < 3:
+        return ""
+    picked = random.sample(pool, min(5, len(pool)))
+    body = "\n".join('「' + x["a"] + '」→「' + x["b"] + '」' for x in picked)
+    return ("\n【这个群真实的接话长这样】别照抄内容，学的是「随口一句、踩在具体那件事上」的劲：\n" + body)
+
 
 def affect_context(group_id, is_private: bool) -> str:
     """心境 / 牵挂 / 换说法，拼成一段附加提示。
@@ -231,7 +260,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
             f"4. 群友发的图片/表情包：只接图里真实存在的一个细节（字、表情、动作），看不清就 [PASS]。\n"
             f"5. 别不懂装懂、别答非所问；没听清就问一句，但别用「你在说什么呀」这种客服腔；\n"
             f"6. 【接话要有落点】：只接群里正在说的那件具体的事（谁、干了啥、哪个梗）；说不出具体东西就 [PASS]；\n"
-            f"7. 【说话习惯】：闲聊一条两三个字到十来个字，最多一句；想到哪说到哪，别总结别解释；\n"
+            f"7. 【说话习惯】：闲聊一条两三个字到十来个字，最多一句；想到哪说到哪，别总结别解释；短可以，但每个字都得落在对方说的那件事上——只丢「啊？」「什么鬼」「你才…」等于没接；同一场聊天里别重复自己刚说过的话；\n"
             f"8. 标着「[机器人]」的发言是别的机器人，不是人：别把它当群友接茬，更别跟它对吵，最多一句阴阳就收手；\n"
             f"9. 【被要求骂人时】必须骂到点子上：拿 TA 刚才那句话或干的事当由头，一句带刺的话说完。"
             f"严禁只回「哼」「你才傻」「滚」「切」这种没内容的，也别说「我不骂人」装清高；"
@@ -239,13 +268,14 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
 
         )
 
-    # 三成概率只许回一两个词：群里真人一多半的回应就是「哦」「笑死」「啊？」
+    # 不到两成概率只许回一两个词：群里真人一多半的回应就是「哦」「笑死」「啊？」
     # 全长句的 bot 一眼就假；短回这一档必须由代码强制，模型自己不会选。
-    # 但被要求骂人时不能进这一档，否则就是「啊？」「哼」这种空转。
+    # 比例从三成压到一成五：日志里「啊？」「什么鬼」反复出现，只会短回就露馅了。
     _asking_for_insult = bool(re.search(r"(骂|怼)(回去|他|她)", latest_line or ""))
-    if not is_private and not _asking_for_insult and random.random() < 0.3:
+    if not is_private and not _asking_for_insult and random.random() < 0.15:
         user_prompt += (
-            "\n【这条短回】：这次就回一两个词，1~4 个字，别成句（比如 哦 / 笑死 / 啊？ / 真的假的 / 行吧）。"
+            "\n【这条短回】：这次就回一两个词，1~4 个字，别成句（比如 哦 / 笑死 / 真的假的 / 行吧）。"
+            "不许用「啊？」「什么鬼」「你才…」这种万能反应，必须踩在对方刚说的那具体一件事上。"
         )
 
     # 提取时间线中的纯正文内容，剔除发言者昵称前缀，防止奇葩昵称（如带有'疯狂星期四'）污染热梗与联网检索
@@ -314,6 +344,8 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
 
     # 心境：只给体感，不给分数。模型看见数字就会在回复里演情绪、报状态。
     dynamic_context += affect_context(group_id, is_private)
+    # 本群真实接话样本：形容词教不会语气，示例才教得会
+    dynamic_context += style_samples_hint(group_id)
     # 群文件上下文增强（当群友询问群文件时，仅拉取文件列表标题与元信息，不读文件正文）
     group_files_context = ""
     if group_id and bot.current_ws and any(kw in timeline_pure_content for kw in ("群文件", "文件列表", "群里有没有", "群里发过", "发群文件", "找文件")):

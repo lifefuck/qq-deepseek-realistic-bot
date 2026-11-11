@@ -158,6 +158,10 @@ group_member_nicks: Dict[int, Dict[int, str]] = {}
 group_last_nudge: Dict[int, str] = collections.defaultdict(str)
 # 主动插话时间戳：一小时最多开口几次，防止每个话题都凑一句
 group_interject_times: Dict[int, Deque[float]] = collections.defaultdict(lambda: collections.deque(maxlen=40))
+# 带时间戳的已发回复：10 分钟内同句复读直接丢弃（「啊？」「什么鬼」这种最像机器人）
+group_recent_replies: Dict[int, Deque[Tuple[float, str]]] = collections.defaultdict(lambda: collections.deque(maxlen=20))
+# 本群实际发言时间戳：连着刷三四条会被群管理盯上，用来做发言密度冷却
+group_bot_reply_times: Dict[int, Deque[float]] = collections.defaultdict(lambda: collections.deque(maxlen=20))
 
 # 反模板套路削平队列 (记录最近发出的 6 条回复)
 # 每个群各自记一份最近发言，跨群混在一起会让 A 群看到 B 群说过的话
@@ -763,9 +767,14 @@ async def check_bot_banned_realtime(ws: aiohttp.ClientWebSocketResponse, group_i
     if now >= expire:
         return False
         
-    # 如果处于被动保护期内，且距离上次主动核实已超过 5 秒，调用 get_group_member_info 验证真实状态
+    # 离解禁还早（>60 秒）就别反复问了：QQ 不会凭空提前解禁，
+    # 只在临近截止时间复核，免得每条消息都打一次 API（禁言一小时能问几百次）
+    if expire - now > 60:
+        return True
+
+    # 临近解禁才核实，30 秒一次足够
     last_check = last_active_ban_check.get(group_id, 0.0)
-    if now - last_check >= 5.0 and ws:
+    if now - last_check >= 30.0 and ws:
         last_active_ban_check[group_id] = now
         try:
             info = await call_action(ws, "get_group_member_info", {"group_id": group_id, "user_id": BOT_QQ, "no_cache": True}, timeout=1.5)
@@ -784,6 +793,48 @@ async def check_bot_banned_realtime(ws: aiohttp.ClientWebSocketResponse, group_i
             logger.debug("[群 %d] 主动核实禁言状态异常: %s", group_id, e)
             
     return True
+
+
+async def backfill_group_history(ws, group_id: int, count: int = 20) -> None:
+    """重连后把最近的群消息补回时间线。
+
+    断线期间 NapCat 不会补推事件，回来时上下文是空的；
+    补一次至少能接上前情，代价只有一次只读 API。
+    """
+    try:
+        # message_seq=0 才是「从最新往回取」；不带这个参数 NapCat 会回一个空列表
+        res = await call_action(ws, "get_group_msg_history",
+                                {"group_id": group_id, "message_seq": 0, "count": count}, timeout=8.0)
+        if not res or res.get("status") != "ok":
+            logger.warning("[群 %d] 补历史失败: status=%s retcode=%s",
+                           group_id, (res or {}).get("status"), (res or {}).get("retcode"))
+            return
+        msgs = (res.get("data") or {}).get("messages") or []
+        # 服务端按新→旧给，时间线要旧的在前
+        msgs.sort(key=lambda m: m.get("time") or 0)
+        known = {m.get("msg_id") for m in group_timelines.get(group_id, ())}
+        added = 0
+        for m in msgs:
+            mid = m.get("message_id")
+            text = (m.get("raw_message") or "").strip()
+            if not text or mid in known:
+                continue
+            sender = m.get("sender") or {}
+            uid = sender.get("user_id") or m.get("user_id")
+            name = sender.get("card") or sender.get("nickname") or "群友"
+            group_timelines[group_id].append({
+                "sender": f"{name}(QQ {uid})",
+                "sender_id": uid,
+                "content": text[:300],
+                "time": float(m.get("time") or time.time()),
+                "msg_id": mid,
+            })
+            added += 1
+        if added:
+            logger.info("[群 %d] 重连后补回 %d 条历史消息", group_id, added)
+    except Exception as e:
+        logger.warning("[群 %d] 补历史失败: %s: %s", group_id, type(e).__name__, e)
+
 
 # 管理员私聊历史记录
 admin_private_timeline: Deque[str] = collections.deque(maxlen=PRIVATE_TIMELINE_MAX_LEN)
@@ -893,10 +944,7 @@ DEFAULT_GROUP_CONFIG = {
     "enable_poke": True,        # 是否开启戳一戳互动与回戳
     "enable_games": True,       # 是否开启数字炸弹/掷骰子等文字游戏
     "enable_search": True,      # 是否开启联网热点检索 (鸭鸭搜/B站)
-    "enable_link_resolver": True, # 是否开启群友发送网页/短链/视频链接时自动解析标题与内容
-    "enable_bilibili_push": True, # 是否开启热门视频/链接推送与讨论 (默认开启)
     "enable_yunzai": True,      # 是否开启云崽游戏生态 (原神/星铁/米游社)
-    "enable_fun": True          # 被 @ 且带图时接一回合斗图
 }
 DEFAULT_PRIVATE_CONFIG = {}
 group_configs: Dict[str, dict] = {}
@@ -999,6 +1047,9 @@ def update_group_config(group_id: Optional[int], key: str, value: Any) -> bool:
     logger.info("[配置更新] 频道 %s 更新 %s -> %r", "私聊" if group_id is None else f"群 {group_id}", key, value)
     if key == "enable_yunzai" and group_id is not None:
         sync_yunzai_whitelist(group_id, bool(value))
+    if key == "muted" and group_id is not None:
+        # 静默要真的安静：云崽插件也从白名单摘掉，解除时按 enable_yunzai 恢复
+        sync_yunzai_whitelist(group_id, (not bool(value)) and bool(cfg.get("enable_yunzai", True)))
     return True
 
 load_group_configs()
@@ -1467,8 +1518,73 @@ INTERJECT_QUESTION_HINTS = (
 )
 INTERJECT_CODE_HINTS = ("报错", "traceback", "npm", "pip", "git", "docker", "报错", "编译", "配置")
 
+def _norm_reply_text(text: str) -> str:
+    """只留文字、去掉标点空白，用来判「是不是同一句话」"""
+    return re.sub(r"[\s\W_]+", "", text or "")
+
+
+def is_repeat_reply(group_id: int, text: str, window: float = 600.0) -> bool:
+    """同群 10 分钟内说过同样的话就闭嘴：短句复读是群里最容易露馅的机器人特征。"""
+    key = _norm_reply_text(text)
+    if not key:
+        return False
+    now = time.time()
+    q = group_recent_replies[group_id]
+    while q and now - q[0][0] > window:
+        q.popleft()
+    return any(k == key for _, k in q)
+
+
+ARCHIVE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "live")
+
+
+def archive_message(group_id: int, user_id, nick: str, content: str, msg_id=None) -> None:
+    """每条群消息顺手落一份到 data/live/YYYY-MM.jsonl。
+
+    journal 会轮转，原始语料丢了再也拿不回来；写失败绝不能影响聊天，所以整段吞异常。
+    """
+    try:
+        os.makedirs(ARCHIVE_DIR, exist_ok=True)
+        row = {
+            "t": int(time.time()),
+            "gid": group_id,
+            "uid": user_id,
+            "nick": nick,
+            "msg_id": msg_id,
+            "raw": (content or "")[:500],
+        }
+        path = os.path.join(ARCHIVE_DIR, time.strftime("%Y-%m") + ".jsonl")
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    except Exception as e:
+        logger.debug("归档消息失败: %s", e)
+
+
+def note_reply_sent(group_id: int, text: str) -> None:
+    """记一笔真实发出的回复，复读闸和密度闸都靠它"""
+    now = time.time()
+    group_recent_replies[group_id].append((now, _norm_reply_text(text)))
+    group_bot_reply_times[group_id].append(now)
+    # 自己的话也归档：以后对比「真人怎么接 / 机器怎么接」才看得出来差在哪
+    archive_message(group_id, BOT_QQ, "机器人", text)
+
+
+def reply_density_blocked(group_id: int, is_at: bool, window: float = 120.0, limit: int = 2) -> bool:
+    """两分钟内已经主动说过两条就停，被点名才例外。
+
+    连刷五条换来管理员一小时禁言，代价比少接一句大得多。
+    """
+    if is_at:
+        return False
+    now = time.time()
+    q = group_bot_reply_times[group_id]
+    while q and now - q[0] > window:
+        q.popleft()
+    return len(q) >= limit
+
+
 def score_message_quality(text: str, group_id: int = 0, has_image: bool = False,
-                          has_media: bool = False) -> tuple[float, str]:
+                          has_media: bool = False, recent_msgs: int = 0) -> tuple[float, str]:
     """给一条群消息打 0~1 的"值得接话"分，全部本地规则，零 token。
 
     取代原来的随机抽样：随机意味着好话题也可能被掷丢，差话题也可能被抽中。
@@ -1520,6 +1636,14 @@ def score_message_quality(text: str, group_id: int = 0, has_image: bool = False,
         score += 0.20
         hits.append("带卡片")
 
+    # 同一话题聊了三条以上说明群里在正经讨论，值得接一句；
+    # 单人刷屏同样会累加，但有「时机 刷屏」的扣分兜着，不会被刷屏带飞
+    if recent_msgs >= 3:
+        score += 0.06
+        hits.append("话题延续")
+    if recent_msgs >= 6:
+        score += 0.04
+
     # 纯表情/单字/复读往下压
     cleaned = re.sub(r"[\s\d\W_]+", "", t)
     if len(cleaned) <= 1:
@@ -1544,25 +1668,34 @@ def score_message_quality(text: str, group_id: int = 0, has_image: bool = False,
     return score, "+".join(hits) or "普通闲聊"
 
 
+def interject_threshold(desire: float) -> float:
+    """接话意愿 → 质量门槛。判定与面板展示共用这一份，避免两边公式各写一套漂移。"""
+    return max(0.40, min(0.95, 0.86 - 0.8 * desire))
+
+
 def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int = 0,
                             has_image: bool = False, has_media: bool = False) -> bool:
     """旁观接话闸门：只做开关/作息判断，剩下交给质量分。
 
     interject_prob 的语义从"抽中概率"变成"接话意愿"：越高门槛越低。
-    25（默认）对应门槛 0.65 —— 普通闲聊不接，提问、玩梗、带图、指向机器人才接。
+    25（默认）对应门槛 0.66 —— 普通闲聊不接，提问、玩梗、带图、指向机器人才接。
     """
     cfg = get_group_config(group_id if group_id else None)
+    # 静默群连主动插话都停：静音就该彻底安静，只留 /on 这一条出口
+    if cfg.get("muted"):
+        return False
     if not cfg.get("enable_interject", True):
         return False
 
     if is_bot_sleeping(group_id):
         return False
 
-    score, why = score_message_quality(text, group_id=group_id, has_image=has_image, has_media=has_media)
+    score, why = score_message_quality(text, group_id=group_id, has_image=has_image,
+                                       has_media=has_media, recent_msgs=msg_count_since)
     desire = float(cfg.get("interject_prob", 0.25))
     # 门槛整体抬高 0.06：旧公式在 desire=0.25 时门槛只有 0.60，一句六字带感叹号的
     # 闲聊就能过线，于是群里每个话题它都要凑一句
-    threshold = max(0.40, min(0.95, 0.86 - 0.8 * desire))
+    threshold = interject_threshold(desire)
 
     # 每小时开口配额：问它话的人随时能 @ 到，主动凑话不该这么勤
     now_ts = time.time()
@@ -1917,6 +2050,9 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
         user_last_poke_time[(group_id, user_id)] = now
 
     cfg = get_group_config(group_id)
+    if cfg.get("muted"):
+        logger.info("[群 %d] 本群静默中，戳一戳也不回应", group_id)
+        return
     if not cfg.get("enable_poke", True):
         logger.info("[群 %d] 戳一戳互动已禁用，略过", group_id)
         return
@@ -1969,9 +2105,9 @@ def get_bot_dashboard_status() -> Dict[str, Any]:
         last_reply = group_last_bot_reply_time.get(gid, 0.0)
         msg_count = group_msg_count_since_bot.get(gid, 0)
         base_p = float(cfg.get("interject_prob", 0.25))
-        # 面板直接显示当前门槛，方便对着调"意愿"滑块
+        # 面板与判定读同一个门槛函数，避免两处公式各算各的
         prob = base_p
-        why = f"质量门槛 {max(0.35, min(0.90, 0.80 - 0.8 * base_p)):.2f}"
+        why = f"质量门槛 {interject_threshold(base_p):.2f}"
         g_name = group_names_cache.get(gid, f"群聊 {gid}")
         groups_data.append({
             "group_id": gid,
@@ -2131,6 +2267,9 @@ async def _cold_group_activator():
                 # 静默保护
                 if now_ts < group_silence_until.get(gid, 0.0):
                     continue
+                # 本群静默时连冷场冒泡也不许，静音就是彻底安静
+                if get_group_config(gid).get("muted"):
+                    continue
                 last_msg_t = group_last_msg_time.get(gid, 0.0)
                 last_active_t = group_last_active_reply.get(gid, 0.0)
                 # 上次有消息超过 3 小时 (10800s)，且上次机器人主动插话超过 4 小时 (14400s)
@@ -2231,6 +2370,14 @@ async def main():
                     current_ws = ws
                     reconnect_fails = 0
                     logger.info("已连接到 NapCat WebSocket，开始监听消息。")
+                    # 补历史必须等主循环开始读 ws 之后再发：call_action 靠主循环分发 echo，
+                    # 在这里直接 await 会把监听堵死，请求必然超时（实测 status=None）
+                    async def _delayed_backfill(sock):
+                        await asyncio.sleep(2.0)
+                        for _gid in list(ALLOWED_GROUPS):
+                            await backfill_group_history(sock, _gid)
+                            await asyncio.sleep(0.3)
+                    asyncio.create_task(_delayed_backfill(ws))
                     # 异步刷新各群名称
                     async def refresh_group_names():
                         try:
@@ -2293,7 +2440,9 @@ async def main():
                             except Exception as e:
                                 logger.error("解析事件异常: %s", e)
                         elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                            logger.warning("WebSocket 连接关闭或异常，准备重连...")
+                            # 带上关闭码：只写「连接已断开」查不出是 NapCat 踢的还是网络抖的
+                            logger.warning("WebSocket 连接关闭或异常（type=%s, close_code=%s, data=%s），准备重连...",
+                                           msg.type, getattr(ws, "close_code", None), str(msg.data)[:120])
                             break
         except Exception as e:
             logger.error("连接失败或发生错误: %s", e)

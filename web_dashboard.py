@@ -1383,11 +1383,8 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
             return web.json_response({"error": "服务端处理失败"}, status=500)
 
     # 面板能改的字段白名单：key 随便传会把任意脏数据写进 group_configs.json
-    BOOL_CONFIG_KEYS = {
-        "muted", "enable_interject", "enable_sleep", "enable_poke", "enable_games",
-        "enable_search", "enable_bilibili_push", "enable_yunzai", "enable_fun",
-        "enable_link_resolver",
-    }
+    # 面板只留「本群静默」一个开关，其他能力走默认值或 QQ 指令，别再放开无效 key
+    BOOL_CONFIG_KEYS = {"muted"}
 
     async def handle_update_config(request: web.Request):
         if not update_config_func:

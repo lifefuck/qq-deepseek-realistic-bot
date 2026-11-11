@@ -167,13 +167,59 @@ async def main():
     cfg = bot.get_group_config(gid)
     check("/off 关全部功能",
           cfg["muted"] and not cfg["enable_interject"] and not cfg["enable_poke"]
-          and not cfg["enable_games"] and not cfg["enable_search"] and not cfg["enable_fun"])
+          and not cfg["enable_games"] and not cfg["enable_search"] and not cfg["enable_yunzai"])
     check("/off 不把作息关掉（enable_sleep 语义是启用作息）", cfg["enable_sleep"] is True)
 
     await bot.handle_admin_command(FakeWS(), "/on", is_private=False, group_id=gid)
     cfg = bot.get_group_config(gid)
-    check("/on 全开", not cfg["muted"] and cfg["enable_interject"] and cfg["enable_fun"])
+    check("/on 全开", not cfg["muted"] and cfg["enable_interject"] and cfg["enable_yunzai"])
     bot.save_group_configs = _real_save_cfg
+    bot.group_configs.pop(str(gid), None)
+
+    # 静默硬闸：连主人也不回，只有主人的 /on 能解除
+    import handlers.group as hg
+    hg.bind(bot)
+    _real_sync_yunzai = bot.sync_yunzai_whitelist
+    bot.sync_yunzai_whitelist = lambda *a, **k: None   # 别动真实的云崽配置
+    bot.save_group_configs = lambda: None
+    bot.ALLOWED_GROUPS.add(gid)   # 入口先校验白名单群，测试群得临时挂进去
+    bot.group_configs[str(gid)] = dict(bot.DEFAULT_GROUP_CONFIG, muted=True)
+
+    def _event(uid, text):
+        return {"group_id": gid, "user_id": uid, "raw_message": text,
+                "message_id": 1, "sender": {"nickname": "测试"}}
+
+    def _sent():
+        return [p for a, p in calls if a == "send_group_message"]
+
+    calls.clear()
+    await hg.handle_group_message(FakeWS(), _event(bot.ADMIN_QQ, "在吗"))
+    check("静默时主人闲聊也不回", not _sent())
+
+    calls.clear()
+    await hg.handle_group_message(FakeWS(), _event(100001, "/on"))
+    check("群友发 /on 不解锁", bot.get_group_config(gid)["muted"])
+
+    calls.clear()
+    await hg.handle_group_message(FakeWS(), _event(bot.ADMIN_QQ, "/on"))
+    check("主人 /on 解锁静默", not bot.get_group_config(gid)["muted"])
+
+    # 复读闸 / 密度闸 / 话题延续加分
+    import time as _t
+    _g = 424242
+    bot.note_reply_sent(_g, "什么鬼")
+    check("复读闸识别同句", bot.is_repeat_reply(_g, "什么鬼！"))
+    check("复读闸不误伤不同句", not bot.is_repeat_reply(_g, "这不对吧"))
+    bot.group_bot_reply_times[_g].extend([_t.time(), _t.time()])
+    check("连发两条后挡主动开口", bot.reply_density_blocked(_g, False))
+    check("被点名不受密度限制", not bot.reply_density_blocked(_g, True))
+    s0, _ = bot.score_message_quality("今天这波更新有点离谱啊", recent_msgs=0)
+    s3, _ = bot.score_message_quality("今天这波更新有点离谱啊", recent_msgs=3)
+    check("话题延续有加分", s3 > s0)
+
+    bot.sync_yunzai_whitelist = _real_sync_yunzai
+    bot.save_group_configs = _real_save_cfg
+    bot.ALLOWED_GROUPS.discard(gid)
     bot.group_configs.pop(str(gid), None)
 
     # 10. /memary：合并转发成一条折叠记录，节点里要有 QQ 号、身份、头衔
