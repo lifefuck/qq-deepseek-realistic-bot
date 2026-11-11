@@ -1,4 +1,5 @@
 import os
+import re
 import time
 import base64
 import logging
@@ -22,6 +23,46 @@ FALLBACK_MODELS = [
     "gemini-3.6-flash",
     "gemini-3.8-flash",
 ]
+
+# 整条识图链路的总预算（秒）。识图是在同群锁内同步等待的，
+# 单个模型给 10s、五个模型连着试，最坏能把后面前来排队的消息压住 40s+，
+# 群里看到的就是"机器人延迟很高"。所以改成整条链路一个总预算，超了就放弃。
+VISION_TOTAL_BUDGET = float(os.environ.get("VISION_TOTAL_BUDGET", "12"))
+# 单次请求上限，必须小于总预算，失败才来得及降级
+VISION_ATTEMPT_TIMEOUT = float(os.environ.get("VISION_ATTEMPT_TIMEOUT", "8"))
+
+
+def _clean_desc(text: str) -> str:
+    """去掉首尾引号/代码块残留。模型截断时常在开头留半个引号"""
+    t = (text or "").strip()
+    t = re.sub(r"^```[a-zA-Z]*\s*", "", t)
+    t = re.sub(r"```$", "", t)
+    return t.strip().strip('"\'“”').strip()
+
+
+def _looks_like_desc(text: str, finish_reason: Optional[str] = None) -> bool:
+    """判断一段识图返回是不是能用的描述。
+
+    之前只判 `if text:`，于是被截断的残句（真实案例：`" * Status box`）也算成功，
+    下游拿着这句空气当"看见了图"，只能接着十几分钟前的老话题硬聊，
+    表现为答非所问、看起来像延迟。宁可不识图，也别把残句喂给主模型。
+    """
+    t = _clean_desc(text)
+    if not t:
+        return False
+    # finishReason 不是 STOP 基本等于被截断/被打断
+    if finish_reason and finish_reason not in ("STOP", "MAX_TOKENS"):
+        return False
+    visible = re.sub(r"[\s\W_]+", "", t)
+    if len(visible) < 6:
+        return False
+    # 有效字符占比太低说明是符号碎片（引号、列表符、换行）
+    if len(visible) / max(len(t), 1) < 0.4:
+        return False
+    # 中文是主语言：没有中文时要求足够长，否则半句英文 fragment 比如 "Status box" 会漏过去
+    if not re.search(r"[\u4e00-\u9fff]", t) and len(visible) < 25:
+        return False
+    return True
 
 async def download_image_as_base64(session: aiohttp.ClientSession, image_url: str) -> Optional[tuple[str, str]]:
     """下载图片并转换为 base64 及对应 mime_type（若 URL 需要翻墙则附带代理）"""
@@ -72,9 +113,14 @@ async def describe_image(
         "用两三句话白描这张图，60 字以内：谁/什么在做什么，关键的物件和场景，"
         "图上的字原样抄下来。只写看得见的，不解释含义、不评价好坏、不猜出处和来历。"
         "认不出是谁就直说认不出。"
-    )
+    ),
+    deadline: Optional[float] = None,
 ) -> Optional[str]:
-    """使用 Google Gemini 极速视觉模型识别图片内容（带内存缓存）"""
+    """使用 Google Gemini 极速视觉模型识别图片内容（带内存缓存）
+
+    deadline: 绝对时间戳（time.time() 口径）。同一条消息的多张图共用同一个 deadline，
+    避免一张图超时后第二张再重新给满预算。
+    """
     import hashlib
     url_hash = hashlib.md5(image_url.encode("utf-8")).hexdigest()
     now = time.time()
@@ -113,38 +159,57 @@ async def describe_image(
     }
 
     t0 = time.time()
+    if deadline is None:
+        deadline = t0 + VISION_TOTAL_BUDGET
     models_to_try = [GEMINI_MODEL] + [m for m in FALLBACK_MODELS if m != GEMINI_MODEL]
 
     for model_name in models_to_try:
+        remaining = deadline - time.time()
+        # 剩余时间不够一次像样的请求就别开新模型了，宁可没有描述也别继续占着同群锁
+        if remaining < 1.5:
+            logger.warning("[Vision] 总预算 %.1fs 已用尽，放弃识图（已试 %s）", VISION_TOTAL_BUDGET, model_name)
+            break
+        attempt_timeout = max(1.5, min(VISION_ATTEMPT_TIMEOUT, remaining))
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
         try:
             async with session.post(
                 url,
                 json=payload,
                 proxy=PROXY_URL,
-                timeout=aiohttp.ClientTimeout(total=10.0)
+                timeout=aiohttp.ClientTimeout(total=attempt_timeout)
             ) as resp:
                 if resp.status != 200:
                     err_text = await resp.text()
                     logger.warning("[Vision] Gemini (%s) 识图 API 错误 HTTP %d: %s", model_name, resp.status, err_text[:80])
                     continue
                 res_json = await resp.json()
+                if res_json.get("promptFeedback", {}).get("blockReason"):
+                    logger.warning("[Vision] Gemini (%s) 被安全策略拦截: %s", model_name, res_json["promptFeedback"]["blockReason"])
+                    continue
                 candidates = res_json.get("candidates", [])
                 if not candidates:
                     continue
+                finish_reason = candidates[0].get("finishReason")
                 parts = candidates[0].get("content", {}).get("parts", [])
                 if not parts:
+                    logger.warning("[Vision] Gemini (%s) 返回空 parts (finishReason=%s)", model_name, finish_reason)
                     continue
-                text = parts[0].get("text", "").strip()
+                text = _clean_desc(parts[0].get("text", ""))
+                if not _looks_like_desc(text, finish_reason):
+                    # 残句不能当成功：继续降级，让下一个模型再试
+                    logger.warning(
+                        "[Vision] Gemini (%s) 返回残句，当失败处理 (finishReason=%s, %.2fs): %r",
+                        model_name, finish_reason, time.time() - t0, text[:60],
+                    )
+                    continue
                 logger.info("[Vision] Gemini (%s) 识图成功 (耗时 %.2fs): %s", model_name, time.time() - t0, text[:60])
-                if text:
-                    _vision_cache[url_hash] = (text, now)
-                    if len(_vision_cache) > 200:
-                        oldest_key = min(_vision_cache, key=lambda k: _vision_cache[k][1])
-                        _vision_cache.pop(oldest_key, None)
+                _vision_cache[url_hash] = (text, now)
+                if len(_vision_cache) > 200:
+                    oldest_key = min(_vision_cache, key=lambda k: _vision_cache[k][1])
+                    _vision_cache.pop(oldest_key, None)
                 return text
         except Exception as e:
-            logger.warning("[Vision] 请求 Gemini (%s) 视觉接口失败: %s", model_name, e)
+            logger.warning("[Vision] 请求 Gemini (%s) 视觉接口失败 (%.2fs): %r", model_name, time.time() - t0, e)
             continue
 
     return None
