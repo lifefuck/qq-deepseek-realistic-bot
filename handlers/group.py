@@ -63,8 +63,13 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     is_admin = (sender_id == bot.ADMIN_QQ)
     now = time.time()
 
-    # /off 总闸：群里除了主人，谁说话都不理（连 @ 也不回）
-    if not is_admin and bot.get_group_config(group_id).get("muted"):
+    # 静默硬闸：连主人也不回，解析/游戏/搜索/模型整条流水线一刀切。
+    # 只留一条逃生口——主人在群里发 /on 才解除，别的指令和闲聊都当没听见。
+    if bot.get_group_config(group_id).get("muted"):
+        if is_admin:
+            mute_cmd = bot.clean_cq_codes(raw_message).strip().replace("／", "/")
+            if mute_cmd.split()[:1] == ["/on"]:
+                await bot.handle_admin_command(ws, "/on", is_private=False, group_id=group_id)
         return
     
     # 提取纯文本与精准 @ 判定（基于 OneBot 11 规范的 QQ 号精准判定）
@@ -466,6 +471,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     }
     bot.group_timelines[group_id].append(record_item)
     bot.group_history_pool[group_id].append(record_item)
+    # 顺手落一份到磁盘：日志会被 journal 轮转清掉，原始语料攒着以后做风格蒸馏
+    bot.archive_message(group_id, sender_id, sender_display, full_content, src_msg_id)
     # 异步非阻塞推入跨群公共话题（仅内存+脏标记）
     cross_memory.cross_group_mgr.record_topic(group_id, sender_display, full_content)
     bot.logger.info("[群 %d][%s] %s%s(QQ %d): %s", group_id, "被@" if is_at else "群聊", prefix, sender_display, sender_id, full_content)
@@ -536,7 +543,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             # 主人不设配额：life 连着说两三句就被掐，体验最差的就是这里
             is_follow_up = True
             bot.logger.info("[群 %d] 主人追问，跳过配额限制", group_id)
-        elif remain_cnt > 0 and not _looks_like_continuation(clean_body):
+        elif remain_cnt > 0 and not _looks_like_continuation(clean_body) and not _is_sticker_continuation(group_id, clean_body):
             # 窗口没过，但这句话既没指你也不像在接你的话，大概率是在跟别人聊
             bot.logger.info("[群 %d] 用户 %s 追问窗口内这句不像对你说，按旁观处理: %s", group_id, sender_nick, clean_body[:20])
         elif remain_cnt > 0:
@@ -598,11 +605,10 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
         
     # 2. 旁观模式（未直接找机器人）：质量打分决定要不要开口
     # 不再按"水群词"一刀切，短句/表情交给打分自然压分
-    # 明确在跟别人说话（@别人 / 回复别人）就别插嘴：
-    # 以前只挡了即时回复，打分插话这条路照样接一嘴，A 对 B 说的话就被当成对自己说的
+    # @ 别人 / 回复别人时以前直接 return，可群里大半发言都带 @ 或引用，这条路等于把插话废了。
+    # 现在交回评分：旁观接话本来就不该当成"对他说的"，分值不够自然不开口。
     if not is_at and (is_at_other or is_reply_to_other):
-        bot.logger.info("[群 %d] 群友在与他人对话，放弃插话", group_id)
-        return
+        bot.logger.debug("[群 %d] 群友在与他人对话，仍按旁观评分判定", group_id)
 
     # 检查管理员 /stop 设置的群主动插话静默保护期
     silence_exp = bot.group_silence_until.get(group_id, 0.0)
@@ -705,6 +711,19 @@ def _looks_like_continuation(text: str) -> bool:
     if any(h in t for h in _CONTINUATION_HINTS):
         return True
     return len(t) <= 8
+
+
+def _is_sticker_continuation(group_id: int, text: str) -> bool:
+    """追问窗口里的图片/表情包当接话处理。
+
+    表情包几乎不可能是在跟别人说话，视觉描述也已经拿到了；
+    以前长文本一律判「不像对你说」，最好的接话契机全被丢掉。
+    """
+    t = (text or "").strip()
+    if "用户发送/附带的图片" not in t and not t.startswith("[CQ:image"):
+        return False
+    # 机器人三分钟内说过话才算追问，隔太久就是随手丢图
+    return time.time() - bot.group_last_bot_reply_time.get(group_id, 0.0) <= 180
 
 
 def _nick_of(group_id: int, qq) -> str:
@@ -876,6 +895,15 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
             bot.logger.info("[群 %d] 插话与当前话题无交集，丢弃: %s", group_id, reply)
             return
 
+    # 复读闸：十分钟内说过同一句就不再发；密度闸：两分钟内主动说过两条就停。
+    # 两句都放在发送前，宁可少接一句，也别在群里刷成机器人。
+    if bot.is_repeat_reply(group_id, reply):
+        bot.logger.info("[群 %d] 十分钟内说过同一句，丢弃: %s", group_id, reply)
+        return
+    if bot.reply_density_blocked(group_id, is_at or is_follow_up):
+        bot.logger.info("[群 %d] 两分钟内已主动连发两条，冷却中丢弃: %s", group_id, reply)
+        return
+
     # 机器人每次在群里发话后，重置该群的消息计数
     bot.group_msg_count_since_bot[group_id] = 0
     if not is_at and not is_admin:
@@ -891,6 +919,7 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
         bot.logger.info("[群 %s] 生成期间消息被撤回，丢弃这次回复", group_id)
         return
     sent_text = await bot.send_segmented_group_message(ws, group_id, reply, is_command_report=False, at_user_id=at_target)
+    bot.note_reply_sent(group_id, sent_text or reply)
 
     # 写回上下文的是实际发出去的那句：削平过、标签剥过，跟群里看到的一致
     clean_reply_record = bot.remove_trailing_period(bot.strip_markdown(sent_text or "")).strip()

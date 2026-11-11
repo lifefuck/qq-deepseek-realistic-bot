@@ -5,7 +5,7 @@ import logging
 import aiohttp
 from typing import Optional, Dict, Tuple
 
-from media_resolver import _is_public_url
+from media_resolver import _is_public_url, _read_body
 
 logger = logging.getLogger(__name__)
 
@@ -37,7 +37,7 @@ async def download_image_as_base64(session: aiohttp.ClientSession, image_url: st
                 logger.warning("[Vision] 下载图片失败 HTTP %d: %s", resp.status, image_url)
                 return None
             # 8MB 上限：base64 还要再涨 1/3，不能让它把内存吃掉
-            data = await resp.content.read(8 * 1024 * 1024 + 1)
+            data = await _read_body(resp, 8 * 1024 * 1024 + 1)
             if len(data) > 8 * 1024 * 1024:
                 logger.warning("[Vision] 图片超过 8MB，放弃: %s", image_url[:80])
                 return None

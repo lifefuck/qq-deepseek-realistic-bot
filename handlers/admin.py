@@ -49,6 +49,8 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
         cfg["enable_sleep"] = True
         cfg["muted"] = not turn_on
         bot.save_group_configs()
+        # 静默/恢复都要同步云崽白名单，否则群里还有插件的动静，算不上「全关」
+        bot.sync_yunzai_whitelist(group_id, bool(cfg.get("enable_yunzai", True)) if turn_on else False)
         if turn_on:
             # /stop 会写静默保护期，不在这里清掉就会「回执说全开了，实际十分钟不说话」
             bot.group_silence_until.pop(group_id, None)

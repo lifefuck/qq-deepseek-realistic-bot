@@ -4,7 +4,7 @@
 import aiohttp
 import logging
 
-from media_resolver import _is_public_url
+from media_resolver import _is_public_url, _read_body
 import random
 import re
 from typing import Any, Dict, List, Optional
@@ -36,7 +36,7 @@ async def _download_image(session: aiohttp.ClientSession, image_url: str) -> Opt
             if declared > MAX_IMAGE_BYTES:
                 logger.warning("搜番图片过大: %.1fMB", declared / 1024 / 1024)
                 return None
-            data = await resp.content.read(MAX_IMAGE_BYTES + 1)
+            data = await _read_body(resp, MAX_IMAGE_BYTES + 1)
             if len(data) > MAX_IMAGE_BYTES:
                 return None
             return data or None

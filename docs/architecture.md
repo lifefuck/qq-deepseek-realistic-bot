@@ -94,9 +94,9 @@
 | `DEEPSEEK_MODEL` | 模型名，默认 `deepseek-ai/DeepSeek-V3` |
 | `YUNZAI_OTHER_YAML` | 云崽白名单文件路径，用于同步群开关 |
 
-`group_configs.json` 按群存开关：`mode`、`muted`、`enable_interject`、`interject_prob`、`enable_sleep`、`enable_poke`、`enable_games`、`enable_search`、`enable_yunzai`、`enable_fun`。没写到的群用默认值。
+`group_configs.json` 按群存开关：`muted`、`enable_interject`、`interject_prob`、`enable_sleep`、`enable_poke`、`enable_games`、`enable_search`、`enable_yunzai`。没写到的群用默认值。
 
-`muted` 是 `/off` 的总闸，打开后群里除主人外一律不响应，连 @ 也不回。玩法类开关（games/search/yunzai/fun）默认常开、面板不再暴露，由机器人自己决定什么时候用。
+`muted` 是静默硬闸，打开后本群连主人也不回应：消息流水线（解析/游戏/搜索/模型）、戳一戳、主动插话、冷场唤醒全部停摆，云崽插件也会被移出 `whiteGroup`。唯一的逃生口是主人在群里发 `/on`，其他指令一律当没听见。
 
 ## 指令
 

@@ -12,12 +12,16 @@ import asyncio
 import ipaddress
 import json
 import logging
+import os
 import re
 import socket
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urljoin, urlparse
 
 logger = logging.getLogger("DeepSeekBot")
+
+# 匿名 API 每 IP 只有 60 次/小时，群里贴几个链接就到顶；有 token 是 5000 次
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 
 USER_AGENT = "Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.6 Mobile/15E148 Safari/604.1"
 
@@ -62,22 +66,48 @@ async def _is_public_url(url: str) -> bool:
         return False
 
 
+async def _read_body(resp: Any, limit: int = 2 * 1024 * 1024) -> bytes:
+    """读完整个响应体（最多 limit 字节）。
+
+    不能用 `resp.content.read(limit)` 一把梭：它的语义是「最多给这么多、手头有多少先返多少」，
+    网络慢的时候会在半截就返回，JSON 解析出来就是残的（现场约 15% 概率，且不抛异常）。
+    这里按块循环读到 EOF，既拿全又守住内存上限。
+    """
+    declared = resp.content_length
+    if declared and declared > limit:
+        # 超大文件只取前 limit，够提取 title/description 了
+        return await resp.content.read(limit)
+    chunks = []
+    total = 0
+    while total < limit:
+        chunk = await resp.content.read(min(65536, limit - total))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
+
+
 async def safe_fetch(
     session: aiohttp.ClientSession,
     url: str,
     *,
     timeout: float = 6.0,
     max_hops: int = MAX_REDIRECTS,
+    extra_headers: Optional[Dict[str, str]] = None,
 ) -> Optional[Tuple[str, str]]:
     """抓公网页面，返回 (最终地址, 正文)。不安全或抓不到都返回 None。"""
     current = url
+    headers = {"User-Agent": USER_AGENT}
+    if extra_headers:
+        headers.update(extra_headers)
     for _ in range(max_hops + 1):
         if not await _is_public_url(current):
             logger.warning("拒绝请求非公网地址: %s", current)
             return None
         try:
             async with session.get(
-                current, headers={"User-Agent": USER_AGENT},
+                current, headers=headers,
                 timeout=timeout, allow_redirects=False
             ) as resp:
                 if resp.status in (301, 302, 303, 307, 308):
@@ -89,11 +119,52 @@ async def safe_fetch(
                 if resp.status != 200:
                     return None
                 # 上限 2MB：群友贴个大文件链接就能把内存和事件循环一起拖死
-                raw = await resp.content.read(2 * 1024 * 1024)
+                raw = await _read_body(resp)
                 return str(resp.url), raw.decode("utf-8", errors="ignore")
         except Exception as e:
             logger.debug("抓取失败 %s: %s", current, e)
             return None
+    return None
+
+
+async def _fetch_github_repo(
+    session: aiohttp.ClientSession, owner: str, repo: str, *, attempts: int = 2
+) -> Optional[Dict[str, Any]]:
+    """取仓库元数据，拿不到就返回 None，让调用方降级成本就不发卡片。
+
+    匿名 API 有两种常态失败：
+    1. 响应体在传输中途被半截读走，JSON 解析失败（真正的根因是 content.read(n) 的语义，
+       已由 _read_body 修掉，这里仍要校验，防止别的异常形状漏过去）；
+    2. 每 IP 每小时 60 次限速，返回 {"message": ...}，里面没有仓库字段。
+    两种情况都重试一次，还是不行就返回 None，绝不拿空数据拼「未知 | ★0」的卡片。
+    """
+    url = f"https://api.github.com/repos/{owner}/{repo}"
+    headers = {"Accept": "application/vnd.github+json"}
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+    for attempt in range(attempts):
+        fetched = await safe_fetch(session, url, timeout=5.0, extra_headers=headers)
+        if not fetched:
+            logger.warning("GitHub 仓库抓取失败(第%d次) %s/%s", attempt + 1, owner, repo)
+            continue
+        body = fetched[1]
+        try:
+            data = json.loads(body)
+        except (json.JSONDecodeError, AttributeError):
+            # 截断的 JSON 到这里，长度和尾部足够定位问题
+            logger.warning(
+                "GitHub 返回 JSON 不完整(第%d次) %s/%s len=%d tail=%r",
+                attempt + 1, owner, repo, len(body), body[-80:],
+            )
+            continue
+        if isinstance(data, dict) and data.get("full_name"):
+            return data
+        # 限速/404 都是这种形状，把 message 带进日志才知道是哪种
+        message = data.get("message") if isinstance(data, dict) else data
+        logger.warning(
+            "GitHub 未返回仓库数据(第%d次) %s/%s: %s",
+            attempt + 1, owner, repo, str(message)[:120],
+        )
     return None
 
 
@@ -175,20 +246,15 @@ async def parse_media_content(session: aiohttp.ClientSession, text: str) -> Opti
             }
 
     # 4. 检测 GitHub 仓库或文件/issue链接 (github.com/owner/repo)
+    gh_failed = ""      # 记下仓库名，后面降级或兜底时用来告诉群友到底哪一步没抓到
     m_gh = re.search(r"https?://github\.com/([a-zA-Z0-9_.-]+)/([a-zA-Z0-9_.-]+)", text)
     if m_gh:
         owner = m_gh.group(1)
         repo = m_gh.group(2).rstrip("/").removesuffix(".git")
         # 排除保留路径
         if owner.lower() not in ("topics", "features", "collections", "events", "sponsors", "settings", "explore"):
-            fetched = await safe_fetch(
-                session, f"https://api.github.com/repos/{owner}/{repo}", timeout=5.0
-            )
-            if fetched:
-                try:
-                    gh_data = json.loads(fetched[1])
-                except (json.JSONDecodeError, AttributeError):
-                    gh_data = {}
+            gh_data = await _fetch_github_repo(session, owner, repo)
+            if gh_data:
                 full_name = gh_data.get("full_name") or f"{owner}/{repo}"
                 description = gh_data.get("description") or "暂无项目描述"
                 stars = gh_data.get("stargazers_count", 0)
@@ -200,6 +266,8 @@ async def parse_media_content(session: aiohttp.ClientSession, text: str) -> Opti
                     "author": owner,
                     "summary": f"[GitHub开源项目] {full_name} ({lang} | ★{stars} | ⑂{forks})\n简介: {description[:100]}"
                 }
+            # 拿不到元数据就往下走网页解析，别把空数据渲染成「未知 | ★0 | ⑂0」的假卡片
+            gh_failed = f"{owner}/{repo}"
 
     # 5. 通用网页链接解析 (http/https)，提取 title 与 meta description 参与讨论
     # 同时针对 GitHub、微信公众号、知乎、微博等提供结构化清洗
@@ -236,10 +304,23 @@ async def parse_media_content(session: aiohttp.ClientSession, text: str) -> Opti
                     summary_parts.append(f"简介: {clean_desc}")
                 elif body_snippet:
                     summary_parts.append(f"摘要: {body_snippet}")
+                # 仓库接口没抓到才走到这里，得让群友知道是抓取失败而不是项目本来没简介
+                if gh_failed:
+                    head = f"[GitHub] {gh_failed} 接口没抓到（限速或超时），先给个网页省流"
+                else:
+                    head = "[分享网页省流]"
                 return {
-                    "type": "webpage",
+                    "type": "github" if gh_failed else "webpage",
                     "title": clean_title,
-                    "summary": f"[分享网页省流] {' | '.join(summary_parts)}"
+                    "summary": f"{head} {' | '.join(summary_parts)}"
                 }
+
+    # GitHub 链接连网页都没打开：明确说是抓取失败，别让群友以为仓库是空的
+    if gh_failed:
+        return {
+            "type": "github",
+            "title": gh_failed,
+            "summary": f"[GitHub] {gh_failed} 这次没抓到，接口限速或网络超时，可以过会儿再发一次"
+        }
 
     return None

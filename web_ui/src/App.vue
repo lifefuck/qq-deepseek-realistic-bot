@@ -3,7 +3,6 @@ import { ref, onMounted, computed, watch, nextTick } from 'vue'
 import {
   MiuixButton,
   MiuixSwitchPreference,
-  MiuixSlider,
   MiuixTabRow,
   MiuixSnackbarHost,
   showSnackbar
@@ -97,26 +96,6 @@ const currentConfig = computed(() => {
 const pendingCfg = ref<Record<string, any>>({})
 const cfg = computed(() => ({ ...(currentConfig.value || {}), ...pendingCfg.value }))
 watch(selectedGroupId, () => { pendingCfg.value = {} })
-
-const localProb = ref(0)
-let isSliding = false
-
-watch(() => cfg.value.interject_prob, (v) => {
-  if (!isSliding) localProb.value = Number(v ?? 0.35)
-}, { immediate: true })
-
-function onSliderInput(val: number) {
-  isSliding = true
-  localProb.value = Math.round(val * 100) / 100
-}
-
-function onSliderCommit() {
-  if (!isSliding) return
-  isSliding = false
-  if (Math.abs(localProb.value - Number(cfg.value.interject_prob ?? 0.35)) > 1e-9) {
-    saveConfig('interject_prob', localProb.value)
-  }
-}
 
 // ==================== 用量数据 ====================
 const usage = computed<TokenUsage | null>(() => status.value?.token_usage || null)
@@ -562,93 +541,8 @@ onMounted(() => {
             <div class="block-title">响应行为</div>
             <div class="card">
               <MiuixSwitchPreference
-                title="智能插话"
-                summary="群友热聊时按气氛与概率主动参与"
-                :modelValue="cfg.enable_interject ?? true"
-                @update:modelValue="(v: boolean) => saveConfig('enable_interject', v)"
-              />
-              <div class="divider"></div>
-
-              <div class="slider-block">
-                <div class="slider-head">
-                  <div class="slider-text">
-                    <div class="row-label">主动插话概率</div>
-                    <div class="row-sub">群活跃冷场时动态调节</div>
-                  </div>
-                  <div class="slider-value">{{ Math.round(localProb * 100) }}%</div>
-                </div>
-                <div class="slider-track">
-                  <MiuixSlider
-                    :modelValue="localProb"
-                    :min="0"
-                    :max="1"
-                    :step="0.05"
-                    @update:modelValue="onSliderInput"
-                    @change-end="onSliderCommit"
-                    @pointerup="onSliderCommit"
-                    @touchend="onSliderCommit"
-                  />
-                </div>
-              </div>
-
-            </div>
-          </section>
-
-          <section class="block">
-            <div class="block-title">功能开关</div>
-            <div class="card">
-              <MiuixSwitchPreference
-                title="夜间作息"
-                summary="凌晨时段进入睡眠，不惊扰群友"
-                :modelValue="cfg.enable_sleep ?? true"
-                @update:modelValue="(v: boolean) => saveConfig('enable_sleep', v)"
-              />
-              <div class="divider"></div>
-              <MiuixSwitchPreference
-                title="戳一戳互动"
-                summary="被戳时做出表情与文字反馈"
-                :modelValue="cfg.enable_poke ?? true"
-                @update:modelValue="(v: boolean) => saveConfig('enable_poke', v)"
-              />
-              <div class="divider"></div>
-              <MiuixSwitchPreference
-                title="互动小游戏"
-                summary="钓鱼、猜数字、抽卡与好感试炼"
-                :modelValue="cfg.enable_games ?? true"
-                @update:modelValue="(v: boolean) => saveConfig('enable_games', v)"
-              />
-              <div class="divider"></div>
-              <MiuixSwitchPreference
-                title="插件指令让路"
-                summary="识别游戏查询指令，避免 AI 抢答"
-                :modelValue="cfg.enable_yunzai ?? true"
-                @update:modelValue="(v: boolean) => saveConfig('enable_yunzai', v)"
-              />
-              <div class="divider"></div>
-              <MiuixSwitchPreference
-                title="联网搜索"
-                summary="需要实时信息时主动搜索"
-                :modelValue="cfg.enable_search ?? true"
-                @update:modelValue="(v: boolean) => saveConfig('enable_search', v)"
-              />
-              <div class="divider"></div>
-              <MiuixSwitchPreference
-                title="B 站推送"
-                summary="群友发链接时抓取内容参与讨论"
-                :modelValue="cfg.enable_bilibili_push ?? false"
-                @update:modelValue="(v: boolean) => saveConfig('enable_bilibili_push', v)"
-              />
-              <div class="divider"></div>
-              <MiuixSwitchPreference
-                title="整活模式"
-                summary="允许梗图、玩梗与更放飞的发言"
-                :modelValue="cfg.enable_fun ?? true"
-                @update:modelValue="(v: boolean) => saveConfig('enable_fun', v)"
-              />
-              <div class="divider"></div>
-              <MiuixSwitchPreference
                 title="本群静默"
-                summary="只读不发言，随时可恢复"
+                summary="连你也不回应，功能全停，只有 /on 能解除"
                 :modelValue="cfg.muted ?? false"
                 @update:modelValue="(v: boolean) => saveConfig('muted', v)"
               />
