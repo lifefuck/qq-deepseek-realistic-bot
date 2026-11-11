@@ -156,13 +156,19 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
 
     if target_img_url:
         bot.logger.info("[群 %d] 捕获图片，调用 Gemini 识图感知画面: %s", group_id, target_img_url[:60])
-        vision_desc = await vision.describe_image(session, target_img_url)
+        # 一条消息里的多张图共用一个总预算：第一张卡住时，第二张不能再来一轮 12 秒，
+        # 否则群里的后续消息全排在锁后面，表现出来就是"机器人延迟很高"
+        vision_deadline = time.time() + vision.VISION_TOTAL_BUDGET
+        vision_desc = await vision.describe_image(session, target_img_url, deadline=vision_deadline)
         for extra in extra_img_urls:
-            extra_desc = await vision.describe_image(session, extra)
+            extra_desc = await vision.describe_image(session, extra, deadline=vision_deadline)
             if extra_desc:
                 vision_desc = f"{vision_desc}；另外一张：{extra_desc}" if vision_desc else extra_desc
         if vision_desc:
             bot.logger.info("[群 %d] Gemini 识图成功: %s", group_id, vision_desc[:60])
+        else:
+            # 识图失败时下游不该把"带图"当加分项硬接话，否则只能接着老话题瞎聊
+            bot.logger.info("[群 %d] 识图未得到有效画面描述，本条不按带图接话", group_id)
 
     # 记下群友之间的 @，模型接话时用来判断谁跟谁熟
     m_ats = re.findall(r'\[CQ:at,[^\]]*qq=(\d+)[^\]]*\]', raw_message)
