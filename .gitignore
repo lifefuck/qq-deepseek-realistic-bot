@@ -14,6 +14,11 @@ runtime_state.json
 anger_overrides.json
 data/*.json
 !data/memes_pool.json
+# 真实聊天语料与蒸馏产物：含群号、QQ、昵称，任何情况下都不进版本库
+data/history/
+data/live/
+data/style_fewshot.json
+data/style_profiles.json
 data/*.db
 data/*.db-journal
 data/*.db-wal
