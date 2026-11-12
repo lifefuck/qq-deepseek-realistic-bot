@@ -26,7 +26,7 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(SCRIPT_DIR, "data")
 OUTPUT_FILE = os.path.join(DATA_DIR, "memes_pool.json")
 
-# 本地代理配置 (遵循 本机 环境事实：7890 端口)
+# 本地代理配置（默认走 HTTP_PROXY，没有就退回常用的 7890）
 PROXY_HANDLER = urllib.request.ProxyHandler({
     "http": "http://127.0.0.1:7890",
     "https": "http://127.0.0.1:7890",

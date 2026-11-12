@@ -107,7 +107,7 @@ def _resolve_target(group_id: int, text: str) -> Optional[tuple]:
     """把「小明」「老王」这类称呼对回 QQ 号。"""
     body = re.sub(r"[\s，。！？!?~～]", "", text)
     nicks = bot.group_member_nicks.get(group_id, {})
-    # 长的先匹配，避免「小明」命中「一无所有」
+    # 长的先匹配，避免「阿明」命中「阿明明」
     for uid, nick in sorted(nicks.items(), key=lambda kv: -len(str(kv[1]))):
         if nick and str(nick) in body:
             return int(uid), str(nick)
