@@ -574,6 +574,11 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
     """向 NapCat 发送私聊消息并捕获发送状态（支持多句拆分连发，像真人聊天）"""
     if safety_guard.is_pass_signal(text):
         return
+    # 私聊这条链路以前不剥梗标签，群聊剥、私聊漏，主人私聊里会看到 [MEME:嘲讽]
+    # 私聊没有配图需求，标签直接扔掉
+    text, _private_meme_tag = meme_catalog.extract_tag(text)
+    if not text:
+        return
     # 私聊没有群号，用 -1 当独立槽位，别和任何群混在一起
     private_key = -1
     if not is_command_report:

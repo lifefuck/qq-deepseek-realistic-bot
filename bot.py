@@ -752,7 +752,8 @@ user_last_poke_time: Dict[tuple, float] = {}
 
 # 群禁言与全员禁言状态监测（防禁言期间盲跑大模型烧 Token）
 group_bot_ban_expire: Dict[int, float] = {}   # group_id -> 机器人解禁时间戳
-group_all_banned: Dict[int, bool] = collections.defaultdict(bool)      # group_id -> 是否全员禁言
+ALL_BANNED_TTL = 6 * 3600   # 全员禁言最多记 6 小时，超时自动失效并要求重新核实
+group_all_banned: Dict[int, float] = collections.defaultdict(float)     # group_id -> 全员禁言的过期时间戳
 last_active_ban_check: Dict[int, float] = {}   # group_id -> 上次主动通过 API 校验的时间戳
 
 # ==================== 运行时保护状态持久化 ====================
@@ -766,7 +767,7 @@ def save_runtime_state() -> None:
             "silence_until": {str(k): v for k, v in group_silence_until.items()},
             "follow_up": {f"{k[0]}:{k[1]}": v for k, v in user_follow_up_state.items()},
             "ban_expire": {str(k): v for k, v in group_bot_ban_expire.items()},
-            "all_banned": {str(k): True for k, v in group_all_banned.items() if v},
+            "all_banned": {str(k): v for k, v in group_all_banned.items() if v},
         }, pretty=False)
     except Exception as e:
         logger.warning("保存运行时状态失败: %s", e)
@@ -776,27 +777,52 @@ def load_runtime_state() -> None:
     if not data:
         return
     now = time.time()
-    for gid, exp in (data.get("silence_until") or {}).items():
-        if isinstance(exp, (int, float)) and exp > now:
-            group_silence_until[int(gid)] = float(exp)
-    for key, state in (data.get("follow_up") or {}).items():
-        if not isinstance(state, dict) or state.get("expire", 0) <= now:
-            continue
-        gid_str, uid_str = key.split(":", 1)
-        user_follow_up_state[(int(gid_str), int(uid_str))] = state
-    for gid, exp in (data.get("ban_expire") or {}).items():
-        if isinstance(exp, (int, float)) and exp > now:
-            group_bot_ban_expire[int(gid)] = float(exp)
-    for gid in (data.get("all_banned") or {}):
-        group_all_banned[int(gid)] = True
+    # 这个函数的设计意图是"文件坏了也要能起来"：状态可以丢，进程不能崩。
+    # 所以逐条兜异常——键名不是数字、值不是时间戳、结构被手改过都不能抛到 main()
+
+    def _as_dict(value):
+        """本该是字典的字段被写成 list/str 时统一降级成空字典，否则 .items() 直接崩"""
+        return value if isinstance(value, dict) else {}
+
+    for gid, exp in _as_dict(data.get("silence_until")).items():
+        try:
+            if isinstance(exp, (int, float)) and exp > now:
+                group_silence_until[int(gid)] = float(exp)
+        except (TypeError, ValueError):
+            logger.warning("运行时状态 silence_until 条目损坏，已跳过: %r", gid)
+    for key, state in _as_dict(data.get("follow_up")).items():
+        try:
+            if not isinstance(state, dict) or state.get("expire", 0) <= now:
+                continue
+            gid_str, uid_str = str(key).split(":", 1)
+            user_follow_up_state[(int(gid_str), int(uid_str))] = state
+        except (AttributeError, TypeError, ValueError):
+            logger.warning("运行时状态 follow_up 条目损坏，已跳过: %r", key)
+    for gid, exp in _as_dict(data.get("ban_expire")).items():
+        try:
+            if isinstance(exp, (int, float)) and exp > now:
+                group_bot_ban_expire[int(gid)] = float(exp)
+        except (TypeError, ValueError):
+            logger.warning("运行时状态 ban_expire 条目损坏，已跳过: %r", gid)
+    # 全员禁言必须带过期时间：离线期间管理员解禁了，这条事件机器人收不到，
+    # 老实现无条件恢复 True，群里就永久变哑巴，只能手改文件才救得回来
+    for gid, exp in _as_dict(data.get("all_banned")).items():
+        try:
+            exp_ts = float(exp)
+        except (TypeError, ValueError):
+            # 旧版本存的是裸 True，给个短命宽限，尽快重新核一次
+            exp_ts = now + 1800.0
+        if exp_ts > now:
+            group_all_banned[int(gid)] = exp_ts
     if group_silence_until or group_bot_ban_expire or group_all_banned:
         logger.info("已恢复运行时保护状态: 静默 %d 群 / 禁言 %d 群", len(group_silence_until), len(group_bot_ban_expire))
 
 async def check_bot_banned_realtime(ws: aiohttp.ClientWebSocketResponse, group_id: int) -> bool:
     """双重保障检查：优先查内存事件；若处于被动保护期，主动调 OneBot11 API 核实真实禁言状态"""
     now = time.time()
-    if group_all_banned.get(group_id, False):
+    if now < group_all_banned.get(group_id, 0.0):
         return True
+    group_all_banned.pop(group_id, None)   # 过期了自己失效，别永久留一个 True
     expire = group_bot_ban_expire.get(group_id, 0.0)
     if now >= expire:
         return False
@@ -856,8 +882,11 @@ async def backfill_group_history(ws, group_id: int, count: int = 20) -> None:
             sender = m.get("sender") or {}
             uid = sender.get("user_id") or m.get("user_id")
             name = sender.get("card") or sender.get("nickname") or "群友"
+            # 自己发的要标出来：否则重连补回的历史里，模型的上一句变成"某个群友说的"，
+            # 它会顺着自己的旧话再接一遍，或者把自己当第三方来评论
+            is_self = str(uid) == str(BOT_QQ)
             group_timelines[group_id].append({
-                "sender": f"{name}(QQ {uid})",
+                "sender": f"小鲸鱼(你自己)(QQ {uid})" if is_self else f"{name}(QQ {uid})",
                 "sender_id": uid,
                 "content": text[:300],
                 "time": float(m.get("time") or time.time()),
@@ -2056,10 +2085,10 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
         # 1.1 全员禁言事件 (user_id 为 0)
         if user_id == 0:
             if sub_type == "ban" or duration > 0:
-                group_all_banned[group_id] = True
+                group_all_banned[group_id] = time.time() + ALL_BANNED_TTL
                 logger.warning("[群 %d] 管理员 %s 开启了全员禁言，机器人进入静默节流状态！", group_id, operator_id)
             else:
-                group_all_banned[group_id] = False
+                group_all_banned[group_id] = 0.0
                 logger.info("[群 %d] 管理员 %s 解除了全员禁言，恢复响应。", group_id, operator_id)
             return
 
@@ -2458,10 +2487,12 @@ async def main():
     # 心境状态单独落盘：和记忆库分开，坏了也不至于把群友档案带崩
     affect.attach(atomic_write_json,
                   os.path.join(os.path.dirname(os.path.abspath(__file__)), "data", "affect_state.json"))
-    asyncio.create_task(_favor_keeper())
-    asyncio.create_task(_affect_keeper())
-    asyncio.create_task(_cold_group_activator())
-    asyncio.create_task(_member_nick_refresher())
+    # 走 spawn：裸 create_task 抛一次异常就永久消失，只在 GC 时留一句没有主语的
+    # "Task exception was never retrieved"，好感衰减/存档/巡检会静默停摆
+    spawn(_favor_keeper())
+    spawn(_affect_keeper())
+    spawn(_cold_group_activator())
+    spawn(_member_nick_refresher())
 
     # 启动轻量现代浅色 Web 仪表盘（只绑 127.0.0.1，外网走 Cloudflare 隧道）
     try:

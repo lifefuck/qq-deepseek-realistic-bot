@@ -79,7 +79,8 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     
     # 提取纯文本与精准 @ 判定（基于 OneBot 11 规范的 QQ 号精准判定）
     # 匹配针对机器人自己的 @ CQ 码（兼容任何可选属性）
-    is_at = bool(re.search(rf"\[CQ:at,[^\]]*qq={bot.BOT_QQ}[^\]]*\]", raw_message))
+    # (?!\d)：QQ 号有前缀包含关系，不加右边界的话 @10000000009 也会命中 @1000000000
+    is_at = bool(re.search(rf"\[CQ:at,[^\]]*qq={bot.BOT_QQ}(?!\d)[^\]]*\]", raw_message))
     
     # 也检查 OneBot11 原始 message 数组节点（结构化消息最稳健）
     if not is_at and isinstance(event.get("message"), list):
@@ -202,7 +203,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             bot.logger.warning("[群 %d] 媒体/仓库解析发送异常: %s", group_id, e)
 
     # 清洗掉针对机器人的 @ CQ 码以及其他无关 CQ
-    clean_body = re.sub(rf"\[CQ:at,[^\]]*qq={bot.BOT_QQ}[^\]]*\]", "", raw_message)
+    clean_body = re.sub(rf"\[CQ:at,[^\]]*qq={bot.BOT_QQ}(?!\d)[^\]]*\]", "", raw_message)
     clean_body = bot.clean_cq_codes(clean_body).strip()
     # 移除 reply 的 CQ 码残留
     clean_body = re.sub(r"\[CQ:reply,id=-?\d+\]", "", clean_body).strip()
@@ -930,7 +931,10 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
         return
     sent_text = await bot.send_segmented_group_message(ws, group_id, reply, is_command_report=False, at_user_id=at_target,
                                                        max_segments=1 if cold_nudge else None)
-    bot.note_reply_sent(group_id, sent_text or reply)
+    # 只有真发出去才算"说过了"：出站闸吞掉（PASS/空串/发送失败）时 sent_text 为空，
+    # 老实现拿原文记账，密度闸和复读闸会把根本没说话的机器人自己关两分钟
+    if sent_text:
+        bot.note_reply_sent(group_id, sent_text)
 
     # 写回上下文的是实际发出去的那句：削平过、标签剥过，跟群里看到的一致
     clean_reply_record = bot.remove_trailing_period(bot.strip_markdown(sent_text or "")).strip()

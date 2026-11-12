@@ -106,8 +106,13 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
                 task.cancel()
                 stopped_count += 1
         # 2. 取消运行中的生成请求；按群急停时只动本群登记过的任务
+        # 私聊 /stop 的 handler 自己也登记在 reply_tasks 里（没有 group_id 过滤），
+        # 不跳过自己就会把自己 cancel 掉，后面的回执永远发不出去
+        current = asyncio.current_task()
         for mid, task in list(bot.reply_tasks.items()):
             if group_id and bot.reply_task_groups.get(mid) != group_id:
+                continue
+            if task is current:
                 continue
             if task and not task.done():
                 task.cancel()

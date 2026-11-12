@@ -10,6 +10,7 @@ QQ 机器人安全护栏模块 (Safety Guard)
 """
 
 import re
+import unicodedata
 from typing import Optional, Tuple
 
 # 1. 越狱/注入特征正则库
@@ -100,7 +101,8 @@ def is_pass_signal(text: str) -> bool:
     """
     if not text:
         return False
-    t = str(text).strip()
+    # NFKC 先把全角（［ＰＡＳＳ］）折成半角，不然下面的正则和比较全都认不出来
+    t = unicodedata.normalize("NFKC", str(text)).strip()
     if not t:
         return False
     # 带解释的写法：只要出现方括号包着的 PASS 就整条静默

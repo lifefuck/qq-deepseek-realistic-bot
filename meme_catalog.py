@@ -35,7 +35,8 @@ BUCKETS: Dict[str, Tuple[str, ...]] = {
     "干饭": ("干饭",),
 }
 
-_TAG_RE = re.compile(r"[\[【]\s*MEME\s*[:：]\s*([^\]】]{1,12})\s*[\]】]", re.IGNORECASE)
+# 全角方括号（［］）也要认：模型偶尔用全角，老正则漏掉就把标签原样发进群
+_TAG_RE = re.compile(r"[\[【［]\s*MEME\s*[:：]\s*([^\]】］]{1,12})\s*[\]】］]", re.IGNORECASE)
 
 _by_emotion: Dict[str, List[dict]] = collections.defaultdict(list)
 _by_keyword: Dict[str, List[dict]] = collections.defaultdict(list)
@@ -81,7 +82,7 @@ def extract_tag(text: str) -> Tuple[str, str]:
     if not m:
         # 模型手滑写成 [MEME:]/[MEME：情绪+解释] 时也要清掉，别把残渣发给群友
         # 结尾括号也可能被 max_tokens 截断（实测出现过 [MEME:嘲讽 没有右括号），闭合括号设为可选
-        leftover = re.sub(r"[\[【]\s*MEME\s*[:：][^\]】\n]*[\]】]?", "", text, flags=re.I)
+        leftover = re.sub(r"[\[【［]\s*MEME\s*[:：][^\]】］\n]*[\]】］]?", "", text, flags=re.I)
         return leftover.strip(), ""
     tag = m.group(1).strip()
     return _TAG_RE.sub("", text).strip(), tag

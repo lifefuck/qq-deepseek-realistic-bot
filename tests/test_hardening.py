@@ -6,6 +6,7 @@
 跑法：.venv/bin/python tests/test_hardening.py
 """
 import asyncio
+import re
 import datetime
 import json
 import os
@@ -20,6 +21,7 @@ from aiohttp.test_utils import TestServer, TestClient
 
 import bot
 import safety_guard
+import meme_catalog
 import web_dashboard
 from services import messaging
 
@@ -261,6 +263,8 @@ async def test_concurrent_at_not_dropped():
         return ["在的在的", "问啥呢", "看着呢"][min(len(seen) - 1, 2)]
 
     orig_ca, orig_model = bot.call_action, bot.call_deepseek
+    orig_archive, orig_ban, orig_mem = (bot.archive_message, bot.check_bot_banned_realtime,
+                                        bot.update_user_memory_async)
     bot.call_action, bot.call_deepseek = _ca, _model
     bot.archive_message = lambda *a, **k: None
     bot.check_bot_banned_realtime = lambda *a, **k: asyncio.sleep(0, result=False)
@@ -287,6 +291,95 @@ async def test_concurrent_at_not_dropped():
               sends)
     finally:
         bot.call_action, bot.call_deepseek = orig_ca, orig_model
+        bot.archive_message, bot.check_bot_banned_realtime = orig_archive, orig_ban
+        bot.update_user_memory_async = orig_mem
+
+
+async def test_audit_regressions():
+    """审计里查实的几处：全角标签、@ 前缀误判、全员禁言不过期、坏状态文件、PASS 记账。"""
+    import json as _json
+    check("全角 PASS 被识别", safety_guard.is_pass_signal("［ＰＡＳＳ］") is True)
+    check("全角小写 PASS 被识别", safety_guard.is_pass_signal("［pass］") is True)
+    check("全角 MEME 标签被剥",
+          meme_catalog.extract_tag("［MEME：嘲讽］就这水平") == ("就这水平", "嘲讽"))
+    check("全角 MEME 无正文时不发",
+          meme_catalog.extract_tag("［MEME：嘲讽］")[0] == "")
+
+    # @ 判定不能靠 QQ 号前缀包含：@10000000009 不等于 @1000000000
+    pat = rf"\[CQ:at,[^\]]*qq={bot.BOT_QQ}(?!\d)[^\]]*\]"
+    check("@ 自己的号命中", bool(re.search(pat, f"[CQ:at,qq={bot.BOT_QQ}] 在吗")))
+    check("前缀相似的长号不误判", not re.search(pat, f"[CQ:at,qq={bot.BOT_QQ}9] 在吗"))
+
+    # 全员禁言带过期：离线期间被解禁也不会永久哑巴
+    gid = 424242
+    bot.group_all_banned[gid] = time.time() - 1
+    check("全员禁言过期后自动失效",
+          await bot.check_bot_banned_realtime(None, gid) is False)
+    bot.group_all_banned[gid] = time.time() + 600
+    check("未过期的全员禁言仍然拦截",
+          await bot.check_bot_banned_realtime(None, gid) is True)
+    bot.group_all_banned.pop(gid, None)
+
+    # 运行时状态文件被手改坏，不能把启动带崩
+    import tempfile
+    orig_file = bot.RUNTIME_STATE_FILE
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                     dir=os.path.dirname(orig_file) or ".") as f:
+        _json.dump({"silence_until": {"群号写错了": 9e12},
+                    "follow_up": ["本该是字典"],
+                    "ban_expire": {"111": "不是时间戳"},
+                    "all_banned": {"222": "x"}}, f)
+        broken = f.name
+    bot.RUNTIME_STATE_FILE = broken
+    try:
+        bot.load_runtime_state()
+        check("坏状态文件不抛异常", True)
+    except Exception as e:
+        check("坏状态文件不抛异常", False, f"{type(e).__name__}: {e}")
+    finally:
+        bot.RUNTIME_STATE_FILE = orig_file
+        os.unlink(broken)
+
+    # 被出站闸吞掉的回复不能算"说过了"
+    gid2 = 900000001
+    bot.ALLOWED_GROUPS = set(bot.ALLOWED_GROUPS) | {gid2}
+    bot.load_group_configs()
+    cfg = bot.get_group_config(gid2)
+    cfg["muted"] = False
+    cfg["interject_prob"] = 0.0
+    bot.reply_times_clear(gid2) if hasattr(bot, "reply_times_clear") else None
+    bot.group_bot_reply_times[gid2].clear()
+    sent = []
+
+    async def _ca(ws, action, params, timeout=2.0):
+        if action == "send_group_msg":
+            sent.append(params.get("message"))
+        return {"status": "ok", "retcode": 0, "data": {}}
+
+    async def _pass_model(*a, **k):
+        return "[PASS] 这个我不太确定"
+
+    o_ca, o_m = bot.call_action, bot.call_deepseek
+    bot.call_action, bot.call_deepseek = _ca, _pass_model
+    bot.archive_message = lambda *a, **k: None
+    bot.check_bot_banned_realtime = lambda *a, **k: asyncio.sleep(0, result=False)
+    bot.update_user_memory_async = lambda *a, **k: asyncio.sleep(0)
+    bot.sleep_override_until = time.time() + 3600
+    try:
+        ws = type("W", (), {"closed": False})()
+        from handlers import group as _hg
+        await _hg.handle_group_message(ws, {
+            "post_type": "message", "message_type": "group", "group_id": gid2,
+            "user_id": 800000031, "raw_message": f"[CQ:at,qq={bot.BOT_QQ}] 这咋弄",
+            "message": [{"type": "text", "data": {"text": "这咋弄"}}],
+            "sender": {"user_id": 800000031, "nickname": "阿测", "card": "阿测"},
+            "message_id": 920001, "time": int(time.time())})
+        await asyncio.sleep(1.5)
+        check("PASS 时一条都没发", not sent, sent)
+        check("PASS 不占主动开口配额", len(bot.group_bot_reply_times[gid2]) == 0,
+              list(bot.group_bot_reply_times[gid2]))
+    finally:
+        bot.call_action, bot.call_deepseek = o_ca, o_m
 
 
 async def test_addressing():
@@ -327,6 +420,7 @@ async def main():
     await test_cold_nudge_gate()
     await test_msg_dedupe_and_placeholders()
     await test_concurrent_at_not_dropped()
+    await test_audit_regressions()
     await test_wording()
     await test_addressing()
     print()
