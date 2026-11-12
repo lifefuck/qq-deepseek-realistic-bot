@@ -352,6 +352,8 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
     if "[PASS]" in text:
         return
     clean_text = bot.strip_markdown(text).strip()
+    # 兜底闸：走单发通道的文本不许夹带 CQ 码（合法的 @ 除外）
+    clean_text = bot.strip_outgoing_cq(clean_text)
     # 兜底：单发通道绝不让裸换行流到 QQ。聊天内容的换行并成逗号，
     # 只有汇报/面板才保留换行（那种换行是有结构的）。
     clean_text = clean_text.replace("\r", "")
@@ -497,6 +499,9 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         text = de_cliche(text, list(bot.recent_bot_replies.get(group_id, ()))[-6:])
     # [MEME:xx] 是给选图用的，正文不能带出去，也不能被切段切开
     text, meme_tag = meme_catalog.extract_tag(text)
+    # 出站兜底：模型复读群友的 CQ 码（尤其带 raw= 的新版表情码）会被 NapCat
+    # 原样当文本发出去，群里看到的就是一句「报错」。切段前先剥干净。
+    text = bot.strip_outgoing_cq(text)
     if not text and not meme_tag:
         return ""
     text = _limit_combo(text, group_id)
@@ -581,6 +586,7 @@ async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int
     # 指令汇报或超长文本直接单发
     if is_command_report or len(text) > 300:
         clean_text = bot.strip_markdown(text).strip()
+        clean_text = bot.strip_outgoing_cq(clean_text)
         clean_text = bot.obfuscate_urls_for_qq(clean_text)
         clean_text = bot.remove_trailing_period(clean_text)
         max_len = 2000 if is_command_report else 200
