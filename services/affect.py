@@ -16,8 +16,11 @@
 """
 
 import json
+import logging
 import os
 import random
+
+_logger = logging.getLogger(__name__)
 import re
 import time
 
@@ -96,8 +99,10 @@ def save(force: bool = False):
         _writer(_path, _state, pretty=False)
         _last_save = now
         _dirty = False
-    except Exception:
-        pass
+    except Exception as e:
+        # 原来这里是光秃秃的 except: pass：磁盘满/权限错时心境状态永远回滚到旧快照，
+        # 日志里连一行都没有，线上完全看不出有问题
+        _logger.warning("心境状态落盘失败（%s），本次跳过：%s", _path, e)
 
 
 def _hour(now: float | None = None) -> int:

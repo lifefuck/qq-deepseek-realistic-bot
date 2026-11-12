@@ -172,7 +172,10 @@ async def fetch_bilibili_hot_videos(session: aiohttp.ClientSession, keyword: str
         async with session.get(url, headers=headers, timeout=8.0) as resp:
             if resp.status == 200:
                 data = await resp.json()
-                video_list = data.get("data", {}).get("list", [])
+                # 风控时 B 站返回 {"code":-352,"data":null}：默认值只对缺失键生效，
+                # 显式 null 会让 None.get() 抛 AttributeError，被外层 except 吞成空列表
+                payload = data.get("data") if isinstance(data, dict) else None
+                video_list = payload.get("list") or [] if isinstance(payload, dict) else []
                 for v in video_list:
                     title = v.get("title", "")
                     desc = v.get("desc", "")

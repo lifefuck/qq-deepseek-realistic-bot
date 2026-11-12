@@ -14,6 +14,7 @@
 import json
 import logging
 import os
+import shutil
 import re
 import sys
 import urllib.request
@@ -64,6 +65,11 @@ def is_safe_meme(term: str, meaning: str = "") -> bool:
     if re.fullmatch(r"[\d\W]+", term):
         return False
     return True
+
+def _should_abort(old_count: int, new_count: int) -> bool:
+    """新结果比存量缩水太多就判定数据源异常，保留旧库。"""
+    return old_count >= 30 and new_count < old_count * 0.6
+
 
 def sync_memes() -> dict:
     os.makedirs(DATA_DIR, exist_ok=True)
@@ -299,18 +305,24 @@ def sync_memes() -> dict:
             old_count = len(json.load(f).get("memes") or [])
     except Exception:
         old_count = 0
-    if old_count > 200 and len(memes_list) < old_count * 0.6:
+    # 阈值原来写死 200，词库小于 200 条时（新部署、或者被上次失败搞丢过库）
+    # 保护等于不存在，一次翻车就覆盖到底。改成按存量比例判断。
+    if _should_abort(old_count, len(memes_list)):
         logger.error("同步结果只有 %d 条（原有 %d），疑似数据源异常，已中止，保留旧词库", len(memes_list), old_count)
-        return {"updated_at": __import__("time").time(), "total_count": old_count, "memes": []}
+        # 返回 None 而不是 {"total_count": old, "memes": []}：后者谁拿去落盘就是清库
+        return None
 
     tmp = f"{OUTPUT_FILE}.{os.getpid()}.tmp"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
         f.flush()
         os.fsync(f.fileno())
+    # 以前先把正式文件 rename 成 .bak，再把 tmp 顶上去：两步之间文件短暂不存在，
+    # 进程恰好死在这中间（OOM/重启）词库就整体消失只剩 .bak，而 meme_manager
+    # 只读 MEMES_FILE 不读 .bak。先拷一份备份再单次 os.replace 就够了。
     try:
         if os.path.exists(OUTPUT_FILE):
-            os.replace(OUTPUT_FILE, OUTPUT_FILE + ".bak")
+            shutil.copy2(OUTPUT_FILE, OUTPUT_FILE + ".bak")
     except OSError:
         pass
     os.replace(tmp, OUTPUT_FILE)

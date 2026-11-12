@@ -78,6 +78,9 @@ ALLOWED_GROUPS: Set[int] = {
     if x.strip().isdigit()
 }
 
+# 静态快照：被踢出群时从运行期白名单里摘掉，被拉回来时按这份恢复
+_ALLOWED_GROUPS_STATIC: Set[int] = set(ALLOWED_GROUPS)
+
 SILICONFLOW_API_URL = os.environ.get("DEEPSEEK_API_URL", "https://api.siliconflow.cn/v1/chat/completions")
 # 密钥只从环境变量读，仓库里只有占位符；本地放 ~/.config/qq-deepseek-bot.env，由 systemd 注入
 SILICONFLOW_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "sk-your-key-here")
@@ -443,6 +446,14 @@ class TokenTracker:
         now_dt = datetime.datetime.now(cst_tz)
         today_str = now_dt.strftime("%Y-%m-%d")
         if self.data["today"].get("date") != today_str:
+            # 这里也要归档：面板每几秒轮询一次 /api/status，跨零点后第一轮询就把
+            # 昨天的今日统计清零，而 record_usage 要到当天第一次调用才归档，中间
+            # 那段谁先跑谁赢——结果是昨天一整天的 token/费用凭空消失
+            prev = self.data["today"]
+            if prev.get("date") and prev.get("requests"):
+                self.data.setdefault("history", {})[prev["date"]] = dict(prev)
+                for old_day in sorted(self.data["history"])[:-30]:
+                    self.data["history"].pop(old_day, None)
             self.data["today"] = {
                 "date": today_str,
                 "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "requests": 0, "cost_cny": 0.0
@@ -771,6 +782,17 @@ def save_runtime_state() -> None:
             "follow_up": {f"{k[0]}:{k[1]}": v for k, v in user_follow_up_state.items()},
             "ban_expire": {str(k): v for k, v in group_bot_ban_expire.items()},
             "all_banned": {str(k): v for k, v in group_all_banned.items() if v},
+            # 冷场冒泡的账本以前只在内存：重启后当天配额恢复成满额、
+            # 「上次抛的梗」也丢了，可能对着同一个群重复抛同一句话
+            "nudge": {
+                str(gid): {
+                    "day": group_nudge_day.get(gid, ""),
+                    "count": group_nudge_count.get(gid, 0),
+                    "ts": group_last_nudge_ts.get(gid, 0.0),
+                    "last": group_last_nudge.get(gid, ""),
+                }
+                for gid in set(group_nudge_day) | set(group_nudge_count)
+            },
         }, pretty=False)
     except Exception as e:
         logger.warning("保存运行时状态失败: %s", e)
@@ -801,6 +823,17 @@ def load_runtime_state() -> None:
             user_follow_up_state[(int(gid_str), int(uid_str))] = state
         except (AttributeError, TypeError, ValueError):
             logger.warning("运行时状态 follow_up 条目损坏，已跳过: %r", key)
+    for gid, st in _as_dict(data.get("nudge")).items():
+        try:
+            gid_int = int(gid)
+            if not isinstance(st, dict):
+                continue
+            group_nudge_day[gid_int] = str(st.get("day") or "")
+            group_nudge_count[gid_int] = int(st.get("count") or 0)
+            group_last_nudge_ts[gid_int] = float(st.get("ts") or 0.0)
+            group_last_nudge[gid_int] = str(st.get("last") or "")
+        except (TypeError, ValueError):
+            logger.warning("运行时状态 nudge 条目损坏，已跳过: %r", gid)
     for gid, exp in _as_dict(data.get("ban_expire")).items():
         try:
             if isinstance(exp, (int, float)) and exp > now:
@@ -842,7 +875,13 @@ async def check_bot_banned_realtime(ws: aiohttp.ClientWebSocketResponse, group_i
         try:
             info = await call_action(ws, "get_group_member_info", {"group_id": group_id, "user_id": BOT_QQ, "no_cache": True}, timeout=1.5)
             if info and info.get("status") == "ok":
-                shut_up_time = info.get("data", {}).get("shut_up_timestamp", 0)
+                _data = info.get("data") or {}
+                if "shut_up_timestamp" not in _data:
+                    # 有些 NapCat 版本/降级响应不带这个字段。以前缺省 0 让它走
+                    # 「提前解禁」分支，禁言期内照常说个没完。缺字段就按仍在禁言处理。
+                    group_bot_ban_expire[group_id] = max(expire, now + 120)
+                    return True
+                shut_up_time = _data.get("shut_up_timestamp") or 0
                 if shut_up_time > now:
                     group_bot_ban_expire[group_id] = shut_up_time
                     logger.info("[群 %d] 主动核实：机器人确实处于禁言中，截止至 %s", group_id, time.strftime('%H:%M:%S', time.localtime(shut_up_time)))
@@ -879,7 +918,9 @@ async def backfill_group_history(ws, group_id: int, count: int = 20) -> None:
         added = 0
         for m in msgs:
             mid = m.get("message_id")
-            text = (m.get("raw_message") or "").strip()
+            # 补回来的 raw_message 是原始 CQ 码：不净化就直接进时间线，表情 JSON
+            # 和带 rkey 签名的 CDN 链接会跟着进提示词（实时路径是净化过的）
+            text = clean_cq_codes((m.get("raw_message") or "").strip())
             if not text or mid in known:
                 continue
             sender = m.get("sender") or {}
@@ -1077,6 +1118,8 @@ def sync_yunzai_whitelist(group_id: int, enable: bool):
         new_lines = []
         in_white_group = False
         white_groups = []
+        # 原样保留已有条目那一行（含行尾注释），重写时不把它抹掉
+        _orig_entry: Dict[int, str] = {}
         header_index = -1
 
         for i, line in enumerate(lines):
@@ -1091,9 +1134,13 @@ def sync_yunzai_whitelist(group_id: int, enable: bool):
                 if line and not line.startswith(" ") and not line.startswith("\t") and not stripped.startswith("#"):
                     in_white_group = False
                 elif stripped.startswith("-"):
-                    m = re.search(r"-\s*(\d+)", stripped)
+                    # 以前只认 `- 123456`：写成 `- "123456"` 或带行尾注释的条目
+                    # 匹配不到就被 continue 静默丢掉，一次开关就把群从白名单里删了
+                    # 引号、注释、缩进都容错：`- "123456"`、`- 123456 # 二群` 都认
+                    m = re.search(r"-[^\d\n]{0,4}(\d{5,12})", stripped)
                     if m:
                         white_groups.append(int(m.group(1)))
+                        _orig_entry[int(m.group(1))] = line if line.endswith("\n") else line + "\n"
                     continue  # 稍后统一重写白名单列表项
 
             new_lines.append(line)
@@ -1106,13 +1153,19 @@ def sync_yunzai_whitelist(group_id: int, enable: bool):
             white_groups = [g for g in white_groups if g != group_id]
 
         # 重新插入白名单群号
-        group_lines = [f"  - {g}\n" for g in white_groups]
+        group_lines = [_orig_entry.get(g) or f"  - {g}\n" for g in white_groups]
         if header_index != -1:
             for gl in reversed(group_lines):
                 new_lines.insert(header_index + 1, gl)
 
-        with open(YUNZAI_OTHER_YAML, "w", encoding="utf-8") as f:
+        # 这是别人插件的配置文件：写到临时文件再原子替换，中途失败不能把整个
+        # other.yaml 留成半截（原来直接 "w" 覆写，写到一半崩就没了）
+        _tmp = YUNZAI_OTHER_YAML + f".tmp{os.getpid()}"
+        with open(_tmp, "w", encoding="utf-8") as f:
             f.writelines(new_lines)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(_tmp, YUNZAI_OTHER_YAML)
         logger.info("[云崽联动] 已同步群 %d 云崽白名单状态 -> %s (当前白名单: %s)", group_id, enable, white_groups)
     except Exception as e:
         logger.error("[云崽联动] 同步 other.yaml 失败: %s", e)
@@ -1281,7 +1334,40 @@ def parse_card_content(text: str) -> str:
         extra = f" (BV号: {bvs[0]})" if bvs else ""
         return f"{header} {title_str}{extra}"
 
-    return re.sub(r"\[CQ:(share|json|xml),([\s\S]*?)\]", _parse_card_match, text)
+    # 非贪婪匹配到第一个 ] 就收手：分享卡片 payload 里几乎都带数组（tagList 之类），
+    # 结果只解析出半截 JSON，剩下的一堆残渣原样进提示词。改成先按括号配平找整段。
+    def _bracket_aware_sub(t: str) -> str:
+        out = []
+        i = 0
+        while True:
+            j = t.find("[CQ:", i)
+            if j < 0:
+                out.append(t[i:])
+                break
+            out.append(t[i:j])
+            depth = 0
+            k = j + 4
+            end = -1
+            while k < len(t):
+                ch = t[k]
+                if ch == "[":
+                    depth += 1
+                elif ch == "]":
+                    if depth == 0:
+                        end = k
+                        break
+                    depth -= 1
+                k += 1
+            if end < 0:
+                out.append(t[j:])   # 半截码，交给后面的兜底正则清掉
+                break
+            seg = t[j:end + 1]
+            out.append(_parse_card_match(re.match(r"\[CQ:([A-Za-z_]+),([\s\S]*)\]$", seg))
+                       if re.match(r"\[CQ:(?:share|json|xml),", seg) else seg)
+            i = end + 1
+        return "".join(out)
+
+    return _bracket_aware_sub(text)
 
 async def expand_forward_messages(ws: aiohttp.ClientWebSocketResponse, text: str, depth: int = 1) -> str:
     """识别合并转发 CQ 码 [CQ:forward,id=xxx]，向 NapCat 拉取详情并递归展开多行聊天记录与应用卡片"""
@@ -1397,14 +1483,14 @@ def extract_dialogue_content(timeline_text: str) -> str:
             continue
         # 兼容可能有 [管理员] 或普通昵称后的冒号分割 (支持中文冒号和英文冒号)
         # 如: "[管理员] 张三: 正文" 或 "李四: 正文"
-        if ":" in line:
-            parts = line.split(":", 1)
-            content_lines.append(parts[1].strip())
-        elif "：" in line:
-            parts = line.split("：", 1)
-            content_lines.append(parts[1].strip())
-        else:
-            content_lines.append(line)
+        # 只认「行首的 昵称(QQ x): 」这种前缀。以前是任何一行里出现冒号就砍，
+        # 多行消息的续行 https://... 被砍成 //...，协议头没了，链接规则再也匹配不到
+        # URL 自己带冒号，不能被当昵称前缀（续行里最常见的就是一条链接）
+        if re.match(r"^\s*[A-Za-z][A-Za-z0-9+.\-]*://", line):
+            content_lines.append(line.strip())
+            continue
+        m = re.match(r"^\s*(?:\[管理员\]\s*)?[^:：\n]{1,40}\s*[:：]\s?(.*)$", line)
+        content_lines.append((m.group(1) if m else line).strip())
     return "\n".join(content_lines)
 
 
@@ -2161,6 +2247,18 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
         logger.warning("[群 %d] 机器人已退出或被移出群聊！清理该群状态...", group_id)
         group_bot_ban_expire.pop(group_id, None)
         group_all_banned.pop(group_id, None)
+        # 只在内存里摘掉：不摘的话冷场巡检、昵称刷新、定时任务还会一直给一个
+        # 已经进不去的群生成内容并尝试发送，全部静默失败还白占配额
+        if group_id in ALLOWED_GROUPS:
+            ALLOWED_GROUPS.discard(group_id)
+            logger.warning("[群 %d] 已从运行期白名单移除，重启后恢复", group_id)
+        return
+
+    # 2.1 被重新拉回群：把运行期白名单补回来，否则要重启才恢复
+    if notice_type == "group_increase" and event.get("user_id") == BOT_QQ and group_id in _ALLOWED_GROUPS_STATIC:
+        if group_id not in ALLOWED_GROUPS:
+            ALLOWED_GROUPS.add(group_id)
+            logger.info("[群 %d] 机器人被拉回群，已恢复服务", group_id)
         return
 
     # 2.5 消息撤回：这条消息触发的回复如果还没发出去，直接掐掉
@@ -2320,10 +2418,19 @@ def weekly_favor_decay() -> int:
         for uid_str, mem in scope.items():
             if not isinstance(mem, dict):
                 continue
-            if uid_str.isdigit() and int(uid_str) in (ADMIN_QQ, BOT_QQ):
+            try:
+                if uid_str.isdigit() and int(uid_str) in (ADMIN_QQ, BOT_QQ):
+                    continue
+                # 单条脏档案（favor 写成「高」、updated_at 是字符串）以前会抛出去，
+                # 而调用方在调用前就把本周 mark 置位了：本周衰减永久跳过，
+                # 已改过的档案也不会落盘。逐条兜住，坏的跳过继续。
+                favor = int(mem.get("favor", 50))
+                updated = float(mem.get("updated_at", 0) or 0)
+            except (TypeError, ValueError):
+                logger.warning("好感衰减跳过脏档案 %s: favor=%r updated_at=%r",
+                               uid_str, mem.get("favor"), mem.get("updated_at"))
                 continue
-            favor = int(mem.get("favor", 50))
-            if favor > 50 and mem.get("updated_at", 0) < cutoff:
+            if favor > 50 and updated < cutoff:
                 mem["favor"] = favor - 1
                 mem["updated_at"] = time.time()
                 n += 1
@@ -2345,8 +2452,9 @@ async def _favor_keeper():
             now_ts = time.time()
             mark = now_dt.strftime("%Y-%W")
             if now_dt.weekday() == 0 and now_dt.hour == 0 and mark != last_mark:
-                last_mark = mark
                 n = weekly_favor_decay()
+                # 先跑再置位：异常时下一轮再来，不会因为一次故障整周跳过
+                last_mark = mark
                 if n:
                     logger.info("[好感] 一周没露面，%d 人回落 1 点", n)
 

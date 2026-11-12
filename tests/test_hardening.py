@@ -360,6 +360,10 @@ async def test_audit_regressions():
         return "[PASS] 这个我不太确定"
 
     o_ca, o_m = bot.call_action, bot.call_deepseek
+    # 这个桩以前只打不还：后面所有用例 seeing 的 bot.check_bot_banned_realtime
+    # 都变成「永远没被禁言」，禁言相关断言全成了空跑（本条就是这么暴露出来的）
+    o_ban = bot.check_bot_banned_realtime
+    _orig_archive = bot.archive_message
     bot.call_action, bot.call_deepseek = _ca, _pass_model
     bot.archive_message = lambda *a, **k: None
     bot.check_bot_banned_realtime = lambda *a, **k: asyncio.sleep(0, result=False)
@@ -380,6 +384,8 @@ async def test_audit_regressions():
               list(bot.group_bot_reply_times[gid2]))
     finally:
         bot.call_action, bot.call_deepseek = o_ca, o_m
+        bot.check_bot_banned_realtime = o_ban
+        bot.archive_message = _orig_archive
 
 
 async def test_batch2_regressions():
@@ -578,6 +584,149 @@ async def test_batch4_regressions():
         bot.call_action = _orig_action
 
 
+async def test_batch5_regressions():
+    """审计第五批：数据落盘与持久化（话题库被覆盖、跨天统计丢失、禁言误判、被踢还在服务）。"""
+    import json as _json
+    import tempfile
+    import memory_atoms
+    import prompts
+    import sync_hot_words
+    import cross_memory
+    import web_dashboard
+
+    # cross_memory：顶层不是 list 时必须拒绝加载，不能按 0 条算完再覆盖
+    _tmp = tempfile.mkdtemp()
+    _path = __import__("os").path.join(_tmp, "topics.json")
+    with open(_path, "w", encoding="utf-8") as f:
+        _json.dump({"topics": [{"content": "旧话题", "score": 3}]}, f, ensure_ascii=False)
+    try:
+        mgr = cross_memory.CrossGroupTopicManager(file_path=_path)
+        check("非 list 话题文件按空库启动", len(mgr.topics) == 0)
+    except ValueError:
+        check("非 list 话题文件按空库启动", True)
+    with open(_path, encoding="utf-8") as f:
+        check("原话题文件未被覆盖", "旧话题" in f.read())
+
+    # get_status_summary 跨天要归档昨天的数据
+    tracker = bot.token_tracker
+    _saved = _json.loads(_json.dumps(tracker.data))
+    try:
+        tracker.data["today"] = {"date": "2000-01-01", "prompt_tokens": 111, "completion_tokens": 222,
+                                 "total_tokens": 333, "requests": 7, "cost_cny": 0.5}
+        tracker.data["history"] = {}
+        tracker.get_status_summary()
+        check("跨天归档了昨天的统计", tracker.data["history"].get("2000-01-01", {}).get("requests") == 7)
+        check("今日计数已清零", tracker.data["today"]["requests"] == 0)
+    finally:
+        tracker.data.clear()
+        tracker.data.update(_saved)
+
+    # 好感衰减：一条脏档案不能拖垮整轮
+    _mem_saved = _json.loads(_json.dumps(bot.user_memories))
+    try:
+        bot.user_memories["_test_scope_"] = {
+            "222222222": {"favor": "很高", "updated_at": 0},
+            "333333333": {"favor": 90, "updated_at": 0},
+        }
+        n = bot.weekly_favor_decay()
+        check("脏档案不中断衰减", n >= 1)
+        check("正常档案已衰减", bot.user_memories["_test_scope_"]["333333333"]["favor"] == 89)
+    finally:
+        bot.user_memories.clear()
+        bot.user_memories.update(_mem_saved)
+
+    # 禁言复核：响应里没有 shut_up_timestamp 时不能当成已解禁
+    GID = sorted(bot.ALLOWED_GROUPS)[0]
+    _exp_saved = dict(bot.group_bot_ban_expire)
+    _ab_saved = dict(bot.group_all_banned)
+    bot.group_all_banned.pop(GID, None)
+    _orig_action = bot.call_action
+    try:
+        bot.group_bot_ban_expire[GID] = time.time() + 30   # 离解禁很近，会触发主动核实
+        bot.last_active_ban_check.pop(GID, None)
+
+        async def _no_field(ws, action, params, timeout=1.5):
+            return {"status": "ok", "data": {"user_id": bot.BOT_QQ}}
+        bot.call_action = _no_field
+        banned = await bot.check_bot_banned_realtime(object(), GID)
+        check("缺字段仍按禁言处理", banned is True)
+        check("禁言到期时间被顺延", bot.group_bot_ban_expire[GID] > time.time() + 60)
+    finally:
+        bot.call_action = _orig_action
+        bot.group_bot_ban_expire.clear()
+        bot.group_bot_ban_expire.update(_exp_saved)
+        bot.group_all_banned.clear()
+        bot.group_all_banned.update(_ab_saved)
+
+    # 被踢出群：运行期白名单摘掉；被拉回：恢复
+    _ag_saved = set(bot.ALLOWED_GROUPS)
+
+    async def _drive(notice_type, uid):
+        ev = {"notice_type": notice_type, "group_id": GID, "user_id": uid,
+              "message_type": "group", "raw_message": "", "message": [], "sender": {}}
+        await bot.handle_notice_event(None, ev)
+    try:
+        await _drive("group_decrease", bot.BOT_QQ)
+        check("被踢后不再服务该群", GID not in bot.ALLOWED_GROUPS)
+        await _drive("group_increase", bot.BOT_QQ)
+        check("被拉回后恢复服务", GID in bot.ALLOWED_GROUPS)
+    finally:
+        bot.ALLOWED_GROUPS.clear()
+        bot.ALLOWED_GROUPS.update(_ag_saved)
+
+    # 云崽白名单：带引号的条目不能被静默丢弃
+    _tmp2 = tempfile.mkdtemp()
+    _yml = __import__("os").path.join(_tmp2, "other.yaml")
+    _old_yml = bot.YUNZAI_OTHER_YAML
+    try:
+        bot.YUNZAI_OTHER_YAML = _yml
+        with open(_yml, "w", encoding="utf-8") as f:
+            f.write("whiteGroup:\n  - 111111111\n  - \"222222222\"  # 二群\n")
+        bot.sync_yunzai_whitelist(333333333, True)
+        with open(_yml, encoding="utf-8") as f:
+            body = f.read()
+        check("数字条目保留", "111111111" in body)
+        check("带引号的条目保留", "222222222" in body)
+        check("新群已写入", "333333333" in body)
+    finally:
+        bot.YUNZAI_OTHER_YAML = _old_yml
+
+    # 卡片解析：payload 里带数组也不能截断在第一个 ]
+    card = '[CQ:json,data={"app":"com.tencent.structmsg","meta":{"news":{"tagList":[{"t":"x"}]}}}]'
+    parsed = bot.parse_card_content(card)
+    check("卡片不在数组处截断", "tagList" not in parsed and "[分享" in parsed or "分享" in parsed)
+
+    # 对话记录：续行的 URL 不能被当昵称前缀砍掉
+    dialogue = "阿测(123): 看这个\nhttps://example.com/a?b=1"
+    out = bot.extract_dialogue_content(dialogue)
+    check("续行 URL 协议头未被砍", "https://example.com" in out)
+
+    # 记忆原子：0 级条目不会被分数淘汰
+    atoms = [memory_atoms._new_atom(f"普通{i}", 0) for i in range(memory_atoms.MAX_NOTES)]
+    _lvl0 = memory_atoms._new_atom("不许提那件事", 0)
+    _lvl0["level"] = 0
+    atoms.append(_lvl0)
+    trimmed = memory_atoms._trim(atoms, time.time() + 10 ** 6)
+    check("0 级条目保留", any(a.get("text") == "不许提那件事" for a in trimmed))
+    check("长度不超上限", len(trimmed) <= memory_atoms.MAX_NOTES)
+
+    # 云崽知识库：随口一句「怎么」不该灌两千多字
+    check("闲聊不触发知识库", prompts.needs_games_kb("今天怎么这么热") is False)
+    check("问功能才触发", prompts.needs_games_kb("原神面板怎么用") is True)
+
+    # 热词同步：库存少也要保护，缩水判定用比例而不是写死的 200
+    check("库存 50 掉到 5 条要中止", sync_hot_words._should_abort(50, 5) is True)
+    check("库存 50 掉到 40 条不中止", sync_hot_words._should_abort(50, 40) is False)
+    check("小库存正常同步不中止", sync_hot_words._should_abort(10, 8) is False)
+
+    # 面板 Basic 认证结果有缓存（同一凭据不重复算 PBKDF2）
+    web_dashboard._BASIC_VERIFY_CACHE.clear()
+    salt, h = web_dashboard.hash_password("pw123456")
+    check("首次验证通过", web_dashboard._basic_verify_cached("admin", "pw123456", salt, h) is True)
+    check("结果进了缓存", len(web_dashboard._BASIC_VERIFY_CACHE) == 1)
+    check("错误密码不通过", web_dashboard._basic_verify_cached("admin", "wrong", salt, h) is False)
+
+
 async def main():
     await test_dashboard()
     await test_json_recovery()
@@ -591,6 +740,7 @@ async def main():
     await test_batch2_regressions()
     await test_batch3_regressions()
     await test_batch4_regressions()
+    await test_batch5_regressions()
     await test_wording()
     await test_addressing()
     print()

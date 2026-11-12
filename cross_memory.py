@@ -70,6 +70,10 @@ class CrossGroupTopicManager:
             try:
                 with open(self.file_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
+                    if not isinstance(data, list):
+                        # 文件被写成 {"topics": [...]} 之类时，原来按 0 条加载，
+                        # 下一次刷盘就用新池整份覆盖——历史话题静默消失
+                        raise ValueError(f"顶层结构不是列表（{type(data).__name__}），拒绝加载以免覆盖")
                     before = len(self.topics)
                     merged = 0
                     for item in data:
@@ -160,6 +164,11 @@ class CrossGroupTopicManager:
             return ""
         for item in picked:
             self._last_inject[item.get("content", "")] = now
+        # 话题池只有 30 条，这个去重表却只增不减：长期跑下来上千个早就被顶出的键
+        # 一直挂着。超过两倍池容量就按时间砍掉最老的一半。
+        if len(self._last_inject) > MAX_TOPICS * 2:
+            for stale in sorted(self._last_inject, key=self._last_inject.get)[: len(self._last_inject) - MAX_TOPICS]:
+                self._last_inject.pop(stale, None)
         lines = [f"· 有群友在讨论: 「{item['content']}」" for item in picked]
         return "\n【隔壁群近期热聊话题（只是背景，不是本群发生的事，别主动提起）】:\n" + "\n".join(lines) + "\n"
 
