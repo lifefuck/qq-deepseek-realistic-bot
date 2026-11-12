@@ -4,7 +4,7 @@
 import aiohttp
 import logging
 
-from media_resolver import _is_public_url, _read_body
+from media_resolver import _is_public_url, _read_body, connected_peer_is_public
 import random
 import re
 from typing import Any, Dict, List, Optional
@@ -26,11 +26,14 @@ async def _download_image(session: aiohttp.ClientSession, image_url: str) -> Opt
             logger.warning("搜番拒绝非公网图片地址: %s", image_url[:80])
             return None
         async with session.get(image_url, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
+            # 只校验首跳没用：公网域名 302 到 127.0.0.1 就进去了，内网内容还会被
+            # 转手 POST 给 trace.moe（外带）。连上之后复核对端 IP。
+            if not connected_peer_is_public(resp):
+                logger.warning("搜番拒绝：实际连到的不是公网地址（疑似重定向到内网）")
+                return None
             ctype = (resp.headers.get("Content-Type") or "").lower()
             if resp.status != 200 or not ctype.startswith("image/"):
                 logger.warning("搜番图片类型不支持: HTTP %d %s", resp.status, ctype or "?")
-                return None
-                logger.warning("搜番下载图片失败: HTTP %d", resp.status)
                 return None
             declared = int(resp.headers.get("Content-Length") or 0)
             if declared > MAX_IMAGE_BYTES:
@@ -58,10 +61,9 @@ async def search_anime_by_image(session: aiohttp.ClientSession, image_url: str) 
             if resp.status == 402:
                 logger.warning("Trace.moe 免费额度已用完")
                 return {"error": "quota"}
-            ctype = (resp.headers.get("Content-Type") or "").lower()
-            if resp.status != 200 or not ctype.startswith("image/"):
-                logger.warning("搜番图片类型不支持: HTTP %d %s", resp.status, ctype or "?")
-                return None
+            # trace.moe 返回的是 application/json：以前拿 image/* 校验，恒定不通过直接
+            # return None，搜番 100% 失效，下面那个 http 分支永远是死代码
+            if resp.status != 200:
                 logger.warning("Trace.moe 请求失败: HTTP %d", resp.status)
                 return {"error": "http", "status": resp.status}
             data = await resp.json()

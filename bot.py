@@ -167,6 +167,7 @@ group_interject_times: Dict[int, Deque[float]] = collections.defaultdict(lambda:
 group_recent_replies: Dict[int, Deque[Tuple[float, str]]] = collections.defaultdict(lambda: collections.deque(maxlen=20))
 # 本群实际发言时间戳：连着刷三四条会被群管理盯上，用来做发言密度冷却
 group_bot_reply_times: Dict[int, Deque[float]] = collections.defaultdict(lambda: collections.deque(maxlen=20))
+group_bot_reply_seq: Dict[int, int] = collections.defaultdict(int)  # 只增不减，用来判断「这次真的发出去了」
 
 # 反模板套路削平队列 (记录最近发出的 6 条回复)
 # 每个群各自记一份最近发言，跨群混在一起会让 A 群看到 B 群说过的话
@@ -998,8 +999,15 @@ def is_anger_unlimited(group_id) -> bool:
         except Exception as e:
             logger.warning("读取 anger_overrides.json 失败，按正常阈值处理: %s", e)
             return False
-    cfg = _anger_cache["data"].get(str(group_id)) or {}
-    return bool(cfg.get("unlimited"))
+    # 这个文件是给人手改的（注释里还写着「改这个文件立即生效」），
+    # 一旦写成数组或 {"群号": true}，原来的 .get() 就在每条群消息主流程上抛
+    # AttributeError，整个群直接静默。结构不对就当没配。
+    data = _anger_cache.get("data")
+    cfg = data.get(str(group_id)) if isinstance(data, dict) else None
+    if not isinstance(cfg, dict):
+        return False
+    # 只认真正的 true：写成 "no"/"false" 这类字符串不该当成开启
+    return cfg.get("unlimited") is True
 DEFAULT_GROUP_CONFIG = {
     "muted": False,             # /off 一键静音的总闸：群友说什么都不回，管理员指令照旧
     "enable_interject": True,   # 是否允许主动插话
@@ -1015,24 +1023,37 @@ group_configs: Dict[str, dict] = {}
 
 def load_group_configs():
     global group_configs
+    load_failed = False
     if os.path.exists(GROUP_CONFIGS_FILE):
         loaded = load_json_with_recovery(GROUP_CONFIGS_FILE)
-        if loaded is None:
-            # 读坏了就用默认值跑，但绝不立刻覆盖原文件——留给人去捞
+        if not isinstance(loaded, dict):
+            # 读坏了就用默认值跑，但绝不立刻覆盖原文件——留给人去捞。
+            # 原来这里打完「磁盘文件保持原样」下一行就 save_group_configs()，
+            # 静默群全被打开、所有 enable_* 还原，日志说的和做的正好相反。
             logger.error("群独立配置读取失败，本次以默认配置运行，磁盘文件保持原样")
             group_configs = {}
+            load_failed = True
         else:
             group_configs = loaded
     for gid in ALLOWED_GROUPS:
         sgid = str(gid)
-        if sgid not in group_configs:
-            group_configs[sgid] = dict(DEFAULT_GROUP_CONFIG)
-        else:
-            for k, v in DEFAULT_GROUP_CONFIG.items():
-                if k not in group_configs[sgid]:
-                    group_configs[sgid][k] = v
-    if "private" not in group_configs:
+        entry = group_configs.get(sgid)
+        # 条目被写成字符串/null（手改、外部脚本写入）时原来会 TypeError 崩在 import，
+        # 进程起不来且每次重启都崩，只能手改文件才能救
+        if not isinstance(entry, dict):
+            if entry is not None:
+                logger.warning("群 %s 的配置不是对象（%s），已重置为默认值", sgid, type(entry).__name__)
+            entry = dict(DEFAULT_GROUP_CONFIG)
+            group_configs[sgid] = entry
+        for k, v in DEFAULT_GROUP_CONFIG.items():
+            if k not in entry:
+                entry[k] = v
+    if not isinstance(group_configs.get("private"), dict):
         group_configs["private"] = dict(DEFAULT_PRIVATE_CONFIG)
+    if load_failed:
+        # 内存里跑默认值可以，但不能把坏文件写没：等人工修复或下次正常退出再落盘
+        logger.warning("配置读取失败，本次跳过写回，避免把原文件覆盖成默认值")
+        return
     save_group_configs()
 
 def save_group_configs():
@@ -1176,11 +1197,17 @@ def get_random_meme_b64(text_hint: str = "") -> Optional[str]:
             return None
         cat_dir = os.path.join(MEME_PACK_DIR, random.choice(cats))
     
-    files = [
-        f for f in os.listdir(cat_dir)
-        if f.lower().endswith(('.webp', '.jpg', '.jpeg', '.gif'))
-        and os.path.getsize(os.path.join(cat_dir, f)) <= 1200 * 1024  # 限制在 1.2MB 以内，防止大图撑爆 WebSocket
-    ]
+    files = []
+    for f in os.listdir(cat_dir):
+        if not f.lower().endswith(('.webp', '.jpg', '.jpeg', '.gif')):
+            continue
+        try:
+            # getsize 原来是列表推导里的裸调用：目录里出现断链、被删、无权限的文件就抛异常，
+            # 而这句在发文字之前，异常一路掀掉整个发送函数——表情包没了，话也发不出去
+            if os.path.getsize(os.path.join(cat_dir, f)) <= 1200 * 1024:  # 限制 1.2MB，防止大图撑爆 WebSocket
+                files.append(f)
+        except OSError:
+            continue
     if not files:
         return None
     chosen = os.path.join(cat_dir, random.choice(files))
@@ -1674,6 +1701,9 @@ def archive_message(group_id: int, user_id, nick: str, content: str, msg_id=None
 def note_reply_sent(group_id: int, text: str) -> None:
     """记一笔真实发出的回复，复读闸和密度闸都靠它"""
     now = time.time()
+    # 单调计数器：deque 有上限、还会被密度闸 popleft，拿 len() 判断"这次有没有发出去"
+    # 三个方向都会错（发了判没发、没发判发了），所以单独记一个只增不减的序号
+    group_bot_reply_seq[group_id] += 1
     group_recent_replies[group_id].append((now, _norm_reply_text(text)))
     group_bot_reply_times[group_id].append(now)
     # 自己的话也归档：以后对比「真人怎么接 / 机器怎么接」才看得出来差在哪
@@ -2129,11 +2159,13 @@ async def handle_notice_event(ws: aiohttp.ClientWebSocketResponse, event: dict):
         mark_recalled(mid)
         removed = False
         if group_id:
-            tl = group_timelines.get(group_id)
-            for item in list(tl or ()):
-                if item.get("msg_id") == mid:
-                    tl.remove(item)
-                    removed = True
+            # timeline 只留 30 条，历史池深 200：只清 timeline 的话，撤回的私密内容
+            # 还留在池子里，冷场冒泡会把它当素材喂给模型、再当众说出来
+            for box in (group_timelines.get(group_id), group_history_pool.get(group_id)):
+                for item in list(box or ()):
+                    if item.get("msg_id") == mid:
+                        box.remove(item)
+                        removed = True
         logger.info("[撤回] 群 %s 消息 %s 被 %s 撤回，中断回复=%s，清理时间线=%s",
                     group_id or "私聊", mid, operator, cancelled, removed)
         return
@@ -2439,7 +2471,7 @@ async def _cold_group_activator():
                             "active": group_last_active_reply.get(gid, 0.0),
                             "msg": group_last_msg_time.get(gid, 0.0),
                             "nudge_ts": group_last_nudge_ts.get(gid, 0.0),
-                            "reply_n": len(group_bot_reply_times[gid]),
+                            "reply_n": group_bot_reply_seq[gid],
                         }
                         group_last_active_reply[gid] = now_ts
                         group_last_msg_time[gid] = now_ts
@@ -2473,7 +2505,7 @@ async def _cold_group_activator():
                                 cold_nudge=True,
                             )
                         finally:
-                            if len(group_bot_reply_times[gid]) == _prev["reply_n"]:
+                            if group_bot_reply_seq[gid] == _prev["reply_n"]:
                                 cold_nudge_rollback(gid, _prev)
         except asyncio.CancelledError:
             raise
@@ -2617,7 +2649,13 @@ async def main():
             current_ws = None
             for fut in list(pending_requests.values()):
                 if not fut.done():
-                    fut.cancel()
+                    # 原来用 fut.cancel()：等这个 future 的 call_action 会收到 CancelledError，
+                    # 那是 BaseException，`except Exception` 抓不到，整条回复任务直接以 cancelled
+                    # 结束，spawn 的 _on_background_done 见到 cancelled 就 return——用户 @ 了机器人
+                    # 却什么都没发生，日志里连一行都没有。改成塞异常，走 call_action 的 None 契约。
+                    # 用 set_result(None) 而不是 set_exception：call_action 的契约本来就是
+                    # 失败返回 None，塞异常只会在 GC 时多甩一句「exception was never retrieved」
+                    fut.set_result(None)
             pending_requests.clear()
         # 正常关闭和异常走同一条退避路径，避免服务端一断就变成零间隔重连风暴
         if reconnect_fails:

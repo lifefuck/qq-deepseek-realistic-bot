@@ -22,7 +22,10 @@ def handle_quick_game_commands(text: str) -> Optional[str]:
     # 支持: roll, roll 100, 掷骰子, /roll, 摇骰子
     m_roll = re.match(r"^(?:/)?(?:roll|摇骰子|掷骰子|丢骰子)(?:\s+(\d+))?$", t, re.IGNORECASE)
     if m_roll:
-        max_val = int(m_roll.group(1)) if m_roll.group(1) else 100
+        _digits = m_roll.group(1) or ""
+        # Python 3.11 起 int() 超过 4300 位直接抛 ValueError（含超长数字串的闲聊会让
+        # 整条消息处理中断），先按长度兜住再转
+        max_val = int(_digits) if 0 < len(_digits) <= 7 else 100
         if max_val < 1:
             max_val = 6
         elif max_val > 1000000:
@@ -59,6 +62,16 @@ def process_number_bomb(group_id: int, text: str, user_id: int, sender_nick: str
     now = time.time()
     game = active_games.get(group_id)
 
+    # 过期回收必须先做：原来放在「已在开局」判断之后，群里只发命令类消息时
+    # last_active 早就过期也清不掉，三天后还能回「游戏还在进行」，重开永久失效
+    if game and game.get("game") == "bomb" and now - game.get("last_active", 0) > 300:
+        active_games.pop(group_id, None)
+        game = None
+        if t in ("数字炸弹", "开炸弹", "开数字炸弹", "/bomb"):
+            pass  # 落到下面正常开新局
+        elif t.isdigit() or t in ("退出数字炸弹", "结束数字炸弹", "结束炸弹", "/stopbomb"):
+            return False, None
+
     # 发起新游戏
     if t in ("数字炸弹", "开炸弹", "开数字炸弹", "/bomb"):
         if game and game.get("game") == "bomb":
@@ -91,7 +104,7 @@ def process_number_bomb(group_id: int, text: str, user_id: int, sender_nick: str
             active_games.pop(group_id, None)
             return False, None
 
-        if t.isdigit():
+        if t.isdigit() and len(t) <= 7:
             val = int(t)
             low = game["low"]
             high = game["high"]
