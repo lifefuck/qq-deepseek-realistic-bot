@@ -174,7 +174,9 @@ class MemeManager:
                 scored.append((score, item))
 
         # 1. 名字/别名子串：核心梗略微加权，因为它是手写、带接法示范的
-        core_bonus = {m["name"]: 1.5 for m in self.core_memes}
+        # core 文件是手写维护的，漏一个 name 就 KeyError，而这条调用链没有 try：
+        # 整个回复构建直接崩。缺名字的条目跳过就好。
+        core_bonus = {m["name"]: 1.5 for m in self.core_memes if m.get("name")}
         for item in self.core_memes + self.structured_memes:
             name = (item.get("name") or "").lower()
             if len(name) >= 2 and name in clean:

@@ -112,8 +112,16 @@ def normalize(item, now=None):
                     atom[key] = float(item[key]) if key in ("d", "d_at") else item[key]
                 except (TypeError, ValueError):
                     pass
-        atom["level"] = max(0, min(5, int(atom.get("level", 3))))
-        atom["hits"] = int(atom.get("hits", 0) or 0)
+        # level/hits 是手改或旧版本容易写坏的两个字段（null、字符串）：
+        # int() 原来在 try 外面，一条脏档案就让 load_user_memories 在模块级崩掉，整只 bot 起不来
+        try:
+            atom["level"] = max(0, min(5, int(atom.get("level", 3))))
+        except (TypeError, ValueError):
+            atom["level"] = 3
+        try:
+            atom["hits"] = int(atom.get("hits", 0) or 0)
+        except (TypeError, ValueError):
+            atom["hits"] = 0
         return atom
     if isinstance(item, str) and item.strip():
         # 老数据里可能还留着「A；B；C」这种被拼过的串，拆回独立原子

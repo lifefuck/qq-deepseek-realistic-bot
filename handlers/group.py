@@ -486,6 +486,7 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     }
     bot.group_timelines[group_id].append(record_item)
     bot.group_history_pool[group_id].append(record_item)
+    # 两个 deque 里放的是同一个 dict 对象：撤回时按身份删才能连历史池一起清掉
     # 顺手落一份到磁盘：日志会被 journal 轮转清掉，原始语料攒着以后做风格蒸馏
     bot.archive_message(group_id, sender_id, sender_display, full_content, src_msg_id)
     # 异步非阻塞推入跨群公共话题（仅内存+脏标记）
