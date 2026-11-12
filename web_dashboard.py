@@ -2,6 +2,7 @@
 大肥鱼 AI 控制台 · 轻量现代浅色 Web 仪表盘
 原生基于 aiohttp 实现，零外部依赖，自适应手机与 PC 端。
 """
+import asyncio
 import collections
 import datetime
 import html
@@ -1200,6 +1201,9 @@ def create_session() -> str:
     save_sessions()
     return token
 
+_last_session_save = 0.0
+
+
 def validate_session(token: Optional[str]) -> bool:
     """校验随机会话有效性并自动滑动续期"""
     if not token:
@@ -1215,8 +1219,14 @@ def validate_session(token: Optional[str]) -> bool:
         ACTIVE_SESSIONS.pop(key, None)
         save_sessions()
         return False
-    # 滑动续期
+    # 滑动续期。只改内存的话，重启后会话按文件里的旧过期时间判定，
+    # 一直在用的人会被踢下线（文件里还是登录时那个 exp）。
+    # 每次请求都落盘又太浪费，节流到每分钟一次。
     ACTIVE_SESSIONS[key] = now + SESSION_LIFETIME
+    global _last_session_save
+    if now - _last_session_save > 60:
+        _last_session_save = now
+        save_sessions()
     return True
 
 def revoke_session(token: Optional[str]):
@@ -1246,6 +1256,25 @@ def set_safe_cookie(resp: web.Response, session_token: str, secure: bool = False
         secure=secure
     )
 
+_BASIC_VERIFY_CACHE: dict = {}
+
+
+def _basic_verify_cached(user: str, pwd: str, salt: str, expected_hash: str) -> bool:
+    """Basic 认证的 PBKDF2 结果缓存，避免每个请求都重算 100k 轮。
+    只缓存成功的凭据（算 sha256 做键，不存明文）。"""
+    key = (user, hashlib.sha256(pwd.encode("utf-8")).hexdigest())
+    now = time.time()
+    hit = _BASIC_VERIFY_CACHE.get(key)
+    if hit and now - hit < 300:
+        return True
+    if verify_password(pwd, salt, expected_hash):
+        if len(_BASIC_VERIFY_CACHE) > 32:
+            _BASIC_VERIFY_CACHE.clear()
+        _BASIC_VERIFY_CACHE[key] = now
+        return True
+    return False
+
+
 def check_authenticated(request: web.Request) -> bool:
     """严格鉴权：只认服务端 Session 与 HTTP Basic。
 
@@ -1268,7 +1297,11 @@ def check_authenticated(request: web.Request) -> bool:
             if ":" in raw_creds:
                 u, p = raw_creds.split(":", 1)
                 valid_user, salt, expected_hash = get_auth_credentials()
-                if hmac.compare_digest(u, valid_user) and verify_password(p, salt, expected_hash):
+                # PBKDF2 100k 次是纯 CPU 活，这里又是同步函数（调用点遍布各
+                # handler），改成 await 要动几十处。走缓存：同一组凭据 5 分钟内
+                # 只算一次，其余命中直接过。爆破失败仍受 check_rate_limit 限制，
+                # 所以真正会重复计算的就只有「每次换密码」这种正常场景。
+                if hmac.compare_digest(u, valid_user) and _basic_verify_cached(u, p, salt, expected_hash):
                     record_login_attempt(ip, True)
                     return True
         except Exception:
@@ -1343,7 +1376,7 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
             pwd = str(body.get("password", "") or "").strip()
             _, salt, expected_hash = get_auth_credentials()
 
-            if pwd and verify_password(pwd, salt, expected_hash):
+            if pwd and await asyncio.to_thread(verify_password, pwd, salt, expected_hash):
                 record_login_attempt(client_ip, True)
                 token = create_session()
                 resp = web.json_response({"status": "ok"})

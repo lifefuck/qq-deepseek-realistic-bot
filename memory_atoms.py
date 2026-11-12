@@ -213,8 +213,14 @@ def _trim(atoms, now=None):
     """硬上限：按分数留最强的，不让列表无限长。"""
     if len(atoms) <= MAX_NOTES:
         return atoms
-    ranked = sorted(atoms, key=lambda a: (_score(a, now), int(a.get("hits", 0))), reverse=True)
-    return ranked[:MAX_NOTES]
+    # 0 级是「禁区/底线」这类永不可忘的条目，apply_decay 里专门保护它们，
+    # 唯独这里按分数淘汰会先砍掉最老的 0 级条目——「不许提过去的事」就这么没了
+    keep = [a for a in atoms if int(a.get("level", 3) or 0) == 0]
+    rest = [a for a in atoms if int(a.get("level", 3) or 0) != 0]
+    if len(keep) >= MAX_NOTES:
+        return keep[:MAX_NOTES]
+    ranked = sorted(rest, key=lambda a: (_score(a, now), int(a.get("hits", 0))), reverse=True)
+    return keep + ranked[:MAX_NOTES - len(keep)]
 
 
 def add_note(atoms, text, now=None):

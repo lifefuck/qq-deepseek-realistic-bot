@@ -122,12 +122,15 @@ GAMES_KB = """\
 
 # 问到具体功能才注入；光提一句游戏名不算，别为了「原神真好玩」多烧两千字
 _ASK_HINTS = (
-    "怎么", "如何", "在哪", "哪里", "绑定", "面板", "体力", "深渊", "剧诗", "抽卡",
+    "绑定", "面板", "体力", "深渊", "剧诗", "抽卡",
     "签到", "帮助", "菜单", "指令", "命令", "点歌", "摸摸头", "早报", "答案之书",
     "轮盘", "五子棋", "决斗", "锅巴", "云崽", "yunzai",
 )
 _GAME_WORDS = ("原神", "星铁", "崩铁", "绝区零", "鸣潮", "异环")
 _Q_WORDS = ("怎么", "吗", "哪", "如何", "?", "？")
+# 「怎么/如何/在哪」这种泛问词只有配上游戏或云崽实体才算在问功能，
+# 否则「今天怎么这么热」「这怎么说呢」每次都白灌 2700 字指令
+_HOW_WORDS = ("怎么", "如何", "在哪", "哪里", "帮助")
 
 def needs_games_kb(text: str) -> bool:
     """群友这句话是不是在问云崽面板的用法"""
@@ -136,7 +139,10 @@ def needs_games_kb(text: str) -> bool:
     low = text.lower()
     if any(h in low for h in _ASK_HINTS):
         return True
-    return any(g in low for g in _GAME_WORDS) and any(q in low for q in _Q_WORDS)
+    # 只提一句游戏名不算在问用法（「原神真好玩」也灌两千多字纯属浪费）
+    _entity = any(g in low for g in _GAME_WORDS) or "云崽" in low or "yunzai" in low \
+        or "喵喵" in low or "锅巴" in low
+    return _entity and any(q in low for q in _Q_WORDS)
 
 # 戳一戳的本地语料：这种事问模型纯属浪费，随机挑一句就够了
 _POKE_QUIPS = [
