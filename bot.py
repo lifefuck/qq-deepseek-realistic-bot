@@ -1315,14 +1315,44 @@ def clean_cq_codes(text: str) -> str:
     """去除表情、图片、文件等大段 CQ 码，保留纯文本与卡片语义"""
     # 先做卡片语义提取
     text = parse_card_content(text)
-    # QQ 原生小黄脸表情 [CQ:face,id=xxx] 保留提示
-    text = re.sub(r"\[CQ:face,id=\d+\]", "[表情]", text)
+
+    def _face_placeholder(m):
+        # 新版 NapCat 的小黄脸带 raw={"faceText":"/大怨种",...}，老写法只认
+        # `[CQ:face,id=123]`，整段 200 多字符的 JSON 会原样进提示词，
+        # 模型就照着复读一句「[CQ:face,id=344,raw={...}]」，群里看着像报错。
+        ft = re.search(r'"faceText"\s*:\s*"([^"]{1,12})"', m.group(0))
+        name = ft.group(1).strip().lstrip("/") if ft else ""
+        return f"[表情:{name}]" if name else "[表情]"
+
+    # 带参数的表情码一律吃掉，顺带把表情名捞出来当语义
+    text = re.sub(r"\[CQ:face,[^\]]*\]", _face_placeholder, text)
     # 大表情/商城表情 [CQ:bface,id=xxx] 保留提示
     text = re.sub(r"\[CQ:bface,[^\]]*\]", "[大表情]", text)
     # 再剥离纯媒体与文件类 CQ 码（包含 file, image, record, video, poke 等）
     text = re.sub(r"\[CQ:(image|record|video|file|audio)[^\]]*\]", "", text)
     text = re.sub(r"\[CQ:poke[^\]]*\]", "", text)
+    # 兜底：协议新增的类型（mface/dice/rps/markdown…）不许漏进提示词，
+    # 之前每加一种类型就得改一次正则，漏一次就是一大段 JSON 喂给模型
+    text = re.sub(r"\[CQ:[A-Za-z_]+(?:,[^\]]*)?\]", "", text)
+    # 存储层会把超长 raw 截到几百字符，截断后没有收尾的 `]`，
+    # 上面所有正则全部匹配不上，整段 JSON 照样进提示词。这种半截码只可能落在末尾。
+    text = re.sub(r"\[CQ:[A-Za-z_]+(?:,[^\]]*)?$", "", text)
     return text.strip()
+
+def strip_outgoing_cq(text: str) -> str:
+    """剥掉模型自己吐出来的 CQ 码，只留格式合法的 @。
+
+    模型偶尔会把群友的原始 CQ 码当话复读；NapCat 解析不了 `raw=` 这种参数，
+    就把整段当普通文本发进群，群友看到的就是一条「报错」。
+    """
+    if not text:
+        return ""
+    # 合法的 at 保留：动作层和回复分支真的靠它艾特人
+    text = re.sub(r"\[CQ:at,[^\]]*qq=(\d+)[^\]]*\]", r"[CQ:at,qq=\1]", text)
+    # 其余一律清掉；保留 CQ 码原文没有意义，群里只会看见乱码
+    text = re.sub(r"\[CQ:(?!at,qq=\d+\])[A-Za-z_]+(?:,[^\]]*)?\]", "", text)
+    return text.strip()
+
 
 def strip_markdown(text: str) -> str:
     """去除 Markdown 符号，适应手机 QQ 纯文本阅读"""
@@ -1594,11 +1624,18 @@ def score_message_quality(text: str, group_id: int = 0, has_image: bool = False,
     if not t and not has_image and not has_media:
         return 0.0, "空消息"
 
+    # 纯表情/占位符不算内容。净化后只剩 `[表情:大怨种]` 这类占位符时，
+    # 长度判断会把它当成有内容的长句（占位符+括号也有十来个字），
+    # 于是群友甩个表情就被接一句，莫名其妙。
+    _meaningful = re.sub(r"\[(?:表情|大表情|图片|卡片)[^\]]*\]", "", t).strip()
+    if not _meaningful and not has_image and not has_media:
+        return 0.0, "纯表情"
+
     score = 0.30
     hits = []
 
     # 信息量：太短的接不上，中长句有内容
-    length = len(t)
+    length = len(_meaningful)
     if length >= 6:
         score += 0.10
     if length >= 15:

@@ -122,6 +122,32 @@ async def test_interject_scoring():
         check(f"质量打分 {label}: {text}", got == expect, f"score={score:.2f} why={why}")
 
 
+async def test_cq_face_raw_sanitizing():
+    """新版带 raw= 的表情码不许整段漏进提示词，也不许被复读回群里。"""
+    raw = ('[CQ:face,id=344,raw={"faceIndex":344,"faceText":"/大怨种","faceType":2,'
+           '"packId":null,"stickerId":null,"sourceType":null}]')
+    cleaned = bot.clean_cq_codes(raw)
+    check("表情码整段被吃掉，只留表情名", cleaned == "[表情:大怨种]", cleaned)
+    check("净化后没有残留 JSON", "faceIndex" not in cleaned and "{" not in cleaned, cleaned)
+
+    old_style = bot.clean_cq_codes("[CQ:face,id=14]")
+    check("老式无参数表情码仍能识别", old_style == "[表情]", old_style)
+
+    unknown = bot.clean_cq_codes("[CQ:mface,emoji_id=abc,key=1] 好耶")
+    check("未知类型的 CQ 码也不会漏进去", unknown == "好耶", unknown)
+
+    # 纯表情消息不该被当成值得接话的内容
+    score, why = bot.score_message_quality(cleaned, recent_msgs=6)
+    check("纯表情消息不打高分", score < 0.40, f"score={score:.2f} why={why}")
+
+    # 出站兜底：模型复读的 CQ 码要被剥掉，合法 @ 保留
+    echoed = '看这个[CQ:face,id=344,raw={"faceText":"/大怨种"}]'
+    check("出站剥表情码", bot.strip_outgoing_cq(echoed) == "看这个", bot.strip_outgoing_cq(echoed))
+    check("出站保留合法 @", bot.strip_outgoing_cq("[CQ:at,qq=123456] 你好") == "[CQ:at,qq=123456] 你好")
+    check("出站把带参 @ 归一化",
+          bot.strip_outgoing_cq("[CQ:at,qq=123456,name=阿三] 你好") == "[CQ:at,qq=123456] 你好")
+
+
 async def test_addressing():
     """串人：时间线得写清楚谁对谁说，追问窗口也不能见谁答谁。"""
     from handlers import group as gh
@@ -155,6 +181,7 @@ async def main():
     await test_dashboard()
     await test_json_recovery()
     await test_interject_scoring()
+    await test_cq_face_raw_sanitizing()
     await test_wording()
     await test_addressing()
     print()
