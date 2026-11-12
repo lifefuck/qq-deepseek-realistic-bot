@@ -10,7 +10,7 @@ import logging
 import random
 import re
 import time
-from typing import Optional
+from typing import Optional, Tuple
 
 import aiohttp
 
@@ -89,6 +89,35 @@ def thin_emoji(text: str, keep_ratio: float = 0.15) -> str:
 
 
 _SEG_END_RE = re.compile(r'[!！?？~。；…\n]{1,3}')
+
+# 链接内部含 ? ~ ! 这些「像标点」的字符，必须在分段前整段保护起来
+_URL_IN_TEXT_RE = re.compile(r"https?://[^\s，。！？、；：\"'）)】]+")
+_URL_SLOT_OPEN, _URL_SLOT_CLOSE = "\ue000", "\ue001"
+
+
+def _mask_urls(text: str) -> Tuple[str, list]:
+    """把链接换成不含强标点的占位符。
+
+    _SEG_END_RE 会在 ? ~ ! 处下刀，`.../video/BV1xx?p=2&t=30` 就被劈成
+    「你看这个 …BV1xx?」+「p=2&t=30」两条残句，链接直接点不开。
+    """
+    urls: list = []
+
+    def _repl(m):
+        urls.append(m.group(0))
+        return f"{_URL_SLOT_OPEN}{len(urls) - 1}{_URL_SLOT_CLOSE}"
+
+    return _URL_IN_TEXT_RE.sub(_repl, text), urls
+
+
+def _unmask_urls(text: str, urls: list) -> str:
+    def _repl(m):
+        try:
+            return urls[int(m.group(1))]
+        except (IndexError, ValueError):
+            return m.group(0)
+
+    return re.sub(rf"{_URL_SLOT_OPEN}(\d+){_URL_SLOT_CLOSE}", _repl, text)
 
 
 def _merge_fragments(parts: list[str]) -> list[str]:
@@ -308,11 +337,12 @@ def split_reply_segments(text: str) -> list[str]:
     clean = bot.remove_trailing_period(clean)
     if not clean:
         return []
+    clean, _urls = _mask_urls(clean)
     lines = [l.strip() for l in clean.split('\n') if l.strip()]
     if len(lines) > 1:
-        return _fold_overflow(lines)
+        return [_unmask_urls(x, _urls) for x in _fold_overflow(lines)]
     if len(clean) <= 16:
-        return [clean]
+        return [_unmask_urls(clean, _urls)]
 
     parts = []
     buf = ''
@@ -329,11 +359,11 @@ def split_reply_segments(text: str) -> list[str]:
         parts.append(buf.strip())
     parts = _merge_fragments(parts)
     if len(parts) >= 2:
-        return _fold_overflow(parts)
+        return [_unmask_urls(x, _urls) for x in _fold_overflow(parts)]
     longer = _split_long_clause(clean)
     if longer:
-        return longer
-    return [clean]
+        return [_unmask_urls(x, _urls) for x in longer]
+    return [_unmask_urls(clean, _urls)]
 
 
 async def send_input_status(ws: aiohttp.ClientWebSocketResponse, group_id: int):

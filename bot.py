@@ -1105,6 +1105,11 @@ def get_group_config(group_id: Optional[int]) -> dict:
 
 
 def update_group_config(group_id: Optional[int], key: str, value: Any) -> bool:
+    # 只认白名单里的群：get_group_config 会凭空建条目，陌生群号一旦写进 muted=False，
+    # 还会把任意 QQ 群加进云崽白名单（越权开功能），配置里也会留一堆永不清理的脏群
+    if group_id is not None and group_id not in ALLOWED_GROUPS:
+        logger.warning("[配置更新] 拒绝未知群 %s 的配置写入", group_id)
+        return False
     cfg = get_group_config(group_id)
     cfg[key] = value
     save_group_configs()
@@ -2429,6 +2434,13 @@ async def _cold_group_activator():
                     # 检查历史是否有过真实交流（避免僵尸群）
                     if current_ws and not current_ws.closed:
                         logger.info("[群 %d] 检测到白天冷场超过 3 小时，触发轻量随性抛话唤醒", gid)
+                        # 先记下旧值：这次要是没真发出去（上游 5xx / 出站闸吞了），要退回去
+                        _prev = {
+                            "active": group_last_active_reply.get(gid, 0.0),
+                            "msg": group_last_msg_time.get(gid, 0.0),
+                            "nudge_ts": group_last_nudge_ts.get(gid, 0.0),
+                            "reply_n": len(group_bot_reply_times[gid]),
+                        }
                         group_last_active_reply[gid] = now_ts
                         group_last_msg_time[gid] = now_ts
                         group_nudge_count[gid] = group_nudge_count.get(gid, 0) + 1
@@ -2446,16 +2458,23 @@ async def _cold_group_activator():
                             extra += f"\n【你上次冷场抛的是「{prev_nudge}」，这次换个话题，别换句话重复它】"
                         # 委托 process_group_trigger 发起一次冷场唤醒
                         from handlers.group import process_group_trigger
-                        spawn(process_group_trigger(
-                            current_ws, gid,
-                            is_at=False,
-                            sender_nick="小鲸鱼",
-                            is_admin=False,
-                            target_uid=None,
-                            user_text="（大家怎么突然都不说话了呀，悄悄冒个泡）",
-                            extra_instruction=extra,
-                            cold_nudge=True,
-                        ))
+                        # 等它真的落地再算数：扣配额/写"刚活跃"都发生在生成之前，
+                        # 上游 502 或出站闸静默时这里一条都没发出去，却照样占掉今天的名额，
+                        # 还把群伪装成刚活跃——两次抖动就全天放弃这个群，仪表盘也看不出异常
+                        try:
+                            await process_group_trigger(
+                                current_ws, gid,
+                                is_at=False,
+                                sender_nick="小鲸鱼",
+                                is_admin=False,
+                                target_uid=None,
+                                user_text="（大家怎么突然都不说话了呀，悄悄冒个泡）",
+                                extra_instruction=extra,
+                                cold_nudge=True,
+                            )
+                        finally:
+                            if len(group_bot_reply_times[gid]) == _prev["reply_n"]:
+                                cold_nudge_rollback(gid, _prev)
         except asyncio.CancelledError:
             raise
         except Exception as ce:
@@ -2609,6 +2628,20 @@ async def main():
         logger.warning("连接已断开，%d 秒后重连（第 %d 次）...", wait, reconnect_fails)
         await asyncio.sleep(wait)
 
+
+def cold_nudge_rollback(gid: int, prev: dict) -> None:
+    """冷场冒泡没真发出去时回滚账本。
+
+    扣名额、"刚活跃"时间戳都在生成之前写，上游 5xx 或出站闸静默时一条都没发出去，
+    却照样占掉当天的冒泡额度、还把群伪装成刚活跃，两次抖动就能让这个群整天不再开口。
+    """
+    group_nudge_count[gid] = max(0, group_nudge_count.get(gid, 1) - 1)
+    group_last_nudge_ts[gid] = prev.get("nudge_ts", 0.0)
+    group_last_active_reply[gid] = prev.get("active", 0.0)
+    group_last_msg_time[gid] = prev.get("msg", 0.0)
+    logger.info("[群 %d] 冷场冒泡没发出去，名额与活跃时间已回滚", gid)
+
+
 def _install_signal_handlers() -> None:
     """SIGTERM 走和 Ctrl-C 同一条退出路径。
 
@@ -2630,10 +2663,24 @@ def _install_signal_handlers() -> None:
             pass
 
 
+async def _run_service() -> None:
+    """包一层只为了在事件循环还活着的时候做异步收尾。"""
+    try:
+        await main()
+    finally:
+        # 关了 loop 再 close 不了 session，aiohttp 退出时就会甩一句
+        # "Unclosed client session"——每次都像是出了故障，其实是收尾没做完
+        try:
+            if http_session is not None and not http_session.closed:
+                await http_session.close()
+        except Exception:
+            pass
+
+
 if __name__ == "__main__":
     _install_signal_handlers()
     try:
-        asyncio.run(main())
+        asyncio.run(_run_service())
     except KeyboardInterrupt:
         logger.info("服务已手动退出。")
     finally:

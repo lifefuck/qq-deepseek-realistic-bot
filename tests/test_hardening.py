@@ -421,6 +421,37 @@ async def test_batch2_regressions():
     check("分词保留数字", "3" in FishMemoryEngine.tokens("出差3天"))
 
 
+async def test_batch3_regressions():
+    """审计第三批：链接不被切断、面板只能改白名单群、冷场冒泡回滚。"""
+    import services.messaging as messaging
+
+    url = "https://www.bilibili.com/video/BV1xx411c7mD?p=2&t=30"
+    text = "这视频真的离谱笑死我了必须发给你看看啊兄弟！" + url + "！看完记得回我一句啊"
+    parts = messaging.split_reply_segments(text)
+    check("链接没被 ? 切断", any(url in p for p in parts), parts)
+    check("分段占位符不泄漏", not any("\ue000" in p or "\ue001" in p for p in parts), parts)
+    check("真正的感叹号仍然分段", len(parts) >= 2, parts)
+
+    # 面板/接口不能凭空给陌生群写配置（否则能把它塞进云崽白名单）
+    check("未知群号被拒", bot.update_group_config(999999999, "muted", True) is False)
+    gid_ok = sorted(bot.ALLOWED_GROUPS)[0]
+    check("白名单群可写", bot.update_group_config(gid_ok, "muted", False) is True)
+    check("私聊(None)仍可写", bot.update_group_config(None, "muted", False) is True)
+
+    # 冷场冒泡失败回滚
+    gid = 424243
+    bot.group_nudge_count[gid] = 2
+    bot.group_last_nudge_ts[gid] = 111.0
+    bot.group_last_active_reply[gid] = 222.0
+    bot.group_last_msg_time[gid] = 333.0
+    bot.cold_nudge_rollback(gid, {"nudge_ts": 111.0, "active": 222.0, "msg": 333.0})
+    check("失败后名额退回", bot.group_nudge_count[gid] == 1, bot.group_nudge_count[gid])
+    check("失败后活跃时间回滚", bot.group_last_active_reply[gid] == 222.0)
+    for d in (bot.group_nudge_count, bot.group_last_nudge_ts,
+              bot.group_last_active_reply, bot.group_last_msg_time):
+        d.pop(gid, None)
+
+
 async def test_addressing():
     """串人：时间线得写清楚谁对谁说，追问窗口也不能见谁答谁。"""
     from handlers import group as gh
@@ -461,6 +492,7 @@ async def main():
     await test_concurrent_at_not_dropped()
     await test_audit_regressions()
     await test_batch2_regressions()
+    await test_batch3_regressions()
     await test_wording()
     await test_addressing()
     print()
