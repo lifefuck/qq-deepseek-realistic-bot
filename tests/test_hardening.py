@@ -382,6 +382,45 @@ async def test_audit_regressions():
         bot.call_action, bot.call_deepseek = o_ca, o_m
 
 
+async def test_batch2_regressions():
+    """审计第二批：SSRF 对端复核、记忆数字区分、WAL。"""
+    import media_resolver
+    from services.fish_memory import FishMemoryEngine
+
+    class _T:
+        def __init__(self, ip):
+            self.ip = ip
+
+        def get_extra_info(self, key):
+            return (self.ip, 443) if key == "peername" else None
+
+    class _C:
+        def __init__(self, ip):
+            self.transport = _T(ip)
+
+    class _R:
+        def __init__(self, ip):
+            self.connection = _C(ip)
+
+    check("实际连到内网地址被拒", media_resolver.connected_peer_is_public(_R("127.0.0.1")) is False)
+    check("公网地址放行", media_resolver.connected_peer_is_public(_R("8.8.8.8")) is True)
+    check("拿不到对端时不误伤",
+          media_resolver.connected_peer_is_public(type("R", (), {"connection": None})()) is True)
+
+    import tempfile, sqlite3
+    with tempfile.TemporaryDirectory() as td:
+        eng = FishMemoryEngine(db_path=os.path.join(td, "t.db"))
+        a = eng.add_memory("g", "p", "我明天要去北京出差3天")
+        b = eng.add_memory("g", "p", "我明天要去北京出差9天")
+        check("数字不同的事实不合并", a.get("id") != b.get("id"), (a, b))
+        c = eng.add_memory("g", "p", "我明天要去北京出差3天！")
+        check("同一事实仍会合并", c.get("merged") is True, c)
+        mode = sqlite3.connect(os.path.join(td, "t.db")).execute("pragma journal_mode").fetchone()[0]
+        check("记忆库启用 WAL", str(mode).lower() == "wal", mode)
+
+    check("分词保留数字", "3" in FishMemoryEngine.tokens("出差3天"))
+
+
 async def test_addressing():
     """串人：时间线得写清楚谁对谁说，追问窗口也不能见谁答谁。"""
     from handlers import group as gh
@@ -421,6 +460,7 @@ async def main():
     await test_msg_dedupe_and_placeholders()
     await test_concurrent_at_not_dropped()
     await test_audit_regressions()
+    await test_batch2_regressions()
     await test_wording()
     await test_addressing()
     print()

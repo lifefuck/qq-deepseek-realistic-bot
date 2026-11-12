@@ -667,11 +667,13 @@ async def update_user_memory_async(user_id: int, sender_nick: str, dialogue_snip
     # 4. 同步记录持久化流水账并自动捕获事实/偏好（借鉴 DSH）
     try:
         from services.fish_memory import fish_memory_engine
-        fish_memory_engine.record_turn(
+        # 同步 sqlite 写：丢线程，别把事件循环按住
+        await asyncio.to_thread(
+            fish_memory_engine.record_turn,
             group_id=str(group_id or "private"),
             person_id=str(user_id),
             user_text=dialogue_snippet,
-            reply_text=bot_reply
+            reply_text=bot_reply,
         )
     except Exception as e:
         logger.debug("fish_memory 记录流水与捕获异常: %s", e)
