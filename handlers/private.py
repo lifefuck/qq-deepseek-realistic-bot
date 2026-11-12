@@ -66,6 +66,11 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
     if sender_id != bot.ADMIN_QQ:
         return
 
+    # 私聊也会被重推，同一条不重复答
+    if bot.is_duplicate_message(event.get("message_id"), "private"):
+        bot.logger.info("[私聊] 消息 %s 重复投递，跳过", event.get("message_id"))
+        return
+
     # 私聊同样打 rid，和群聊一个格式，日志里好区分来源
     trace.begin(f"p{sender_id}")
         

@@ -52,6 +52,11 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     if group_id not in bot.ALLOWED_GROUPS or sender_id == bot.BOT_QQ:
         return
 
+    # 同一 msg_id 又投一次（重连补历史/服务端重推）：再答一遍就是两条不同回复
+    if bot.is_duplicate_message(src_msg_id, group_id):
+        bot.logger.info("[群 %s] 消息 %s 重复投递，跳过", group_id, src_msg_id)
+        return
+
     # 每条消息一个短 id，后续日志带上，排查时能串成一条线
     trace.begin(f"g{group_id}-{sender_id}")
         
