@@ -481,6 +481,103 @@ async def test_wording():
     check("长单句在逗号处断开", len(s) == 2 and "，" not in s[0], repr(s))
 
 
+async def test_batch4_regressions():
+    """审计第四批：配置写成非对象不崩、冷场判据用单调计数、误判指令、越权动作。"""
+    import json as _json
+    import tempfile
+    import games
+    from handlers import actions
+    import safety_guard as sg
+
+    # 免红温名单被手改成数组 / 写成字符串，都不该抛异常
+    import os as _os
+    _tmp = tempfile.mkdtemp()
+    _anger = _os.path.join(_tmp, "anger_overrides.json")
+    _orig_file = bot.ANGER_OVERRIDE_FILE
+    _orig_cache = bot._anger_cache
+    try:
+        bot.ANGER_OVERRIDE_FILE = _anger
+        for payload, want, label in (
+            ('["oops"]', False, "数组结构"),
+            ('{"123456789": true}', False, "布尔条目"),
+            ('{"123456789": {"unlimited": "no"}}', False, "字符串没算开启"),
+            ('{"123456789": {"unlimited": true}}', True, "真开启生效"),
+        ):
+            with open(_anger, "w", encoding="utf-8") as f:
+                f.write(payload)
+            bot._anger_cache = {"mtime": 0.0, "data": {}}
+            check(f"免红温配置{label}", bot.is_anger_unlimited(123456789) is want)
+    finally:
+        bot.ANGER_OVERRIDE_FILE = _orig_file
+        bot._anger_cache = _orig_cache
+
+    # 群配置条目被写成字符串：不能崩在 import
+    gid = sorted(bot.ALLOWED_GROUPS)[0]
+    saved = dict(bot.group_configs.get(str(gid), {}))
+    try:
+        bot.group_configs[str(gid)] = "on"
+        bot.load_group_configs()
+        check("坏配置条目降级为默认值", isinstance(bot.get_group_config(gid), dict))
+    finally:
+        bot.group_configs[str(gid)] = saved
+        bot.load_group_configs()
+
+    # 冷场判据：deque 会被 popleft，长度不可靠，必须用单调计数
+    bot.group_bot_reply_seq[gid] = 7
+    bot.note_reply_sent(gid, "真的发出去了")
+    check("冷场判据用单调计数", bot.group_bot_reply_seq[gid] == 8)
+
+    # 云崽指令：情绪化中文句不该被当成指令吞掉
+    for text in ("？", "！这也太离谱了", "～好困", "我想问下培养", "深渊今天开了", "帮我看看这个面板"):
+        check(f"不当指令: {text}", bot.is_game_or_yunzai_command(text) is False)
+    for text in ("#帮助", "?help", "雷神面板", "深渊"):
+        check(f"仍是指令: {text}", bot.is_game_or_yunzai_command(text) is True)
+
+    # 编号规则行：口语里的「要求/规则」不该整行删空
+    check("要求句不被删空", sg.strip_internal_monologue("1. 这个要求我做不到") != "")
+    check("真规则复述仍剥掉", sg.strip_internal_monologue("1. 保持人设，别端着") == "")
+
+    # 数字炸弹：超长数字不崩、过期能重开
+    games.handle_quick_game_commands("roll " + "9" * 5000)
+    check("超长数字不崩", True)
+    import time as _t
+    games.active_games[987654321] = {"game": "bomb", "target": 33, "low": 1, "high": 100,
+                                     "start_time": 0, "last_active": _t.time() - 10000, "guesses": 1}
+    handled, _msg = games.process_number_bomb(987654321, "数字炸弹", 111, "阿测")
+    check("过期炸弹能重开", handled and games.active_games[987654321]["last_active"] > _t.time() - 60)
+    games.active_games.pop(987654321, None)
+
+    # 记忆原子：level 写成 null 不许崩
+    import memory_atoms
+    atom = memory_atoms.normalize({"text": "喜欢猫", "level": None}, _t.time())
+    check("level=null 兜住", atom["level"] == 3)
+
+    # 动作层：讨论句不执行、步数不当 QQ 号
+    GID = gid
+    bot.group_member_nicks[GID] = {222222222: "小明"}
+    calls = []
+
+    async def _fake(ws, action, params, timeout=2.0):
+        calls.append((action, params))
+        return {"status": "ok", "data": {"role": "member"}}
+    _orig_action = bot.call_action
+    bot.call_action = _fake
+    try:
+        r = await actions.maybe_run(None, GID, 333333333, "测", True, "小明该不该禁言", True)
+        check("讨论句不执行禁言", not r and not [c for c in calls if c[0].startswith("set_group")])
+        calls.clear()
+        r = await actions.maybe_run(None, GID, 333333333, "测", True, "我踢了80000步厉害吧", True)
+        check("步数不被当 QQ 号", not [c for c in calls if c[0].startswith("set_group")])
+        calls.clear()
+        await actions._send(None, GID, 222222222, "PASS")
+        check("动作层也过出站闸", not calls)
+        calls.clear()
+        await actions._send(None, GID, 222222222, "你行不行啊")
+        check("动作层正常文本能发出", any(c[0] == "send_group_msg" for c in calls))
+    finally:
+        bot.call_action = _orig_action
+
+
 async def main():
     await test_dashboard()
     await test_json_recovery()
@@ -493,6 +590,7 @@ async def main():
     await test_audit_regressions()
     await test_batch2_regressions()
     await test_batch3_regressions()
+    await test_batch4_regressions()
     await test_wording()
     await test_addressing()
     print()

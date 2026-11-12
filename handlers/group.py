@@ -73,7 +73,9 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     if bot.get_group_config(group_id).get("muted"):
         if is_admin:
             mute_cmd = bot.clean_cq_codes(raw_message).strip().replace("／", "/")
-            if mute_cmd.split()[:1] == ["/on"]:
+            # 大小写和尾随内容都容错：原来必须精确 "/on"，主人发 "/ON" 或 "/on吧"
+            # 就永远解不开静默（muted 是落盘的，重启也还在）
+            if mute_cmd.lower().replace(" ", "").startswith("/on"):
                 await bot.handle_admin_command(ws, "/on", is_private=False, group_id=group_id)
         return
     
@@ -273,9 +275,11 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     except Exception as e:
         bot.logger.debug("群消息自动感知异常: %s", e)
 
-    # 公开指令检测: /memory 或 /memary（所有人均可查看好感度与记忆总结）
+    # /memory 或 /memary：群管/主人看全群，普通群友只能看自己那份。
+    # 以前对所有人开放，群友能精确枚举别人的好感数值和负面印象标签。
     if norm_lower.startswith(("/memary", "/memory")):
-        await bot.handle_memory_summary_command(ws, group_id=group_id)
+        await bot.handle_memory_summary_command(
+            ws, group_id=group_id, only_uid=None if is_admin else str(sender_id))
         return
 
     # 1. 轻量文字游戏（免状态：roll、抽签、抛硬币）拦截

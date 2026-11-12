@@ -13,7 +13,7 @@ import logging
 import random
 import re
 import time
-from typing import Optional
+from typing import Dict, Optional
 
 import connectors
 import meme_catalog
@@ -116,9 +116,11 @@ def _resolve_target(group_id: int, text: str) -> Optional[tuple]:
         s = re.sub(r"\(QQ.*?\)|\(你自己\)", "", str(m.get("sender", ""))).strip()
         if s and s in body and m.get("sender_id"):
             return int(m["sender_id"]), s
-    m = re.search(r"(\d{5,12})", body)
-    if m:
-        return int(m.group(1)), str(m.group(1))
+    # 数字兜底：只在原句里没有量词时认（「我踢了80000步」不能把步数当 QQ 号踢人）
+    if not _NUM_UNIT.search(text):
+        m = re.search(r"(\d{5,12})", body)
+        if m:
+            return int(m.group(1)), str(m.group(1))
     return None
 
 
@@ -287,13 +289,36 @@ def _parse_duration(text: str) -> tuple:
     return max(60, min(n * mult, 12 * 3600)), (text[:m.start()] + text[m.end():])
 
 
+_ADMIN_CACHE: Dict[tuple, tuple] = {}  # (群,人) -> (判定结果, 时间戳)
+
+
 async def _is_group_admin(ws, group_id: int, uid: int) -> bool:
     if uid == bot.ADMIN_QQ:
         return True
+    # 原来每条带「禁言/踢」的普通发言都同步等一次 no_cache 查询（最长 5 秒），
+    # 无权限的人每刷一次就白等 5s，消息链路也跟着卡。缓存 60 秒。
+    key = (group_id, uid)
+    hit = _ADMIN_CACHE.get(key)
+    if hit and time.time() - hit[1] < 60:
+        return hit[0]
     res = await bot.call_action(ws, "get_group_member_info",
-                                {"group_id": group_id, "user_id": uid, "no_cache": True}, timeout=5.0)
-    return bool(res and res.get("status") == "ok"
-                and (res.get("data") or {}).get("role") in ("admin", "owner"))
+                                {"group_id": group_id, "user_id": uid, "no_cache": True}, timeout=2.0)
+    ok = bool(res and res.get("status") == "ok"
+              and (res.get("data") or {}).get("role") in ("admin", "owner"))
+    _ADMIN_CACHE[key] = (ok, time.time())
+    return ok
+
+
+# 「该不该禁言」「踢不踢」这种讨论句不是命令：以前命中关键词加一个名字就真禁/真踢
+_ASK_WORDS = re.compile(r"[?？]|吗|呢|吧|该不该|要不要|是不是|能不能|可不可以|如果|假如|要不|是否|该禁|该踢")
+
+
+def _is_imperative(body: str) -> bool:
+    return not _ASK_WORDS.search(body)
+
+
+# 数字兜底会把「我踢了80000步」的步数当 QQ 号踢人；后面跟量词的不算号码
+_NUM_UNIT = re.compile(r"\d{5,12}\s*(?:步|元|块|个|人|分|秒|天|年|岁|次|条|页|米|度|斤|万|千|层|抽|连)")
 
 
 async def _do_ban(ws, group_id: int, sender_id: int, body: str) -> None:
@@ -343,8 +368,9 @@ async def _send(ws, group_id: int, qq: int, line: str) -> None:
     line = _clean_line(line)
     if not line:
         line = random.choice(_FALLBACK_LINES)
-    msg = f"[CQ:at,qq={qq}] {line}" if qq else line
-    await bot.call_action(ws, "send_group_msg", {"group_id": group_id, "message": msg})
+    # 以前直接 call_action("send_group_msg")，绕过 PASS 闸、CQ 剥离、群级发送锁和
+    # 禁言熔断——动作层恰恰是最容易连发撞风控的地方。统一走 send_group_message。
+    await bot.send_group_message(ws, group_id, line, at_user_id=qq or None)
     logger.info("[动作层] @%d 已发出: %s", qq, line)
 
 
@@ -382,15 +408,22 @@ async def maybe_run(ws, group_id: int, sender_id: int, sender_nick: str,
         if not target:
             return False
         qq, nick = target
+        # 这条路径零权限门槛：普通群友能借机器人的号当众辱骂任何人，包括主人。
+        # 骂群管/主人这条拦住，其余随意。
+        if qq in (bot.BOT_QQ, bot.ADMIN_QQ) or await _is_group_admin(ws, group_id, qq) and sender_id != bot.ADMIN_QQ:
+            await bot.send_group_message(ws, group_id, "这个我不敢骂，换个人", at_user_id=sender_id)
+            return True
         lines = await _gen_lines([target], "损")
         await _send(ws, group_id, qq, lines.get(str(qq)) or random.choice(_FALLBACK_LINES))
         return True
 
     # 群管理：破坏性动作必须点名到具体的人，权限在 _do_* 里查
-    if ("禁言" in body or "闭嘴" in body) and len(body) <= 20 and _resolve_target(group_id, body):
+    if ("禁言" in body or "闭嘴" in body) and len(body) <= 20 and _is_imperative(body) \
+            and _resolve_target(group_id, body):
         await _do_ban(ws, group_id, sender_id, body)
         return True
-    if re.search(r"(踢|踹)", body) and len(body) <= 20 and _resolve_target(group_id, body):
+    if re.search(r"(踢|踹)", body) and len(body) <= 20 and _is_imperative(body) \
+            and _resolve_target(group_id, body):
         await _do_kick(ws, group_id, sender_id, body)
         return True
 
@@ -410,6 +443,9 @@ async def maybe_run(ws, group_id: int, sender_id: int, sender_nick: str,
         return True
 
     # 联网查东西：以前只有「梗」才触发搜索，其他问题全靠模型硬编
+    # 群配置里 enable_search=False 时动作层照旧联网搜索（这个键原来只在 llm 里生效）
+    if not bot.get_group_config(group_id).get("enable_search", True):
+        return False
     m = RE_SEARCH.search(body)
     if m:
         query = (m.group(1) or m.group(2) or "").strip(" ，。,.")

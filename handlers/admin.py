@@ -43,9 +43,23 @@ async def handle_admin_command(ws: aiohttp.ClientWebSocketResponse, cmd: str, is
         turn_on = cmd_lower.startswith("/on")
         cfg = bot.get_group_config(group_id)
         # enable_sleep 语义是"启用作息"，不是"启用功能"，关功能时反而要把它打开
-        for key in list(cfg.keys()):
-            if key.startswith("enable_") and key != "enable_sleep":
-                cfg[key] = turn_on
+        if turn_on:
+            # /on 原来把所有 enable_* 一律写成 True，把人工单独关掉的功能也一起打开
+            # （连云崽白名单都会复活）。有关停前的快照就照原样还原。
+            snap = bot._pre_off_snapshot.pop(group_id, None)
+            if snap:
+                for key, val in snap.items():
+                    cfg[key] = val
+            else:
+                for key in list(cfg.keys()):
+                    if key.startswith("enable_") and key != "enable_sleep":
+                        cfg[key] = True
+        else:
+            bot._pre_off_snapshot[group_id] = {
+                k: v for k, v in cfg.items() if k.startswith("enable_") and k != "enable_sleep"}
+            for key in list(cfg.keys()):
+                if key.startswith("enable_") and key != "enable_sleep":
+                    cfg[key] = False
         cfg["enable_sleep"] = True
         cfg["muted"] = not turn_on
         bot.save_group_configs()
@@ -252,16 +266,22 @@ def _favor_tier(favor: int) -> str:
     return "炸毛"
 
 
-async def handle_memory_summary_command(ws: aiohttp.ClientWebSocketResponse, group_id: Optional[int] = None, user_id: Optional[int] = None):
-    """公开指令: /memory 或 /memary 生成当前群友记忆库与好感度总结（按群隔离）"""
-    gid_key = str(group_id) if group_id else "private"
+async def handle_memory_summary_command(ws: aiohttp.ClientWebSocketResponse, group_id: Optional[int] = None, user_id: Optional[int] = None, only_uid: Optional[str] = None):
+    """公开指令: /memory 或 /memary 生成当前群友记忆库与好感度总结（按群隔离）。
+
+    only_uid 非空时只出这个人自己那份（普通群友没有看别人好感度的权限）。
+    """
+    gid_key = (str(group_id) if group_id else "private") + (f":{only_uid}" if only_uid else "")
 
     # 20 秒内重复发同一个指令直接复用上一次的结果，省掉重复排序
     cached = _MEMORY_CACHE.get(gid_key)
     if cached and time.time() - cached[0] < _MEMORY_CACHE_TTL:
         title, entries = cached[1], cached[2]
     else:
-        scope = bot.user_memories.get(gid_key, {})
+        scope = bot.user_memories.get(str(group_id) if group_id else "private", {})
+        if only_uid:
+            # 只看自己那份：别人的好感数值和印象标签不是公开信息
+            scope = {only_uid: scope[only_uid]} if only_uid in scope else {}
         if not scope:
             await (bot.send_group_message(ws, group_id, "当前群聊暂无群友记忆记录", is_command_report=True)
                    if group_id else
@@ -274,7 +294,10 @@ async def handle_memory_summary_command(ws: aiohttp.ClientWebSocketResponse, gro
         rows.sort(key=lambda kv: 0 if kv[0] == str(bot.ADMIN_QQ) else 1)
 
         group_name = bot.group_names_cache.get(group_id, f"群 {group_id}") if group_id else "私聊"
-        title = f"群友记忆 · {group_name} · {len(scope)} 人" if group_id else f"私聊记忆 · {len(scope)} 人"
+        if only_uid:
+            title = f"你的记忆 · {group_name}"
+        else:
+            title = f"群友记忆 · {group_name} · {len(scope)} 人" if group_id else f"私聊记忆 · {len(scope)} 人"
         entries = []
         for uid, mem in rows:
             entries.append((uid, _format_member(uid, mem, members.get(uid, {}))))
