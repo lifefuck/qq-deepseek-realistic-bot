@@ -378,9 +378,13 @@ async def send_input_status(ws: aiohttp.ClientWebSocketResponse, group_id: int):
 
 
 async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None, emoji_ratio: float = 0.15):
-    """向 NapCat 发送群消息并捕获发送状态（支持可选 @ 对方，并内置群级 60 秒频控保护防 1200 拦截）"""
+    """向 NapCat 发送群消息并捕获发送状态（支持可选 @ 对方，并内置群级 60 秒频控保护防 1200 拦截）。
+
+    返回真正发出去的正文（已削平/剥 CQ/截断后）。调用方拿它写回上下文与记账，
+    别再假设「模型写了多长群里就出现多长」——这条链路上有截断和洗文。
+    """
     if safety_guard.is_pass_signal(text):
-        return
+        return ""
     clean_text = bot.strip_markdown(text).strip()
     # 兜底闸：走单发通道的文本不许夹带 CQ 码（合法的 @ 除外）
     clean_text = bot.strip_outgoing_cq(clean_text)
@@ -400,12 +404,16 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
         # 错字在分段发送那一层做：只有那里知道这条有没有被改、改的是哪个词，
         # 才能决定要不要补一句「打错了」。这里再注入一次会变成双重错字。
 
-    # 普通聊天强控 200 字防水群；管理汇报与 memory 概览解除字数硬截断限制（放宽至 2000 字）
-    max_len = 2000 if is_command_report else 200
-    if len(clean_text) > max_len:
+    # 普通聊天强控字数防水群；管理汇报与 memory 概览放宽至 2000 字。
+    # 原来是 200，而分段发送里 >300 字走整条发送，201~300 字这一档会被硬截掉尾巴
+    # 且聊天记录里写的还是全文（模型以为自己说过，其实群里没有）。放宽到 500，
+    # 正常气泡（shape_short 之后）根本碰不到。
+    max_len = 2000 if is_command_report else 500
+    truncated = len(clean_text) > max_len
+    if truncated:
         clean_text = clean_text[:max_len - 3] + "..."
     if not clean_text:
-        return
+        return ""
         
     # 如果指定了目标群友且不是全员指令汇报，前置 [CQ:at,qq=xxx] 艾特对方
     if at_user_id and at_user_id != bot.BOT_QQ and not is_command_report:
@@ -418,6 +426,10 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
         
         if res and res.get("status") == "ok":
             logger.info("[群 %d] 消息已送达: %s", group_id, msg_payload[:40])
+            if truncated:
+                logger.warning("[群 %d] 长回复被截到 %d 字（原文 %d 字），聊天记录按实际发出内容写回",
+                               group_id, max_len, len(text))
+            return clean_text
         else:
             logger.warning("[群 %d] 发送可能失败: %s | 响应: %s", group_id, msg_payload[:40], res)
             # 被动容错熔断：如果响应中明确包含“禁言”或特定错误码，立刻给该群施加 60 秒禁言保护
@@ -425,6 +437,8 @@ async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int,
             if any(k in res_str for k in ["禁言", "banned", "1200"]):
                 bot.group_bot_ban_expire[group_id] = time.time() + 60.0
                 logger.warning("[群 %d] 检测到发信被禁言拦截，自动开启 60 秒免调用大模型熔断保护！", group_id)
+    # 没发出去就是没说过：返回空串，让复读闸/密度闸/上下文都别把它当已发内容
+    return ""
 
 
 async def send_meme_message(ws: aiohttp.ClientWebSocketResponse, group_id: Optional[int] = None, user_id: Optional[int] = None, b64_data: str = ""):
@@ -553,8 +567,7 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     # 代码块/多行清单也必须整条发：切开就散了。
     block_like = "```" in text or text.count("\n") >= 3
     if is_command_report or len(text) > 300 or block_like:
-        await send_group_message(ws, group_id, text, is_command_report=is_command_report, at_user_id=at_user_id)
-        return text
+        return await send_group_message(ws, group_id, text, is_command_report=is_command_report, at_user_id=at_user_id)
 
     segments = shape_short(split_reply_segments(text))
     # 切段之后每段再过一遍旁白闸：整句正文里混一句「（发送表情包）」，切出来就是独立一条，
@@ -583,12 +596,15 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
 
     # 群聊不做拟真延迟：群里要的是接得上话，模型吐完就发。
     # 拟真节奏只留给私聊（见 send_private_message），一对一才需要「看完想了想」。
+    sent_parts: list = []
     for i, seg in enumerate(segments):
         target_at = at_user_id if i == 0 else None
         # 错字池已停用：纠错补发被砍掉之后，故意打错字会永久留在群里
         payload = seg
-        await send_group_message(ws, group_id, payload, is_command_report=False,
-                                 at_user_id=target_at, emoji_ratio=profile["emoji_keep"])
+        ok_text = await send_group_message(ws, group_id, payload, is_command_report=False,
+                                           at_user_id=target_at, emoji_ratio=profile["emoji_keep"])
+        if ok_text:
+            sent_parts.append(ok_text)
 
     affect.on_bot_spoke(group_id)
     affect.save()
@@ -597,7 +613,8 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
     if final_pic_b64:
         await send_meme_message(ws, group_id=group_id, b64_data=final_pic_b64)
 
-    return text
+    # 返回群里真正出现的那几句（可能被截断/抽稀），不是模型原文
+    return "，".join(sent_parts)
 
 
 async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int, text: str, is_command_report: bool = False):
