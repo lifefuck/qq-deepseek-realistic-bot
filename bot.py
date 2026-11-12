@@ -17,6 +17,7 @@ import json
 import logging
 import os
 import random
+import signal
 import base64
 import re
 import sys
@@ -2608,13 +2609,39 @@ async def main():
         logger.warning("连接已断开，%d 秒后重连（第 %d 次）...", wait, reconnect_fails)
         await asyncio.sleep(wait)
 
+def _install_signal_handlers() -> None:
+    """SIGTERM 走和 Ctrl-C 同一条退出路径。
+
+    systemd stop/restart、OOM killer 发的都是 SIGTERM，Python 默认直接终止，
+    `finally` 一行都不跑：最多丢 10s 的对话记忆，更久的是 /stop 静默和禁言保护
+    （300s 才存一次）——刚静默完一重启，机器人在群里又是满血复活。
+    """
+    def _handler(signum, frame):
+        raise KeyboardInterrupt
+
+    for sig_name in ("SIGTERM", "SIGHUP"):
+        sig = getattr(signal, sig_name, None)
+        if sig is None:
+            continue
+        try:
+            signal.signal(sig, _handler)
+        except (ValueError, OSError):
+            # 非主线程 / 平台不支持时忽略，别为了收尾把启动搞崩
+            pass
+
+
 if __name__ == "__main__":
+    _install_signal_handlers()
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("服务已手动退出。")
     finally:
-        # 退出前把攒着的记忆和账本落盘，别丢最后几分钟的数据
+        # 退出前把攒着的记忆、账本、运行时保护状态落盘，别丢最后几分钟的数据
         flush_user_memories()
         affect.save(force=True)
         token_tracker.save()
+        try:
+            save_runtime_state()
+        except Exception as e:
+            logger.warning("退出时保存运行时状态失败: %s", e)

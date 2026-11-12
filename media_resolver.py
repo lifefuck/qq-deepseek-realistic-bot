@@ -66,6 +66,28 @@ async def _is_public_url(url: str) -> bool:
         return False
 
 
+def connected_peer_is_public(resp: Any) -> bool:
+    """复核这条连接真正连到了哪个 IP。
+
+    `_is_public_url` 是先解析一次再过闸，建连时 aiohttp 又自己解析一次；
+    群友用自己控 DNS 的域名（TTL=0）就能让第一次返回公网、第二次返回 127.0.0.1，
+    校验形同虚设。这里直接看 socket 的对端地址，rebinding 也躲不过。
+    拿不到对端信息时按原校验结果放行，不让它误伤正常抓取。
+    """
+    try:
+        conn = getattr(resp, "connection", None)
+        transport = getattr(conn, "transport", None)
+        if transport is None:
+            return True
+        peer = transport.get_extra_info("peername")
+        if not peer:
+            return True
+        ip = peer[0] if isinstance(peer, (tuple, list)) else str(peer)
+        return _is_public_ip(ip)
+    except Exception:
+        return True
+
+
 async def _read_body(resp: Any, limit: int = 2 * 1024 * 1024) -> bytes:
     """读完整个响应体（最多 limit 字节）。
 
@@ -116,6 +138,9 @@ async def safe_fetch(
                         return None
                     current = urljoin(current, location)
                     continue
+                if not connected_peer_is_public(resp):
+                    logger.warning("拒绝请求：实际连到的不是公网地址（疑似 DNS rebinding），放弃 %s", current)
+                    return None
                 if resp.status != 200:
                     return None
                 # 上限 2MB：群友贴个大文件链接就能把内存和事件循环一起拖死

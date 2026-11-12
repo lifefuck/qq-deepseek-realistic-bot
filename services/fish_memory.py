@@ -98,8 +98,17 @@ class FishMemoryEngine:
         self._init_db()
 
     def _get_conn(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=10.0)
+        # timeout 从 10s 压到 3s：这个库是同步写在事件循环上的，卡满 10 秒整只 bot 都不响应
+        conn = sqlite3.connect(self.db_path, timeout=3.0)
         conn.row_factory = sqlite3.Row
+        try:
+            # WAL 让读写不互斥，别家脚本/备份进程读库时不会把写者锁死；
+            # busy_timeout 让 sqlite 自己短等，而不是立刻抛 database is locked
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=3000")
+            conn.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.Error:
+            pass
         return conn
 
     def _init_db(self):
@@ -113,6 +122,8 @@ class FishMemoryEngine:
         """中文二元分词 + 英文/数字连续串"""
         text = (text or "").lower()
         out = re.findall(r"[a-z0-9_]{2,}", text)
+        # 纯数字被 CJK 切分整段吃掉，"出差3天"和"出差9天"就会 jaccard=1.0 被当成同一条
+        out.extend(re.findall(r"\d+", text))
         cjk = "".join(ch if CJK.match(ch) else " " for ch in text)
         for seg in cjk.split():
             if len(seg) == 1:
@@ -207,14 +218,22 @@ class FishMemoryEngine:
                 (group_id, person_id, memory_type)
             ).fetchall()
 
+            new_numbers = set(re.findall(r"\d+", content))
             for cand in candidates:
+                # 数字不一样就不是同一个事实（3天/9天、25岁/28岁），重合度再高也不能合并，
+                # 否则新事实被旧内容覆盖，用户再说一遍也只会 merge 回旧句，永远改不回来
+                old_numbers = set(re.findall(r"\d+", cand["content"]))
+                if new_numbers and old_numbers and new_numbers != old_numbers:
+                    continue
                 sim = self.jaccard(content, cand["content"])
                 if sim >= 0.75:
                     new_content = content if len(content) > len(cand["content"]) else cand["content"]
+                    # title 跟着正文走：只改 content 不改 title，/memory 里显示的还是旧内容前 20 字
+                    new_title = title if new_content == content else cand["title"]
                     conn.execute(
-                        "UPDATE fish_memory_records SET content=?, activation_count=activation_count+1, "
+                        "UPDATE fish_memory_records SET content=?, title=?, activation_count=activation_count+1, "
                         "last_activated_at=?, updated_at=? WHERE memory_id=?",
-                        (new_content, now_ts, now_ts, cand["memory_id"])
+                        (new_content, new_title, now_ts, now_ts, cand["memory_id"])
                     )
                     conn.commit()
                     return {"id": cand["memory_id"], "merged": True, "score": round(sim, 2)}

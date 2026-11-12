@@ -6,7 +6,7 @@ import logging
 import aiohttp
 from typing import Optional, Dict, Tuple
 
-from media_resolver import _is_public_url, _read_body
+from media_resolver import _is_public_url, _read_body, connected_peer_is_public
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +74,10 @@ async def download_image_as_base64(session: aiohttp.ClientSession, image_url: st
         # QQ 图片直链一般无需代理，如遇到 google 或海外图片链接则可选代理
         proxy = PROXY_URL if "google" in image_url or "github" in image_url else None
         async with session.get(image_url, proxy=proxy, timeout=aiohttp.ClientTimeout(total=10.0)) as resp:
+            # 和网页抓取同一个洞：预校验解析一次、建连再解析一次，必须复核对端 IP
+            if not connected_peer_is_public(resp):
+                logger.warning("[Vision] 实际连到的不是公网地址（疑似 DNS rebinding）: %s", image_url[:80])
+                return None
             if resp.status != 200:
                 logger.warning("[Vision] 下载图片失败 HTTP %d: %s", resp.status, image_url)
                 return None

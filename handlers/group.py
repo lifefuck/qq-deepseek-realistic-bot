@@ -262,10 +262,13 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     # 异步自动感知与事实抽取流水（DSH 思想：聊天即感知，无需显式唤醒）
     try:
         from services.fish_memory import fish_memory_engine
-        fish_memory_engine.record_turn(
+        # sqlite 是同步 IO，直接在这调会把事件循环按住十几毫秒（多群同时聊就叠起来了），
+        # 丢到线程池里写，消息处理立刻继续
+        await asyncio.to_thread(
+            fish_memory_engine.record_turn,
             group_id=str(group_id),
             person_id=str(sender_id),
-            user_text=clean_body
+            user_text=clean_body,
         )
     except Exception as e:
         bot.logger.debug("群消息自动感知异常: %s", e)
