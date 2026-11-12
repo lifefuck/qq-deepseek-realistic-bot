@@ -88,13 +88,35 @@ def sanitize_outgoing_text(text: str) -> Tuple[bool, str]:
     return True, text
 
 
+_PASS_BRACKET_RE = re.compile(r"[\[［【(（]\s*pass\s*[\]］】)）]", re.IGNORECASE)
+_PASS_EDGE = " \t\r\n。.!！~～,，、;；:：\"'“”‘’*`"
+
+
+def is_pass_signal(text: str) -> bool:
+    """模型这句话是不是「这轮我不接」。
+
+    只认半角 `[PASS]` 是不够的：模型常写成全角 `［PASS］` 或者干脆只吐一个
+    `PASS`，两个都漏过检查直接进了群——群友看到的就是一条莫名其妙的 PASS。
+    """
+    if not text:
+        return False
+    t = str(text).strip()
+    if not t:
+        return False
+    # 带解释的写法：只要出现方括号包着的 PASS 就整条静默
+    if _PASS_BRACKET_RE.search(t):
+        return True
+    # 裸 PASS（可能带标点/星号残留）
+    return t.strip(_PASS_EDGE).lower() == "pass"
+
+
 def strip_internal_monologue(text: str) -> str:
     """
     剥离大模型回复中意外输出的内心独白、舞台剧动作括号与 [PASS] 残留
     """
     if not text:
         return ""
-    if "[PASS]" in text:
+    if is_pass_signal(text):
         return ""
     # 整条就是一段括号 = 模型在自述规则/旁白，直接丢弃，别原样发到群里
     if re.fullmatch(r"[\*（(][^（）()*]{1,80}[）)\*]", text.strip()) and not re.search(r"[0-9A-Za-z]", text):

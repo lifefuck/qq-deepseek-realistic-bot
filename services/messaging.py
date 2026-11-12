@@ -349,7 +349,7 @@ async def send_input_status(ws: aiohttp.ClientWebSocketResponse, group_id: int):
 
 async def send_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None, emoji_ratio: float = 0.15):
     """向 NapCat 发送群消息并捕获发送状态（支持可选 @ 对方，并内置群级 60 秒频控保护防 1200 拦截）"""
-    if "[PASS]" in text:
+    if safety_guard.is_pass_signal(text):
         return
     clean_text = bot.strip_markdown(text).strip()
     # 兜底闸：走单发通道的文本不许夹带 CQ 码（合法的 @ 除外）
@@ -482,12 +482,17 @@ def _cap_segments(segments: list[str], limit: int) -> list[str]:
     return head + ([tail] if tail else [])
 
 
-async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None) -> str:
+async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, group_id: int, text: str, is_command_report: bool = False, at_user_id: Optional[int] = None, max_segments: Optional[int] = None) -> str:
     """分段发送：闲聊时切成 1~2 条连续发出，长汇报与代码块整块发送。
 
+    max_segments 用来压段数：冷场冒泡只许一句，切成两条就成了自己给自己续话。
     返回实际发出去的正文（已削平、已剥标签），调用方拿它写回上下文，
     别再把没削过的原始回复存进去。
     """
+    # 先在最原始的文本上判静默信号：下面的洗文和标点归一会把「[PASS]」搓成「PASS]」，
+    # 等到出站闸再认就晚了，群里已经出现一条 PASS
+    if safety_guard.is_pass_signal(text):
+        return ""
     # 先削 AI 腔再走反模板闸：书面连接词留着会被 skeleton 当成句式特征
     if not is_command_report:
         text = bot.scrub_ai_flavor(text)
@@ -529,6 +534,8 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
         return ""
     profile = affect.profile(group_id)
     segments = _cap_segments(segments, profile["max_segments"])
+    if max_segments:
+        segments = segments[:max_segments]
     # 图片比表情更抢眼：概率压到 4%（抽稀防机械甩图），触发词保留
     should_send_meme = bool(meme_tag) or (random.random() < 0.04) or any(k in text for k in ["大肥鱼", "炸毛", "闹麻了", "卧槽", "无敌了", "才不是", "气死"])
     # 立绘是另一套：只在真炸毛/真害羞时上，别让「怎么」「为什么」这种口头词也甩一张图
@@ -565,7 +572,7 @@ async def send_segmented_group_message(ws: aiohttp.ClientWebSocketResponse, grou
 
 async def send_private_message(ws: aiohttp.ClientWebSocketResponse, user_id: int, text: str, is_command_report: bool = False):
     """向 NapCat 发送私聊消息并捕获发送状态（支持多句拆分连发，像真人聊天）"""
-    if "[PASS]" in text:
+    if safety_guard.is_pass_signal(text):
         return
     # 私聊没有群号，用 -1 当独立槽位，别和任何群混在一起
     private_key = -1

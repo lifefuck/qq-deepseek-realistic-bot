@@ -156,6 +156,10 @@ group_last_bot_reply_time: Dict[int, float] = collections.defaultdict(float)  # 
 group_member_nicks: Dict[int, Dict[int, str]] = {}
 # 冷场抛话记录：同一句梗四小时后再抛就成了复读机
 group_last_nudge: Dict[int, str] = collections.defaultdict(str)
+# 冷场冒泡配额：每群每天最多两次，且上次冒泡后没人接话就不再开口
+group_nudge_day: Dict[int, str] = {}
+group_nudge_count: Dict[int, int] = {}
+group_last_nudge_ts: Dict[int, float] = collections.defaultdict(float)
 # 主动插话时间戳：一小时最多开口几次，防止每个话题都凑一句
 group_interject_times: Dict[int, Deque[float]] = collections.defaultdict(lambda: collections.deque(maxlen=40))
 # 带时间戳的已发回复：10 分钟内同句复读直接丢弃（「啊？」「什么鬼」这种最像机器人）
@@ -2285,6 +2289,41 @@ async def _member_nick_refresher():
             await asyncio.sleep(300)
 
 
+def cold_nudge_gate(gid: int, now_ts: float, now_dt: datetime.datetime) -> Tuple[bool, str, str]:
+    """冷场冒泡闸门：返回 (是否开口, 不开口的原因, 可用素材)。
+
+    死群里最丢人的不是不开口，是天天对着空气自言自语，所以卡三道：
+    素材必须是近 12 小时内的真人发言、上次冒泡之后得有人接话、每天最多两次。
+    """
+    timeline = group_timelines.get(gid)
+    if not timeline or len(timeline) < 2:
+        return False, "时间线还不够", ""
+    cutoff = now_ts - 12 * 3600
+    pool = list(group_history_pool.get(gid) or ())
+    fresh_humans = [
+        m for m in pool[-60:]
+        if m.get("sender_id") != BOT_QQ
+        and float(m.get("time", 0) or 0) >= cutoff
+        and (m.get("content") or "").strip()
+    ]
+    # 全是自己的话或者昨天的旧话题时，接下去就是自说自话（「后天是某某生日」那种）
+    if len(fresh_humans) < 2:
+        return False, "近 12 小时没有真人发言", ""
+    last_nudge_ts = group_last_nudge_ts.get(gid, 0.0)
+    if last_nudge_ts and not any(
+        float(m.get("time", 0) or 0) > last_nudge_ts for m in fresh_humans
+    ):
+        return False, "上次冒泡后没人接话", ""
+    today_key = now_dt.strftime("%Y-%m-%d")
+    if group_nudge_day.get(gid) != today_key:
+        group_nudge_day[gid] = today_key
+        group_nudge_count[gid] = 0
+    if group_nudge_count.get(gid, 0) >= 2:
+        return False, "今日已冒泡两次", ""
+    material = " / ".join((m.get("content") or "").strip() for m in fresh_humans[-6:])[:200]
+    return True, "", material
+
+
 async def _cold_group_activator():
     """群聊冷场智能唤醒：白天时段（10:00~21:00）若白名单群安静超过 3 小时，且群开启插话，随性唤醒"""
     # 启动等待 5 分钟避免刚连上就触发
@@ -2311,26 +2350,22 @@ async def _cold_group_activator():
                 last_active_t = group_last_active_reply.get(gid, 0.0)
                 # 上次有消息超过 3 小时 (10800s)，且上次机器人主动插话超过 4 小时 (14400s)
                 if (now_ts - last_msg_t > 10800.0) and (now_ts - last_active_t > 14400.0):
-                    timeline = group_timelines.get(gid)
-                    if not timeline or len(timeline) < 2:
+                    ok, why, material = cold_nudge_gate(gid, now_ts, now_dt)
+                    if not ok:
+                        logger.debug("[群 %d] 冷场但不冒泡：%s", gid, why)
                         continue
                     # 检查历史是否有过真实交流（避免僵尸群）
                     if current_ws and not current_ws.closed:
                         logger.info("[群 %d] 检测到白天冷场超过 3 小时，触发轻量随性抛话唤醒", gid)
                         group_last_active_reply[gid] = now_ts
                         group_last_msg_time[gid] = now_ts
-                        # 素材：把最近真实聊过的话摆给它。没有素材时模型只能聊
-                        # 「怎么没人说话」，一冷场就复读同一个梗
-                        humans = [
-                            m.get("content", "").strip()
-                            for m in list(group_history_pool.get(gid) or ())[-16:]
-                            if m.get("sender_id") != BOT_QQ and m.get("content", "").strip()
-                        ]
-                        material = " / ".join(humans[-6:])[:200]
+                        group_nudge_count[gid] = group_nudge_count.get(gid, 0) + 1
+                        group_last_nudge_ts[gid] = now_ts
                         extra = (
                             "当前群聊已经冷场三个多小时。你随手冒个泡，就像翻到一句旧话顺口接一句。"
-                            "只许一两句，2~12 字，不用句号。"
-                            "禁止聊「怎么没人说话/好安静/冷清/都没人」这类空话题，也别报时间。"
+                            "只许一句，2~12 字，不用句号。"
+                            "禁止聊「怎么没人说话/好安静/冷清/都没人」这类空话题，也别报时间，"
+                            "更别接上句给自己续话。"
                         )
                         if material:
                             extra += f"\n【最近群里真实聊过的内容，挑一个具体的点接】：{material}"
