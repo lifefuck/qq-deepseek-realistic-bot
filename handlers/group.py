@@ -856,10 +856,9 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
     if not reply:
         return
 
-    # 如果回复中带有 [PASS]（或者模型啰嗦解释了为什么保持沉默）
-    # 只要判定包含 [PASS]，不管后面带不带括号解释，都必须彻底保持静默！
-    if "[PASS]" in reply:
-        bot.logger.info("[群 %d] 模型输出包含 [PASS]，保持绝对静默不发送群消息。", group_id)
+    # 只要判定是「不接」，不管带不带括号解释、全角半角、还是裸 PASS，都必须彻底静默
+    if safety_guard.is_pass_signal(reply):
+        bot.logger.info("[群 %d] 模型输出静默信号(%s)，保持绝对静默不发送群消息。", group_id, reply.strip()[:20])
         return
 
     # 额外拦截模型常见的内心括号自我独白（如“（根据规则保持沉默）”、“（保持静默）”）
@@ -924,7 +923,8 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
     if bot.was_recalled(src_msg_id):
         bot.logger.info("[群 %s] 生成期间消息被撤回，丢弃这次回复", group_id)
         return
-    sent_text = await bot.send_segmented_group_message(ws, group_id, reply, is_command_report=False, at_user_id=at_target)
+    sent_text = await bot.send_segmented_group_message(ws, group_id, reply, is_command_report=False, at_user_id=at_target,
+                                                       max_segments=1 if cold_nudge else None)
     bot.note_reply_sent(group_id, sent_text or reply)
 
     # 写回上下文的是实际发出去的那句：削平过、标签剥过，跟群里看到的一致

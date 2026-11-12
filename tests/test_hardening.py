@@ -6,17 +6,20 @@
 跑法：.venv/bin/python tests/test_hardening.py
 """
 import asyncio
+import datetime
 import json
 import os
 import shutil
 import sys
 import tempfile
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aiohttp.test_utils import TestServer, TestClient
 
 import bot
+import safety_guard
 import web_dashboard
 from services import messaging
 
@@ -148,6 +151,78 @@ async def test_cq_face_raw_sanitizing():
           bot.strip_outgoing_cq("[CQ:at,qq=123456,name=阿三] 你好") == "[CQ:at,qq=123456] 你好")
 
 
+async def test_pass_signal_variants():
+    """模型说「不接」的各种写法都得静默，别把 PASS 三个字母发进群。"""
+    from safety_guard import is_pass_signal
+    for text in ["[PASS]", "［PASS］", "PASS", "pass", " PASS。", "[pass]（这条不接）",
+                 "［PASS］ 日常闲聊不插话"]:
+        check(f"静默信号: {text!r}", is_pass_signal(text), text)
+    for text in ["这个 pass 掉就行", "密码是 PASS123", "我 PASS 了这局", "PASS 这个词挺好用吧"]:
+        check(f"正常发言不误判: {text!r}", not is_pass_signal(text), text)
+    # 出站链路也得整条丢掉，不能发出去
+    check("剥独白时吃掉裸 PASS", safety_guard.strip_internal_monologue("PASS") == "")
+    check("剥独白时吃掉全角 PASS", safety_guard.strip_internal_monologue("［PASS］") == "")
+
+    # 整条出站链路也得静默：洗文会把 [PASS] 搓成 PASS]，只在出站闸判就晚了
+    sent = []
+
+    async def _fake_send(ws, action, params, timeout=3.0):
+        if action == "send_group_msg":
+            sent.append(params.get("message"))
+        return {"status": "ok", "retcode": 0, "data": {}}
+
+    orig = bot.call_action
+    bot.call_action = _fake_send
+    try:
+        ws = type("W", (), {"closed": False})()
+        out = await messaging.send_segmented_group_message(ws, 900000001, "[PASS]（日常闲聊不插话）")
+        check("带解释的 PASS 整条链路静默", out == "" and not sent, (out, sent))
+    finally:
+        bot.call_action = orig
+
+
+async def test_cold_nudge_gate():
+    """冷场冒泡不能对着空气演独白：没真人说话、没人接话、超额都不许开口。"""
+    gid = 990000001
+    now = time.time()
+    dt = datetime.datetime.now()
+    bot.group_timelines[gid] = [{"content": "a"}, {"content": "b"}]
+    pool = bot.group_history_pool[gid]
+    pool.clear()
+    bot.group_last_nudge_ts.pop(gid, None)
+    bot.group_nudge_day.pop(gid, None)
+    bot.group_nudge_count.pop(gid, None)
+
+    # 只有机器人自己的话 → 闭嘴
+    pool.append({"sender_id": bot.BOT_QQ, "content": "yenai 更完居然没崩", "time": now - 600})
+    ok, why, _ = bot.cold_nudge_gate(gid, now, dt)
+    check("只有自己说过话时不冒泡", not ok, why)
+
+    # 昨天的旧话题（过期素材）→ 闭嘴，别接「后天是谁生日」
+    pool.append({"sender_id": 10001, "content": "后天是某某生日", "time": now - 30 * 3600})
+    pool.append({"sender_id": 10002, "content": "抽到芙宁娜了", "time": now - 20 * 3600})
+    ok, why, _ = bot.cold_nudge_gate(gid, now, dt)
+    check("素材超过 12 小时不冒泡", not ok, why)
+
+    # 两条近 12 小时的真人发言 → 允许，素材带进来
+    pool.append({"sender_id": 10001, "content": "这版本更新了啥", "time": now - 4 * 3600})
+    pool.append({"sender_id": 10002, "content": "引擎换了", "time": now - 3.5 * 3600})
+    ok, why, mat = bot.cold_nudge_gate(gid, now, dt)
+    check("有新鲜真人素材可以冒泡", ok, why)
+    check("素材里混进过期内容会被切掉", "生日" not in mat, mat)
+
+    # 上次冒泡之后没人接话 → 不再冒
+    bot.group_last_nudge_ts[gid] = now - 60
+    ok, why, _ = bot.cold_nudge_gate(gid, now, dt)
+    check("上次冒泡没人接就不再来一次", not ok, why)
+
+    # 有人接话后恢复，但一天最多两次
+    pool.append({"sender_id": 10003, "content": "确实换了", "time": now - 30})
+    bot.group_nudge_count[gid] = 2
+    ok, why, _ = bot.cold_nudge_gate(gid, now, dt)
+    check("每日配额用完后不再冒泡", not ok, why)
+
+
 async def test_addressing():
     """串人：时间线得写清楚谁对谁说，追问窗口也不能见谁答谁。"""
     from handlers import group as gh
@@ -182,6 +257,8 @@ async def main():
     await test_json_recovery()
     await test_interject_scoring()
     await test_cq_face_raw_sanitizing()
+    await test_pass_signal_variants()
+    await test_cold_nudge_gate()
     await test_wording()
     await test_addressing()
     print()
