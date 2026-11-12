@@ -80,6 +80,9 @@ async def test_dashboard():
         r = await client.post("/api/group/config", json={"group_id": 1, "key": "interject_prob", "value": 3})
         check("面板不再暴露的开关被拒绝", r.status == 400, f"got {r.status}")
 
+        r = await client.post("/api/group/config", json={"group_id": 1, "key": "interject_prob", "value": 0.9})
+        check("interject_prob 合法值也不再从接口偷偷写入", r.status == 400, f"got {r.status}")
+
         r = await client.post("/api/group/config", json={"group_id": 1, "key": "muted", "value": True})
         check("合法配置可以写入", r.status == 200, f"got {r.status}")
 
@@ -727,6 +730,78 @@ async def test_batch5_regressions():
     check("错误密码不通过", web_dashboard._basic_verify_cached("admin", "wrong", salt, h) is False)
 
 
+_orig_send_group_message = bot.send_group_message
+
+
+async def test_batch6_regressions():
+    """发送链路记账诚实度 + 动作层越权边界。"""
+    import services.messaging as msg
+    import handlers.actions as act
+
+    GID = sorted(bot.ALLOWED_GROUPS)[0]
+    o_action = bot.call_action
+    o_send = msg.send_group_message
+    sent = []
+
+    async def _ok(ws, action, params, timeout=None):
+        sent.append((action, params))
+        return {"status": "ok", "data": {"message_id": 1}}
+
+    try:
+        bot.call_action = _ok
+
+        # 返回值必须是群里真正出现的那句：以前返回模型原文，聊天记录里写着
+        # 2000 字、群里实际只有 197 字，模型下一轮当真自己说过
+        got = await msg.send_group_message(object(), GID, "测" * 600)
+        payload = sent[-1][1]["message"]
+        check("发送返回值就是实际发出的正文", got == payload, f"got {len(got)} vs {len(payload)}")
+        check("超长闲聊按 500 字截断且返回值同步", len(got) == 500 and got.endswith("..."), f"len={len(got)}")
+
+        # 分段发送同样只回报真发出去的句子
+        sent.clear()
+        got = await msg.send_segmented_group_message(object(), GID, "今天好热啊，出去走了两步就出一身汗")
+        joined = "".join(p[1]["message"] for p in sent if p[0] == "send_group_msg")
+        check("分段发送返回的每句都在群里出现过",
+              bool(got) and all(part in joined for part in got.split("，")), f"got={got!r} joined={joined!r}")
+
+        # 没发出去就是没说过
+        async def _fail(ws, action, params, timeout=None):
+            sent.append((action, params))
+            return {"status": "failed", "retcode": 1200, "message": "禁言中"}
+
+        bot.call_action = _fail
+        got = await msg.send_group_message(object(), GID, "在吗")
+        check("发送失败时返回空串，不假装说过", got == "", f"got={got!r}")
+
+        # 群管借机器人的号处置另一个管理/群主：不能真下手
+        act._ADMIN_CACHE.clear()
+        said, acted = [], []
+
+        async def _role_admin(ws, action, params, timeout=None):
+            acted.append(action)
+            if action == "get_group_member_info":
+                return {"status": "ok", "data": {"role": "admin"}}
+            return {"status": "ok", "data": {}}
+
+        bot.call_action = _role_admin
+        bot.send_group_message = lambda ws, gid, text, **kw: asyncio.sleep(0, result=said.append(text))
+        await act._do_ban(object(), GID, bot.ADMIN_QQ, "禁言 123456 10分钟")
+        check("禁言目标也是管理时不动手",
+              "set_group_ban" not in acted and any("不掺和" in str(t) for t in said),
+              f"acted={acted} said={said}")
+
+        said.clear(); acted.clear()
+        await act._do_kick(object(), GID, bot.ADMIN_QQ, "踢了 123456")
+        check("踢人目标也是管理时不动手",
+              "set_group_kick" not in acted and any("不掺和" in str(t) for t in said),
+              f"acted={acted} said={said}")
+    finally:
+        bot.call_action = o_action
+        msg.send_group_message = o_send
+        bot.send_group_message = _orig_send_group_message
+        act._ADMIN_CACHE.clear()
+
+
 async def main():
     await test_dashboard()
     await test_json_recovery()
@@ -741,6 +816,7 @@ async def main():
     await test_batch3_regressions()
     await test_batch4_regressions()
     await test_batch5_regressions()
+    await test_batch6_regressions()
     await test_wording()
     await test_addressing()
     print()

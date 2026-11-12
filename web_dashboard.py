@@ -1442,11 +1442,10 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
             if key in BOOL_CONFIG_KEYS:
                 if not isinstance(val, bool):
                     return web.json_response({"error": f"{key} 必须是布尔值"}, status=400)
-            elif key == "interject_prob":
-                if isinstance(val, bool) or not isinstance(val, (int, float)) or not (0.0 <= float(val) <= 1.0):
-                    return web.json_response({"error": "interject_prob 必须是 0~1 的数字"}, status=400)
-                val = float(val)
             else:
+                # 面板只留 muted 这类总开关。interject_prob 曾经还能从这里写，
+                # 前端早删了，接口留着就是一条没人看得见的暗改通道
+                # （接话意愿被悄悄调到 0.9，群里就开始刷屏）。
                 return web.json_response({"error": f"不支持的配置项: {key}"}, status=400)
 
             gid = None

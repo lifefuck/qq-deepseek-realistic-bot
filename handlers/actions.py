@@ -334,6 +334,11 @@ async def _do_ban(ws, group_id: int, sender_id: int, body: str) -> None:
     if qq in (bot.BOT_QQ, bot.ADMIN_QQ):
         await bot.send_group_message(ws, group_id, "这个不行，换个人", at_user_id=sender_id)
         return
+    # 群管本来就能自己禁言，但「借机器人的号去处置别的管理/群主」会直接把矛盾
+    # 引到机器人头上（而且禁群主必然失败，回一句「我禁不动他」更难看）
+    if qq != sender_id and await _is_group_admin(ws, group_id, qq):
+        await bot.send_group_message(ws, group_id, "他也是管理，我不掺和", at_user_id=sender_id)
+        return
     res = await bot.call_action(ws, "set_group_ban",
                                 {"group_id": group_id, "user_id": qq, "duration": secs}, timeout=6.0)
     if res and res.get("status") == "ok":
@@ -354,6 +359,9 @@ async def _do_kick(ws, group_id: int, sender_id: int, body: str) -> None:
     qq, nick = target
     if qq in (bot.BOT_QQ, bot.ADMIN_QQ):
         await bot.send_group_message(ws, group_id, "这个不行，换个人", at_user_id=sender_id)
+        return
+    if qq != sender_id and await _is_group_admin(ws, group_id, qq):
+        await bot.send_group_message(ws, group_id, "他也是管理，我不掺和", at_user_id=sender_id)
         return
     res = await bot.call_action(ws, "set_group_kick",
                                 {"group_id": group_id, "user_id": qq, "reject_add_request": False}, timeout=6.0)
