@@ -194,7 +194,7 @@ def test_prompt_injection():
 
 
 def test_echo_and_particle():
-    """群 900000001 的实测样本：每条都是「复述+问号 → 我…啊」。"""
+    """线上实测样本：每条都是「复述+问号 → 我…啊」。"""
     check("回声开场被砍",
           anti_template.strip_echo_opener("cpdd？你认真的啊，突然来这么一句", "cpdd") ==
           "你认真的啊，突然来这么一句")
