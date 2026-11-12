@@ -407,7 +407,13 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
     try:
         # 真重试：429 和 5xx 是上游临时抖动，退避后再试；4xx 重试也不会变好，直接放弃。
         # 以前这里写的是个假循环（attempt_prompt 从不更新、非 200 立刻 return），等于零重试。
+        retry_delay = 0.0
         for attempt in range(3):
+            # 退避睡在信号量外面：以前 sleep 写在 async with 里面，一个群吃 429 退避 1.5s，
+            # 全局模型并发就被这一条卡住，别的群和私聊一起排队
+            if retry_delay:
+                await asyncio.sleep(retry_delay)
+                retry_delay = 0.0
             try:
                 async with bot.llm_semaphore:
                     async with bot.http_session.post(
@@ -419,7 +425,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                             if (resp.status == 429 or resp.status >= 500) and attempt < 2:
                                 backoff = 1.5 * (2 ** attempt) + random.uniform(0, 0.5)
                                 logger.warning("模型接口 %d，%.1fs 后重试 (%d/3)", resp.status, backoff, attempt + 1)
-                                await asyncio.sleep(backoff)
+                                retry_delay = backoff
                                 continue
                             logger.error("API 调用失败 (%d, 耗时 %.2fs): %s", resp.status, elapsed, err_text)
                             return None
@@ -438,7 +444,7 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                             # 推理模型偶尔只回 thinking 不回 content，空回复不该当成正常结果发出去
                             if attempt < 2:
                                 logger.warning("模型返回空内容，重试 (%d/3)", attempt + 1)
-                                await asyncio.sleep(0.8)
+                                retry_delay = 0.8
                                 continue
                             logger.error("模型连续返回空内容，放弃本次回复")
                             return None

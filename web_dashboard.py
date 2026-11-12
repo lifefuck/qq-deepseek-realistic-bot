@@ -1424,7 +1424,9 @@ async def create_web_app(get_status_func: Callable[[], Dict[str, Any]], update_c
                     return web.json_response({"error": "group_id 必须是数字"}, status=400)
 
             ok = update_config_func(gid, key, val)
-            return web.json_response({"status": "ok" if ok else "fail"})
+            if not ok:
+                return web.json_response({"error": "该群不在白名单，配置未写入"}, status=400)
+            return web.json_response({"status": "ok"})
         except Exception as e:
             logger.error("面板配置写入异常: %s", e)
             return web.json_response({"error": "服务端处理失败"}, status=500)
