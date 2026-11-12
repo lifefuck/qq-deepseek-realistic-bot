@@ -223,6 +223,72 @@ async def test_cold_nudge_gate():
     check("每日配额用完后不再冒泡", not ok, why)
 
 
+async def test_msg_dedupe_and_placeholders():
+    """重复投递不能回答两遍；自己造的占位符不能当正文发出去。"""
+    check("同一 msg_id 第二次判重", bot.is_duplicate_message(5550001) is False
+          and bot.is_duplicate_message(5550001) is True)
+    check("不同 msg_id 不算重", bot.is_duplicate_message(5550002) is False)
+    check("没有 msg_id 时不判重", bot.is_duplicate_message(None) is False)
+    check("非数字 msg_id 不崩", bot.is_duplicate_message("abc") is False)
+
+    check("纯占位符被剥空", bot.strip_outgoing_cq("[表情:笑]") == "")
+    check("图片占位符被剥空", bot.strip_outgoing_cq("[图片]") == "")
+    check("占位符带正文时只留正文",
+          bot.strip_outgoing_cq("[表情:大怨种] 今天热死了") == "今天热死了")
+    check("合法 @ 仍保留",
+          bot.strip_outgoing_cq("[CQ:at,qq=123456] [图片] 看这个") == "[CQ:at,qq=123456] 看这个")
+
+
+async def test_concurrent_at_not_dropped():
+    """两个群友同时 @，两条都要回：同群生成锁是排队，不是丢弃。"""
+    gid, sends = 900000001, []
+    bot.ALLOWED_GROUPS = set(bot.ALLOWED_GROUPS) | {gid}
+    bot.load_group_configs()
+    cfg = bot.get_group_config(gid)
+    cfg["muted"] = False
+    cfg["interject_prob"] = 0.0
+
+    async def _ca(ws, action, params, timeout=2.0):
+        if action == "send_group_msg":
+            sends.append(params.get("message"))
+        return {"status": "ok", "retcode": 0, "data": {}}
+
+    seen = []
+
+    async def _model(*a, **k):
+        seen.append(1)
+        await asyncio.sleep(0.2)
+        return ["在的在的", "问啥呢", "看着呢"][min(len(seen) - 1, 2)]
+
+    orig_ca, orig_model = bot.call_action, bot.call_deepseek
+    bot.call_action, bot.call_deepseek = _ca, _model
+    bot.archive_message = lambda *a, **k: None
+    bot.check_bot_banned_realtime = lambda *a, **k: asyncio.sleep(0, result=False)
+    bot.update_user_memory_async = lambda *a, **k: asyncio.sleep(0)
+    bot.sleep_override_until = time.time() + 3600
+    try:
+        def _ev(text, mid, uid):
+            return {"post_type": "message", "message_type": "group", "group_id": gid,
+                    "user_id": uid, "raw_message": f"[CQ:at,qq={bot.BOT_QQ}] {text}",
+                    "message": [{"type": "text", "data": {"text": text}}],
+                    "sender": {"user_id": uid, "nickname": f"人{uid % 100}", "card": f"人{uid % 100}"},
+                    "message_id": mid, "time": int(time.time())}
+
+        ws = type("W", (), {"closed": False})()
+        from handlers import group as _hg
+        await asyncio.gather(
+            _hg.handle_group_message(ws, _ev("在不在", 910001, 800000021)),
+            _hg.handle_group_message(ws, _ev("问个事", 910002, 800000022)),
+        )
+        await asyncio.sleep(2.5)
+        check("两人同时 @ 都有回答", len(sends) == 2, sends)
+        check("两条回答 @ 了不同的人",
+              any("800000021" in str(m) for m in sends) and any("800000022" in str(m) for m in sends),
+              sends)
+    finally:
+        bot.call_action, bot.call_deepseek = orig_ca, orig_model
+
+
 async def test_addressing():
     """串人：时间线得写清楚谁对谁说，追问窗口也不能见谁答谁。"""
     from handlers import group as gh
@@ -259,6 +325,8 @@ async def main():
     await test_cq_face_raw_sanitizing()
     await test_pass_signal_variants()
     await test_cold_nudge_gate()
+    await test_msg_dedupe_and_placeholders()
+    await test_concurrent_at_not_dropped()
     await test_wording()
     await test_addressing()
     print()

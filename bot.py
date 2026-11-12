@@ -706,6 +706,36 @@ group_last_activity: Dict[int, float] = collections.defaultdict(float)
 group_last_active_reply: Dict[int, float] = collections.defaultdict(float)
 group_msg_count_since_bot: Dict[int, int] = collections.defaultdict(int)
 group_debounce_tasks: Dict[int, Optional[asyncio.Task]] = {}
+# 已处理消息 id：NapCat 重连补历史、QQ 侧重推都会把同一条消息再投一次。
+# 不挡住的话模型会再答一遍，而模型是非确定性的，群里就出现两条不同的回答。
+_seen_msg_ids: "collections.OrderedDict[int, float]" = collections.OrderedDict()
+MSG_DEDUPE_TTL = 300.0
+MSG_DEDUPE_MAX = 3000
+
+
+def is_duplicate_message(msg_id, scope=None) -> bool:
+    """这条消息是不是刚处理过？顺手把过期记录清出去，字典不会无限长。
+
+    key 带上会话作用域：不同群的 message_id 各自编号，撞号时不能互相当成重复。
+    """
+    if not msg_id:
+        return False
+    try:
+        key = (str(scope), int(msg_id))
+    except (TypeError, ValueError):
+        return False
+    now = time.time()
+    first_seen = _seen_msg_ids.get(key)
+    if first_seen is not None and now - first_seen < MSG_DEDUPE_TTL:
+        return True
+    _seen_msg_ids[key] = now
+    _seen_msg_ids.move_to_end(key)
+    while _seen_msg_ids:
+        oldest_id, ts = next(iter(_seen_msg_ids.items()))
+        if now - ts < MSG_DEDUPE_TTL and len(_seen_msg_ids) <= MSG_DEDUPE_MAX:
+            break
+        _seen_msg_ids.popitem(last=False)
+    return False
 # 同群生成互斥：连点两次 @ 不能同时跑两个模型请求，否则会各读一份时间线、重复回复
 group_gen_locks: Dict[int, asyncio.Lock] = collections.defaultdict(asyncio.Lock)
 group_silence_until: Dict[int, float] = {}  # 管理员 /stop 后的群主动插话静默期: group_id -> timestamp
@@ -1343,11 +1373,19 @@ def clean_cq_codes(text: str) -> str:
     text = re.sub(r"\[CQ:[A-Za-z_]+(?:,[^\]]*)?$", "", text)
     return text.strip()
 
+# 我们自己造出来的占位符（入站把 CQ 码洗成「[表情:大怨种]」「[图片]」），
+# 模型会把它当成一句话原样复读出来，群里看到的就是一串方括号。出站全部剥掉。
+_OUTBOUND_PLACEHOLDER_RE = re.compile(
+    r"\[(?:表情|大表情|图片|卡片|语音|视频|文件|红包|链接|回复|合并转发聊天记录|位置)[^\]]{0,24}\]"
+)
+
+
 def strip_outgoing_cq(text: str) -> str:
-    """剥掉模型自己吐出来的 CQ 码，只留格式合法的 @。
+    """剥掉模型自己吐出来的 CQ 码与占位符，只留格式合法的 @。
 
     模型偶尔会把群友的原始 CQ 码当话复读；NapCat 解析不了 `raw=` 这种参数，
-    就把整段当普通文本发进群，群友看到的就是一条「报错」。
+    就把整段当普通文本发进群，群友看到的就是一条「报错」。占位符同理：
+    「[表情:大怨种]」进了正文，看着像没渲染成功的乱码。
     """
     if not text:
         return ""
@@ -1355,6 +1393,10 @@ def strip_outgoing_cq(text: str) -> str:
     text = re.sub(r"\[CQ:at,[^\]]*qq=(\d+)[^\]]*\]", r"[CQ:at,qq=\1]", text)
     # 其余一律清掉；保留 CQ 码原文没有意义，群里只会看见乱码
     text = re.sub(r"\[CQ:(?!at,qq=\d+\])[A-Za-z_]+(?:,[^\]]*)?\]", "", text)
+    text = _OUTBOUND_PLACEHOLDER_RE.sub("", text)
+    # 剥完常留下孤零零的标点或双空格
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r"^[\s，、,。.！!~]+", "", text).strip()
     return text.strip()
 
 

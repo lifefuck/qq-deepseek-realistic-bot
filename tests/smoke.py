@@ -185,9 +185,13 @@ async def main():
     bot.ALLOWED_GROUPS.add(gid)   # 入口先校验白名单群，测试群得临时挂进去
     bot.group_configs[str(gid)] = dict(bot.DEFAULT_GROUP_CONFIG, muted=True)
 
+    _mid = [0]
+
     def _event(uid, text):
+        # 每条消息一个递增的 message_id：入口按 (群号, msg_id) 去重，常量会被当成重复投递
+        _mid[0] += 1
         return {"group_id": gid, "user_id": uid, "raw_message": text,
-                "message_id": 1, "sender": {"nickname": "测试"}}
+                "message_id": _mid[0], "sender": {"nickname": "测试"}}
 
     def _sent():
         return [p for a, p in calls if a == "send_group_message"]
