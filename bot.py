@@ -168,6 +168,7 @@ group_recent_replies: Dict[int, Deque[Tuple[float, str]]] = collections.defaultd
 # 本群实际发言时间戳：连着刷三四条会被群管理盯上，用来做发言密度冷却
 group_bot_reply_times: Dict[int, Deque[float]] = collections.defaultdict(lambda: collections.deque(maxlen=20))
 group_bot_reply_seq: Dict[int, int] = collections.defaultdict(int)  # 只增不减，用来判断「这次真的发出去了」
+_pre_off_snapshot: Dict[int, dict] = {}  # /off 关掉的那几项原值，/on 时照原样还原
 
 # 反模板套路削平队列 (记录最近发出的 6 条回复)
 # 每个群各自记一份最近发言，跨群混在一起会让 A 群看到 B 群说过的话
@@ -1906,7 +1907,16 @@ def is_game_or_yunzai_command(text: str) -> bool:
     )
     if t.startswith(cmd_prefixes):
         # 排除管理员的系统级斜杠管理指令 (/new, /stop 等依然保留给 AI)
-        return True
+        # ! ！ ？ ? ~ ～ 在中文里多半是情绪（「！这也太离谱了」「～好困」），
+        # 以前一律当指令，私聊里主人的这类话会被静默吞掉。只有后面紧跟
+        # ASCII 命令词（?help / !roll）才认。
+        if re.match(r"^[!！?？~～%％$￥]\s*[A-Za-z0-9]", t):
+            return True
+        if re.match(r"^[!！?？~～%％$￥]\s*(?:帮助|菜单|指令|点歌|音乐|签到|图|来张|来张图|色图|搜图)", t):
+            return True
+        if t[0] in "#井*＊":
+            return True
+        # 其余以符号开头的一律当闲聊，交给模型
         
     # 2. 云崽及游戏插件常用免前缀功能指令集合
     patterns = [
@@ -1960,7 +1970,14 @@ def is_game_or_yunzai_command(text: str) -> bool:
         r"^(?:疯狂星期四|疯四|v50|kfc|肯德基)$",
         r"^(?:答案之书|抽取答案)\s*.*$"
     ]
+    # 带 ^.+ 或结尾 .*$ 的宽松模式（「^.+(?:面板|材料|培养).*$」这类）本来是按
+    # 游戏黑话写的，但它们把「帮我看看这个面板」「我想问下培养」「深渊今天开了」
+    # 全判成云崽指令，私聊里主人的消息直接被静默吞掉。带口语标记的长句不作数。
+    _chatty = len(t) >= 6 and bool(re.search(r"[我你他她它的了吗呢吧啊呀哦嘛]|怎么|什么|为什么|是不是|能不能", t))
     for p in patterns:
+        loose = p.startswith("^.+") or p.endswith(".*$")
+        if loose and _chatty:
+            continue
         if re.search(p, t, re.IGNORECASE):
             return True
     return False
