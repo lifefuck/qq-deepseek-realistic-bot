@@ -1979,11 +1979,17 @@ async def call_action(ws: aiohttp.ClientWebSocketResponse, action: str, params: 
     finally:
         pending_requests.pop(echo_id, None)
 
+ASTRBOT_WAKE_PREFIX = "ab!"  # AstrBot 那套的唤醒前缀，见 docs/migration-to-astrbot.md
+
 def is_game_or_yunzai_command(text: str) -> bool:
     """判断是不是云崽或其他插件的专用指令，避免抢答"""
     t = text.strip()
     if not t:
         return False
+
+    # 带 AstrBot 唤醒前缀的话归 AstrBot 管，我们不接
+    if t.lower().startswith(ASTRBOT_WAKE_PREFIX):
+        return True
     
     # 1. 主流 Bot / 云崽生态专属前缀符号 (包含英文与中文全角符号)
     # 包括: # / * % ! ？ ? ~ ～ 井 井号
