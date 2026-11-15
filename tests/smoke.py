@@ -9,6 +9,7 @@
 
 import asyncio
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -286,16 +287,17 @@ async def main():
         nodes = fwd[0]["messages"] if fwd else []
         body = "\n".join(n["data"]["content"] for n in nodes[1:])
         check("/logs plus 标题说明是翻译版", "看得懂" in nodes[0]["data"]["content"], nodes[0]["data"]["content"])
-        check("/logs plus 标题节点不混正文", "💬" not in nodes[0]["data"]["content"])
-        check("/logs plus 群聊翻成人话", "💬 群123456789｜群友甲: 连海豚都上了" in body, body[:200])
-        check("/logs plus 我的回复可见", "🤖 群123456789｜我：连海豚都上了" in body)
-        check("/logs plus 打分翻成人话", "📊" in body and "开口了" in body)
+        check("/logs plus 标题节点不混正文", "打分" not in nodes[0]["data"]["content"])
+        check("/logs plus 群聊翻成人话", "群123456789｜群友甲: 连海豚都上了" in body, body[:200])
+        check("/logs plus 我的回复可见", "我回 群123456789：连海豚都上了" in body)
+        check("/logs plus 打分翻成人话", "打分 0.88，门槛 0.86" in body and "接了" in body)
         # 一行都不许少：7 条原始日志必须变成 7 条译文
         check("/logs plus 行数不缩水", len(body.strip().splitlines()) == 7, f"译文行数={len(body.strip().splitlines())}")
-        check("/logs plus 缓存行也翻译", "♻️" in body and "复用 896" in body)
-        check("/logs plus 生成耗时也翻译", "💭 想好了" in body and "0.12 秒" in body)
+        check("/logs plus 缓存行也翻译", "上下文复用 896" in body)
+        check("/logs plus 生成耗时也翻译", "生成 0.12 秒（档 high）" in body)
         check("/logs plus 图片转成占位", "[图片]" in body and "[CQ:" not in body)
-        check("/logs plus 拦截能看懂", "🚫" in body and "跟当前话题不相干" in body)
+        check("/logs plus 拦截能看懂", "没接（跟当前话题不相干）" in body)
+        check("/logs plus 不许有表情符号", not re.search(r"[\U0001F300-\U0001FAFF\u2600-\u27BF]", body), body[:120])
         check("/logs plus 参数识别", log_tail.is_plus("plus") and log_tail.is_plus("简易") and not log_tail.is_plus("200"))
         check("/logs plus 行数默认和原文一致", log_tail.parse_count("plus", plus=True) == log_tail.DEFAULT_LINES)
     finally:

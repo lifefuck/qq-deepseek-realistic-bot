@@ -98,11 +98,13 @@ def _header_clock(line: str) -> str:
     return ""
 
 # ---------------------------------------------------------------------------
-# 简易日志：逐行翻译成人话。不筛、不折叠——原文多少行，这里就多少行
+# 简易日志：逐行翻译成人话。不筛行、不折叠，行数和原文一一对应
+# 输出一律纯文字，不加表情符号——emoji 一多就回到机器人腔
 # ---------------------------------------------------------------------------
 
 _TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) ")
 _LINE_RE = re.compile(r"^\[(INFO|WARNING|ERROR)\] \[[^\]]*\] ?(.*)$")
+_GROUP_PREFIX_RE = re.compile(r"^\[(?:群 )?(\d{5,12})\] ?(.*)$")
 _CHAT_RE = re.compile(r"^\[群 (\d+)\]\[(?:群聊|被@)\]\s*(.+)$")
 _SENT_RE = re.compile(r"^\[群 (\d+)\] 消息已送达:\s*(.*)$")
 _SCORE_RE = re.compile(r"^(?:\[群 (\d+)\] )?接话质量 ([\d.]+) vs 门槛 ([\d.]+) \((.*?)\) -> (\S+)")
@@ -118,18 +120,18 @@ _TIMING_RE = re.compile(r"^接话时机[:：]\s*(.*)$")
 _MEM_RE = re.compile(r"^已成功加载按群隔离记忆库[，,]\s*共 (\d+) 个分区[，,]\s*(\d+) 位群友档案")
 _SYNC_RE = re.compile(r"^成功同步 (\d+) 个群的群名称缓存")
 _RECONNECT_RE = re.compile(r"^\[?群 (\d+)\]?\s*重连后补回 (\d+) 条历史消息")
+_FORWARD_OK_RE = re.compile(r"^合并转发已发送[（(](\d+) 条[)）]")
 _EXIT_RE = re.compile(r"(已手动退出|Stopping qq-deepseek|Stopped qq-deepseek|Deactivated successfully)")
 
-# 这些不是群友说的话，续行不该往里拼
 _NONCHAT = ("systemd", "service", "Stopping", "Started", "Stopped", "Deactivated")
 _DROP_WORDS = (("交集", "跟当前话题不相干"), ("复读", "刚说过类似的"), ("说过", "刚说过类似的"),
                ("连发", "刚连发过消息"), ("冷却", "冷却中"), ("长度", "太长了"), ("间隔", "离上次回复太近"))
 
 
 def _pretty(text: str) -> str:
-    """把 CQ 码翻译成看得懂的样子，再掐掉多余空白。"""
+    """把 CQ 码翻译成看得懂的样子，再收掉多余空白。"""
     out = text or ""
-    # 截断过的行尾没有 `】`，所以收尾括号可省，否则图片码会裸露在正文里
+    # 截断过的行尾没有 `】`，收尾括号可省，否则图片码会裸露在正文里
     out = re.sub(r"【CQ:image[^】]*】?", "[图片]", out)
     out = re.sub(r"【CQ:(?:face|mface|bface|sface)[^】]*】?", "[表情]", out)
     out = re.sub(r"【CQ:(?:reply|at)[^】]*】?", "", out)
@@ -148,51 +150,50 @@ def _name_of(names: dict, gid) -> str:
     return names.get(key) or names.get(int(key)) or f"群{key}"
 
 
-_GROUP_PREFIX_RE = re.compile(r"^\[(?:群 )?(\d{5,12})\] ?(.*)$")
-_FORWARD_OK_RE = re.compile(r"^合并转发已发送[（(](\d+) 条[)）]")
-
-
 def translate_msg(msg: str, level: str = "INFO", gname=None, gid_hint: str = "") -> str:
-    """把一条日志消息翻成人话。认不出来的就原样留着，至少不至于丢行。"""
+    """把一条日志消息翻成人话。认不出来的原样留着，至少不会丢行。"""
     gname = gname or (lambda gid: _name_of({}, gid))
     pretty = _pretty(msg)
 
-    # 很多行前面挂着 `[群 123456789]`，剥掉再匹配规则，免得每条都要写一遍前缀
+    # 很多行前面挂着 `[群 123456789]`，剥掉再匹配规则
     pref = _GROUP_PREFIX_RE.match(msg)
     if pref and not _CHAT_RE.match(msg):
         gid_hint = gid_hint or pref.group(1)
         msg = pref.group(2)
         pretty = _pretty(msg)
 
+    who = f"{gname(gid_hint)}｜" if gid_hint else ""
+
     fw = _FORWARD_OK_RE.match(msg)
     if fw:
-        return f"📤 {gname(gid_hint) if gid_hint else '合并转发'}｜聊天记录发出去了（{fw.group(1)} 条）"
+        return f"{who}聊天记录发出去 {fw.group(1)} 条"
 
     cm = _CHAT_RE.match(msg)
     if cm:
-        return f"💬 {gname(cm.group(1))}｜{_pretty(cm.group(2))}"
+        return f"{gname(cm.group(1))}｜{_pretty(cm.group(2))}"
+
     sm = _SENT_RE.match(msg)
     if sm:
-        return f"🤖 {gname(sm.group(1))}｜我：{_pretty(sm.group(2)) or '（空）'}"
+        return f"我回 {gname(sm.group(1))}：{_pretty(sm.group(2)) or '（空）'}"
     sm2 = re.match(r"^消息已送达[:：]\s*(.*)$", msg)
     if sm2:
-        return f"🤖 {gname(gid_hint) if gid_hint else '群聊'}｜我：{_pretty(sm2.group(1)) or '（空）'}"
+        return f"我回 {gname(gid_hint) if gid_hint else '群聊'}：{_pretty(sm2.group(1)) or '（空）'}"
 
     qm = _SCORE_RE.match(msg)
     if qm:
         gid = qm.group(1) or gid_hint
         score, need, why, verdict = qm.group(2), qm.group(3), qm.group(4), qm.group(5)
-        act = "开口了" if verdict.startswith("接") else "没开口"
+        act = "接了" if verdict.startswith("接") else "没接"
         where = f"{gname(gid)} " if gid else ""
-        return f"📊 {where}想插话，打分 {score} / 门槛 {need}（{_pretty(why)}）→ {act}"
+        return f"{where}打分 {score}，门槛 {need}（{_pretty(why)}），{act}"
 
     fm = _FAVOR_RE.match(msg)
     if fm:
-        gid, who, _uid, delta, imp, before, after = fm.groups()
+        gid, person, _uid, delta, imp, before, after = fm.groups()
         if delta in ("+0", "0", "-0") and not imp.strip():
-            return f"🧠 {gname(gid)}｜看了下 {_pretty(who)} 的好感，没变化（{before}/100）"
+            return f"{gname(gid)}｜{_pretty(person)} 好感没变（{before}/100）"
         extra = f"，印象改成「{_pretty(imp)[:40]}」" if imp.strip() else ""
-        return f"🧠 {gname(gid)}｜{_pretty(who)} 的好感 {before} → {after}（{delta}{extra}）"
+        return f"{gname(gid)}｜{_pretty(person)} 好感 {before} → {after}（{delta}{extra}）"
 
     dm = _DROP_RE.match(msg)
     if dm:
@@ -203,96 +204,97 @@ def translate_msg(msg: str, level: str = "INFO", gname=None, gid_hint: str = "")
                 reason = human
                 break
         where = f"{gname(gid)} " if gid else ""
-        return f"🚫 {where}拦下（{reason or '不合时机'}）：{_pretty(content)[:80]}"
+        return f"{where}没接（{reason or '时机不对'}）：{_pretty(content)[:80]}"
 
     rm = _RECALL_RE.match(msg)
     if rm:
-        return f"↩️ {gname(rm.group(1))}｜{rm.group(3)} 撤回了条消息"
+        return f"{gname(rm.group(1))}｜{rm.group(3)} 撤回了一条"
 
     gm = _GEN_RE.match(msg)
     if gm:
         cost, tier, _rt, content = gm.groups()
-        return f"💭 想好了（花了 {cost} 秒，档 {tier}）：{_pretty(content)[:80]}"
+        return f"生成 {cost} 秒（档 {tier}）：{_pretty(content)[:80]}"
 
     cr = _CACHE_RE.match(msg)
     if cr:
         hit, total = cr.groups()
-        return f"♻️ 上下文省着用：复用 {hit}，新读 {total} 个字（token）"
+        return f"上下文复用 {hit}，新读 {total}（token）"
 
     nm = _NICK_RE.match(msg)
     if nm:
-        return f"📇 刷新了 {nm.group(1)} 个人的群昵称"
+        return f"刷新群昵称 {nm.group(1)} 人"
 
     raw_m = _RAW_RE.match(msg)
     if raw_m:
         at = "在 @ 我" if raw_m.group(2) == "True" else "没 @ 我"
-        return f"👂 收到一条消息（{at}）：{_pretty(raw_m.group(1))[:80]}"
+        return f"收到消息（{at}）：{_pretty(raw_m.group(1))[:80]}"
     if msg.startswith("收到原始消息"):
-        # 超长消息被截断了，is_at 字段没留下来
+        # 超长消息被截断，is_at 字段没留下来
         body_txt = re.sub(r"^收到原始消息 raw_message='?", "", msg).rstrip("'")
-        return f"👂 收到一条消息：{_pretty(body_txt)[:80]}"
+        return f"收到消息：{_pretty(body_txt)[:80]}"
 
     lm = _LIGHT_RE.match(msg)
     if lm:
         at = "在 @ 我" if lm.group(1) == "True" else "没 @ 我"
-        follow = "，是接着我上一句" if lm.group(2) == "True" else ""
+        follow = "，接我上一句" if lm.group(2) == "True" else ""
         said = _pretty(lm.group(3) or "")
-        return f"🔍 看了眼群里的气氛（{at}{follow}）{('：' + said[:60]) if said else ''}"
+        return f"看群体气氛（{at}{follow}）{('：' + said[:60]) if said else ''}"
 
     tm = _TIMING_RE.match(msg)
     if tm:
-        return f"⏱ 时机判断：{_pretty(tm.group(1))}"
+        return f"时机：{_pretty(tm.group(1))}"
 
     mem = _MEM_RE.match(msg)
     if mem:
-        return f"🧠 记忆库就绪：{mem.group(1)} 个群、{mem.group(2)} 位群友有档案"
+        return f"记忆库就绪：{mem.group(1)} 个群、{mem.group(2)} 位群友有档案"
 
     sy = _SYNC_RE.match(msg)
     if sy:
-        return f"📇 记下了 {sy.group(1)} 个群的名字"
+        return f"记下 {sy.group(1)} 个群名"
 
     rc = _RECONNECT_RE.match(msg)
     if rc:
-        return f"🔌 {gname(rc.group(1))}｜重连后补回 {rc.group(2)} 条历史消息"
+        return f"重连 {gname(rc.group(1))}，补回 {rc.group(2)} 条"
     rc2 = re.match(r"^重连后补回 (\d+) 条", msg)
     if rc2:
-        return f"🔌 {gname(gid_hint) if gid_hint else '群聊'}｜重连后补回 {rc2.group(1)} 条历史消息"
+        return f"重连 {gname(gid_hint) if gid_hint else '群聊'}，补回 {rc2.group(1)} 条"
 
     if "收到系统/群通知事件" in msg:
-        return "🔔 收到一条系统通知（入群、撤回这类）"
+        return "收到系统通知（入群、撤回这类）"
     if "正在连接 NapCat" in msg:
-        return "🔌 正在连 NapCat…"
+        return "正在连 NapCat"
     if "已连接到 NapCat" in msg:
-        return "🔌 连上 NapCat，开始监听"
+        return "连上 NapCat，开始监听"
     if "启动 QQ DeepSeek" in msg:
-        return "🚀 机器人启动"
+        return "机器人启动"
     if "白名单群:" in msg:
-        gs = re.findall(r"(\d{5,12})", msg)
-        return f"⚙️ 当前上岗的群：{('、'.join(gs[:6])) or '无'}" + ("…" if len(gs) > 6 else "")
+        # 只取方括号里的群号，后面的机器人 QQ、管理员 QQ 不是群
+        lm2 = re.search(r"白名单群[:：]\s*\[([^\]]*)\]", msg)
+        gs = [g.strip() for g in (lm2.group(1).split(",") if lm2 else []) if g.strip().isdigit()]
+        return f"上岗群：{('、'.join(gs[:6])) or '无'}" + ("…" if len(gs) > 6 else "")
     if "Web 仪表盘已启动" in msg:
         url = re.search(r"(https?://\S+)", msg)
-        return f"🖥 网页面板起来了{'：' + url.group(1) if url else ''}"
+        return f"网页面板起来了{'：' + url.group(1) if url else ''}"
     if _EXIT_RE.search(msg):
-        return "🛑 服务退出"
+        return "服务退出"
     if msg.startswith("Started") or "Started qq-deepseek" in msg:
-        return "▶️ 服务被拉起"
+        return "服务被拉起"
     if "网页只是站点外壳" in msg or "反爬页" in msg:
-        return "🕸 发来的网页没解析出来（反爬页）"
+        return "发来的网页没解析出来（反爬页）"
     if "表情包已发送" in msg:
         g2 = re.search(r"\[群 (\d+)\]", msg)
-        return f"🖼 {gname(g2.group(1)) if g2 else '群聊'}｜我发了个表情包"
+        return f"{gname(g2.group(1)) if g2 else '群聊'}｜我发了个表情包"
     if "戳一戳" in msg or "poke" in msg.lower():
-        return f"👉 {pretty[:80]}"
+        return f"戳一戳：{pretty[:80]}"
     if any(k in msg for k in ("禁言", "踢出", "踢人")):
-        return f"🛠 {pretty[:100]}"
+        return pretty[:100]
     if "自动感知" in msg or "上下文长度" in msg:
-        return f"🧮 {pretty[:100]}"
+        return pretty[:100]
 
-    who = f"{gname(gid_hint)}｜" if gid_hint else ""
     if level == "ERROR":
-        return f"❌ {who}出错：{pretty[:160]}"
+        return f"{who}出错：{pretty[:160]}"
     if level == "WARNING":
-        return f"⚠️ {who}注意：{pretty[:160]}"
+        return f"{who}警告：{pretty[:160]}"
     # 认不出来的原样留着：宁可留着看不懂，也别让行数对不上
     return f"{who}{pretty or '（空行）'}"
 
@@ -322,5 +324,4 @@ def translate(lines: list[str], group_names: dict | None = None) -> list[str]:
 
 def pack_plus(entries: list[str], per_page: int = PER_PAGE) -> list[tuple[str, str]]:
     """简易日志分页：和原文一样一页 15 行，行数不缩水。"""
-    pages = pack_pages(entries, per_page=per_page)
-    return pages or [("没有内容", "这段时间日志是空的。")]
+    return pack_pages(entries, per_page=per_page) or [("没有内容", "这段时间日志是空的。")]
