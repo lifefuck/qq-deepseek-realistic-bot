@@ -269,7 +269,7 @@ async def main():
         check("/logs 行数上限", log_tail.parse_count("99999") == log_tail.MAX_LINES)
         check("/logs 行数默认", log_tail.parse_count("") == log_tail.DEFAULT_LINES)
 
-        # 12. /logs plus：技术日志得翻成人话，噪音要折叠掉
+        # 12. /logs plus：逐行翻译成人话，行数和原文一一对应，不许筛掉
         log_tail.read_recent = lambda limit=400, grep="": ([
             "2026-11-15 19:48:20 [INFO] [-] [群 123456789] 接话质量 0.88 vs 门槛 0.86 (有内容+提问 | 时机 刷屏) -> 接",
             "2026-11-15 19:48:22 [INFO] [ab-1] [群 123456789][群聊] 群友甲(QQ 10001): 连海豚都上了",
@@ -284,17 +284,20 @@ async def main():
         fwd = [p for a, p in calls if a == "send_group_forward_msg"]
         check("/logs plus 走合并转发", len(fwd) == 1, f"forward 次数={len(fwd)}")
         nodes = fwd[0]["messages"] if fwd else []
-        body = "\n".join(n["data"]["content"] for n in nodes)
-        check("/logs plus 标题标明简易", "简易" in nodes[0]["data"]["content"], nodes[0]["data"]["content"])
+        body = "\n".join(n["data"]["content"] for n in nodes[1:])
+        check("/logs plus 标题说明是翻译版", "看得懂" in nodes[0]["data"]["content"], nodes[0]["data"]["content"])
+        check("/logs plus 标题节点不混正文", "💬" not in nodes[0]["data"]["content"])
         check("/logs plus 群聊翻成人话", "💬 群123456789｜群友甲: 连海豚都上了" in body, body[:200])
         check("/logs plus 我的回复可见", "🤖 群123456789｜我：连海豚都上了" in body)
         check("/logs plus 打分翻成人话", "📊" in body and "开口了" in body)
-        check("/logs plus 噪音不显示", "前缀缓存" not in body and "模型生成完成" not in body)
+        # 一行都不许少：7 条原始日志必须变成 7 条译文
+        check("/logs plus 行数不缩水", len(body.strip().splitlines()) == 7, f"译文行数={len(body.strip().splitlines())}")
+        check("/logs plus 缓存行也翻译", "♻️" in body and "复用 896" in body)
+        check("/logs plus 生成耗时也翻译", "💭 想好了" in body and "0.12 秒" in body)
         check("/logs plus 图片转成占位", "[图片]" in body and "[CQ:" not in body)
-        check("/logs plus 说明折叠了多少", "有 2 行技术日志被折叠" in body, body[-160:])
         check("/logs plus 拦截能看懂", "🚫" in body and "跟当前话题不相干" in body)
         check("/logs plus 参数识别", log_tail.is_plus("plus") and log_tail.is_plus("简易") and not log_tail.is_plus("200"))
-        check("/logs plus 默认行数更多", log_tail.parse_count("plus", plus=True) == log_tail.DEFAULT_PLUS_LINES)
+        check("/logs plus 行数默认和原文一致", log_tail.parse_count("plus", plus=True) == log_tail.DEFAULT_LINES)
     finally:
         log_tail.read_recent = _real_read
 

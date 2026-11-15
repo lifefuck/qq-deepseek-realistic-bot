@@ -347,9 +347,10 @@ async def handle_logs_command(ws: aiohttp.ClientWebSocketResponse, group_id: Opt
 
     stamp = time.strftime("%m-%d %H:%M", time.localtime())
     if plus:
-        entries, hidden = log_tail.summarize(lines, bot.group_names_cache)
-        pages = log_tail.pack_plus(entries, hidden)
-        title = f"机器人日志（简易） · {stamp} · 最近 {len(lines)} 行里挑出 {len(entries)} 件事"
+        # 逐行翻译：行数不缩水，只是把技术措辞换成看得懂的说法
+        entries = log_tail.translate(lines, bot.group_names_cache)
+        pages = log_tail.pack_plus(entries)
+        title = f"机器人日志（看得懂的版本） · 最近 {len(entries)} 行 · {stamp}"
     else:
         pages = log_tail.pack_pages(lines)
         title = f"机器人日志 · 最近 {len(lines)} 行 · {stamp}"
