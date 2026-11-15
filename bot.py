@@ -144,7 +144,7 @@ ACTIVE_INTERRUPT_CD = 45.0      # 主动插话冷却 45 秒
 DIRECT_AT_CD = 2.5              # 被 @ 时的用户级基础冷却（秒）
 FOLLOW_UP_WINDOW = 300.0        # 持续对话追问窗口为 5 分钟 (300 秒)
 FOLLOW_UP_MAX_COUNT = 5         # 追问窗口内最多免 @ 回答 5 次，有新的 @ 则重置配额
-MAX_OUTPUT_TOKENS = 200         # 限制单次生成长度，防长篇大论
+MAX_OUTPUT_TOKENS = 800         # 给够空间：说长说短由人设管，别用截断管。200 时思考 token 会吃光配额导致空串
 
 # 拟真作息睡眠参数 (01:00 ~ 07:00 CST 为入睡期)
 SLEEP_START_HOUR = 1
