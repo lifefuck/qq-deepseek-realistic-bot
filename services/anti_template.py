@@ -175,13 +175,25 @@ def _bigrams(text: str) -> set:
     return {t[i:i + 2] for i in range(len(t) - 1)}
 
 
-def is_offtopic(reply: str, context: str, min_len: int = 10) -> bool:
+# 纯情绪反应：这类话本来就不承载话题信息，跟上下文零交集也算正常接茬
+_PURE_REACTION = re.compile(
+    r"^(?:笑死|绷不住|难绷|绝了|离谱|好家伙|什么鬼|我服|服了|救命|真的假的|就这|可以|行吧|还行|"
+    r"在吗|牛|牛啊|6+|草+|啊+|哦+|嗯+|哈+|乐|典|赢)+[\s!！。？?~…吧啊了呢嘛呀]*$"
+)
+
+
+def is_offtopic(reply: str, context: str, min_len: int = 0) -> bool:
     """旁观接话时，回的内容跟刚才那几句一个词都不沾，基本是自说自话。
 
     只用来拦「插话」，被 @ 的时候不拦——那时候它有权把话题拐走。
-    短句（笑死、就这）不拦，那些本来就是纯情绪。
+
+    长度不再设门槛：旧版要求 ≥10 字才判，结果 9 个字的旧梗（「人参预定，一路走好」）
+    正好从缝里漏过去，发出去就是接上个话题。现在只要不是纯情绪反应，无论多短
+    都要在这几句里找到落点；单字撑不出二字窗，判不了，放行。
     """
     if len(reply or "") < min_len:
+        return False
+    if _PURE_REACTION.match(re.sub(r"[\s\W_]+", "", reply or "")):
         return False
     r = _bigrams(reply)
     if not r:

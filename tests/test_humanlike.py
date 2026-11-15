@@ -239,6 +239,10 @@ def test_offtopic_gate():
     check("不沾边判无关", anti_template.is_offtopic("这波操作真的离谱到没边了", "今晚吃什么 火锅还是烤肉"))
     check("沾边不误伤", not anti_template.is_offtopic("火锅太辣了", "今晚吃什么 火锅还是烤肉"))
     check("短句不拦", not anti_template.is_offtopic("笑死", "今晚吃什么 火锅还是烤肉"))
+    # 九个字的老梗（「人参预定，一路走好」）以前卡在 min_len=10 的门槛外漏过去，
+    # 话题翻篇了还回头接，现在短也一样拦
+    check("短的旧梗也拦", anti_template.is_offtopic("人参预定，一路走好", "这芯片直接认了 再加上这高刷"))
+    check("短但沾边放行", not anti_template.is_offtopic("芯片认了", "这芯片直接认了 再加上这高刷"))
 
 
 def test_quote_reply():

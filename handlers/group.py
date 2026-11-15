@@ -799,17 +799,42 @@ def _compose_dialogue(timeline, limit: int) -> list[dict]:
     return kept
 
 
-def _timeline_line(m: dict) -> str:
-    """一行时间线：谁、对谁说、说了什么。
+def _trim_recent(lines: list[dict], max_age: float, min_keep: int = 4) -> list[dict]:
+    """按时间裁时间线：只留最近 max_age 秒的对话，至少保底 min_keep 条。
+
+    按条数取会出错——刷屏群里 14 条只够四十秒，话题却能翻两轮，
+    上一个话题的梗跟着一起递过去，模型就回头接旧茬。
+    """
+    if not lines:
+        return lines
+    now = time.time()
+    kept = [m for m in lines if now - float(m.get("time") or now) <= max_age]
+    if len(kept) < min_keep:
+        kept = lines[-min_keep:]
+    return kept
+
+
+def _timeline_line(m: dict, now: float = 0.0) -> str:
+    """一行时间线：谁、对谁说、说了什么、多久之前说的。
 
     单条过长（粘贴的报错、整段复制）会挤掉别人的发言，模型就只盯着那一块；
     超过 120 字截断，留个省略号说明后面还有。
+    时间戳只给一分钟以上的行，一分钟内的一律读作「刚刚」，不给噪音。
     """
     addr = m.get("addr") or ""
     content = m.get("content") or ""
     if len(content) > 120:
         content = content[:120] + "…"
-    return f"{m['sender']} {addr}: {content}" if addr else f"{m['sender']}: {content}"
+    age = ""
+    ts = m.get("time")
+    if ts:
+        delta = (now or time.time()) - float(ts)
+        if delta >= 3600:
+            age = f"（{int(delta // 3600)}小时前）"
+        elif delta >= 60:
+            age = f"（{int(delta // 60)}分钟前）"
+    sender = f"{m['sender']}{age}"
+    return f"{sender} {addr}: {content}" if addr else f"{sender}: {content}"
 
 
 async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: int, is_at: bool, sender_nick: str, is_admin: bool = False, is_mention: bool = False, target_uid: Optional[int] = None, user_text: str = "", is_follow_up: bool = False, extra_instruction: str = "", src_msg_id=None, cold_nudge: bool = False):
@@ -833,7 +858,12 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
     else:
         # 群友直接找机器人时也给几行上下文，免得它把一句「乐乐」当成初次见面打招呼
         # 追问态下对方常只丢半句，上下文给宽一点才接得住
-        recent_lines = _compose_dialogue(timeline, 16 if is_follow_up else 14) if timeline else []
+        limit = 16 if is_follow_up else 14
+        recent_lines = _compose_dialogue(timeline, limit) if timeline else []
+        if not (is_at or is_mention or is_follow_up):
+            # 旁观插话按时间收窄：刷屏群里 14 条只够四十秒，话题却已经翻篇，
+            # 旧话题的梗跟着递过去，模型就回头接一百秒前的茬
+            recent_lines = _trim_recent(recent_lines, max_age=90.0)
         dialogue_text = "\n".join(_timeline_line(m) for m in recent_lines) or (user_text or "")
 
     bot.logger.info("[群 %d] 触发轻量会话分析 (is_at=%s, is_follow_up=%s, is_admin=%s), 发言内容: %s", group_id, is_at, is_follow_up, is_admin, dialogue_text[:40])

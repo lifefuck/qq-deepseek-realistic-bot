@@ -245,6 +245,10 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
         user_prompt = (
             f"{identity_note}"
             f"群友在群聊中的近期发言：\n{timeline_text}\n\n"
+            f"【群里最后这句】：「{latest_line}」\n"
+            f"【只接现在】：上面那些行只是背景，标了「N分钟前」的都是已经聊过去的话。"
+            f"你要接的是最后这两三行正在说的事；最后这句要是换了话题，就跟着新的走，"
+            f"绝不回头接前面的旧茬和旧梗。看不出最后这句在说什么，就输出 [PASS]。\n"
             f"【旁观规则（开口门槛很高，宁可不说话也别当解说员）】：\n"
             f"1. 你正在旁观。只有这三种情况才开口：\n"
             f"   - 有人叫你名字、写着「→@你」「（回复你）」，或者在问你；\n"
