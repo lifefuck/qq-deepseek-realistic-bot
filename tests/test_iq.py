@@ -53,6 +53,10 @@ def test_persona():
     check("有「开口前先看一眼」的读人环节", "开口前先看一眼" in p)
     check("保留防臆想条款", "只对眼前这条消息做反应" in p)
     check("保留 MEME 标记约定", "[MEME:情绪]" in p)
+    # 这两条是从用户自己的回法抄来的，别被后来的改稿删掉
+    check("被骂时不许反问「哪」", "别反问「哪」" in p)
+    check("复述对方原话不算接话", "复述" in p and "往前推一步" in p)
+    check("被损的样例是直接顶回去", "我傻个屁" in p)
     # 禁令密度：超过 15 个「别」说明又在往回堆规则，模型注意力会跑偏
     check("禁令不回到三十条", p.count("别") <= 15, str(p.count("别")))
 
@@ -68,6 +72,15 @@ def test_timeline_scope():
     src = read_src("handlers/group.py")
     check("旁观上下文收到 10 条", "limit = 12 if is_follow_up else 10" in src)
     check("时间戳阈值是 10 分钟", "delta >= 600" in src)
+
+
+def test_meme_tag():
+    # 模型会写成 [得意] 这种没前缀的，认不出来就会把标签原样发进群
+    from meme_catalog import extract_tag
+    check("认 [MEME:嘲讽]", extract_tag("这话说的 [MEME:嘲讽]") == ("这话说的", "嘲讽"))
+    check("认裸情绪标签", extract_tag("这话说的 [得意]") == ("这话说的", "得意"))
+    check("认全角裸标签", extract_tag("行吧【委屈】") == ("行吧", "委屈"))
+    check("普通括号不当标签", extract_tag("就这[笑]") == ("就这[笑]", ""))
 
 
 def test_social_read():
@@ -108,7 +121,7 @@ def test_style_learner():
 
 def main():
     for fn in (test_effort, test_persona, test_no_forced_short, test_timeline_scope,
-               test_social_read, test_style_learner):
+               test_meme_tag, test_social_read, test_style_learner):
         fn()
     print()
     if FAILED:

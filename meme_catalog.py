@@ -38,6 +38,11 @@ BUCKETS: Dict[str, Tuple[str, ...]] = {
 # 全角方括号（［］）也要认：模型偶尔用全角，老正则漏掉就把标签原样发进群
 _TAG_RE = re.compile(r"[\[【［]\s*MEME\s*[:：]\s*([^\]】］]{1,12})\s*[\]】］]", re.IGNORECASE)
 
+# 模型手滑的第二种写法：只写情绪不写 MEME 前缀（实测出现过 [得意]），
+# 这种标签要认成配图意图并剥掉，否则群里会看到一句「这话说得 [得意]」
+_EMOTIONS = ("卖萌", "得意", "嘲讽", "震惊", "愤怒", "委屈", "无奈", "干饭")
+_BARE_RE = re.compile(r"[\[【［]\s*(%s)\s*[\]】］]" % "|".join(_EMOTIONS))
+
 _by_emotion: Dict[str, List[dict]] = collections.defaultdict(list)
 _by_keyword: Dict[str, List[dict]] = collections.defaultdict(list)
 _recent_paths: collections.deque = collections.deque(maxlen=12)
@@ -80,6 +85,10 @@ def extract_tag(text: str) -> Tuple[str, str]:
         return text, ""
     m = _TAG_RE.search(text)
     if not m:
+        # 只写了情绪、忘了 MEME 前缀：照样当成配图意图
+        bare = _BARE_RE.search(text)
+        if bare:
+            return _BARE_RE.sub("", text).strip(), bare.group(1)
         # 模型手滑写成 [MEME:]/[MEME：情绪+解释] 时也要清掉，别把残渣发给群友
         # 结尾括号也可能被 max_tokens 截断（实测出现过 [MEME:嘲讽 没有右括号），闭合括号设为可选
         leftover = re.sub(r"[\[【［]\s*MEME\s*[:：][^\]】］\n]*[\]】］]?", "", text, flags=re.I)
