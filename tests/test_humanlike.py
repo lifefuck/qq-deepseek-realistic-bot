@@ -425,6 +425,20 @@ def test_interject_frequency():
     line = g._timeline_line({"sender": "某人(QQ 1)", "content": "啊" * 300})
     check("长消息截断", len(line) < 160 and line.endswith("…"), str(len(line)))
     check("时间线容量够看一整场", botmod.TIMELINE_MAX_LEN >= 20, str(botmod.TIMELINE_MAX_LEN))
+    # 一分钟以上的行要标出年龄，不然模型分不清哪句是刚刚的
+    import time as _t
+    now = _t.time()
+    old = g._timeline_line({"sender": "某人(QQ 1)", "content": "人参预定", "time": now - 130})
+    fresh = g._timeline_line({"sender": "某人(QQ 1)", "content": "人参预定", "time": now - 5})
+    check("旧行标分钟", "2分钟前" in old, old)
+    check("新行不标时间", "分钟前" not in fresh, fresh)
+    # 旁观插话的上下文按时间收窄：一百秒前的旧梗不能再递进去
+    lines = [{"sender": "a", "content": "人参预定", "time": now - 104},
+             {"sender": "b", "content": "一路走好", "time": now - 100},
+             {"sender": "c", "content": "中原大战打响了", "time": now - 5}]
+    kept = g._trim_recent(lines, max_age=90.0, min_keep=1)
+    check("裁剪只留新话题", [m["content"] for m in kept] == ["中原大战打响了"], str(kept))
+    check("裁剪有保底条数", len(g._trim_recent(lines, max_age=90.0, min_keep=3)) == 3, "保底失效")
 
 
 if __name__ == "__main__":
