@@ -52,7 +52,7 @@ from services.messaging import (send_group_message, send_segmented_group_message
 from services.llm import (call_deepseek, call_deepseek_poke, evaluate_favor_with_ai,
                           _is_favor_worthy, update_user_memory_async)
 from handlers.admin import (handle_admin_command, handle_memory_summary_command,
-                            generate_agent_command_reply)
+                            generate_agent_command_reply, handle_logs_command)
 from handlers.private import handle_private_message
 from handlers.group import handle_group_message, process_group_trigger
 import services.messaging as _svc_messaging

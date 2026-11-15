@@ -325,6 +325,47 @@ async def handle_memory_summary_command(ws: aiohttp.ClientWebSocketResponse, gro
         await bot.send_private_message(ws, user_id, "\n\n".join(pages), is_command_report=True)
 
 
+async def handle_logs_command(ws: aiohttp.ClientWebSocketResponse, group_id: Optional[int] = None,
+                              user_id: Optional[int] = None, arg: str = ""):
+    """主人专用：/logs [行数] 把服务日志尾折叠成一条聊天记录发回来。
+
+    日志里有别的群的聊天内容和 QQ 号，所以只对主人开口，群友一律不理。
+    """
+    from services import log_tail
+
+    count = log_tail.parse_count(arg)
+    lines, err = await asyncio.to_thread(log_tail.read_recent, count)
+
+    if not lines:
+        tip = f"拉不到日志，{err or '没有内容'}"
+        if group_id:
+            await bot.send_group_message(ws, group_id, tip, is_command_report=True)
+        else:
+            await bot.send_private_message(ws, user_id, tip, is_command_report=True)
+        return
+
+    stamp = time.strftime("%m-%d %H:%M", time.localtime())
+    title = f"机器人日志 · 最近 {len(lines)} 行 · {stamp}"
+    pages = log_tail.pack_pages(lines)
+    # 节点挂机器人自己的号：日志本来就不是群友说的，混进别人头像反而误导
+    entries = [(bot.BOT_QQ, label, body) for label, body in pages]
+    nodes = bot.build_forward_nodes(entries, title=title, bot_qq=bot.BOT_QQ)
+
+    if await bot.send_forward_message(ws, nodes, group_id=group_id, user_id=user_id):
+        return
+
+    # 协议端不支持合并转发时退回纯文本，一次一页，别把整段日志糊成一条
+    for i, (_label, body) in enumerate(pages):
+        if i:
+            await asyncio.sleep(0.3)
+        head = title if i == 0 else f"{title}（{i + 1}/{len(pages)}）"
+        text = f"{head}\n{body}"
+        if group_id:
+            await bot.send_group_message(ws, group_id, text, is_command_report=True)
+        else:
+            await bot.send_private_message(ws, user_id, text, is_command_report=True)
+
+
 async def generate_agent_command_reply(action_type: str, detail: str = "", is_private: bool = False, group_id: Optional[int] = None) -> str:
     """由大模型根据当前情境临场随机生成拟真执行反馈，杜绝死板模板读条感"""
     headers = {

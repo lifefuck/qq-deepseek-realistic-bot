@@ -129,6 +129,12 @@ async def handle_private_message(ws: aiohttp.ClientWebSocketResponse, event: dic
         await bot.handle_memory_summary_command(ws, user_id=bot.ADMIN_QQ)
         return
 
+    # /logs [行数]：私聊里主人随时拉服务日志，折叠成一条聊天记录
+    if norm_lower.startswith(("/logs", "/log ")) or norm_lower in ("/log", "/日志"):
+        await bot.handle_logs_command(ws, user_id=sender_id,
+                                      arg=norm_cmd.split(" ", 1)[1] if " " in norm_cmd else "")
+        return
+
     # 管理员私聊：睡眠期不设硬叫醒，保持自然互动
     if bot.is_bot_sleeping():
         bot.logger.info("[作息系统] 主人发起私聊，当前处于夜间作息睡眠期（自然响应，无需强制叫醒）")

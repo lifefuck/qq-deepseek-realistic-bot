@@ -248,6 +248,29 @@ async def main():
     check("群名片与QQ昵称不同时都显示", "群名片0（QQ昵称 QQ昵称0）" in body)
     bot.user_memories.pop(str(gid), None)
 
+    # 11. /logs：日志得折叠成一条聊天记录，正文是原始行、节点按页切、标题带时间
+    import services.log_tail as log_tail
+    _real_read = log_tail.read_recent
+    fake_lines = [f"2026-11-15 19:37:{i:02d} [INFO] [-] [群 1] 第{i}条日志" for i in range(40)]
+    log_tail.read_recent = lambda limit=120, grep="": (fake_lines[:limit], "")
+    try:
+        calls.clear()
+        gid_log = 999999995
+        await bot.handle_logs_command(FakeWS(), group_id=gid_log, arg="40")
+        fwd = [p for a, p in calls if a == "send_group_forward_msg"]
+        check("/logs 走合并转发", len(fwd) == 1, f"forward 次数={len(fwd)}")
+        nodes = fwd[0]["messages"] if fwd else []
+        check("/logs 标题带行数", "最近 40 行" in nodes[0]["data"]["content"], str(nodes[:1]))
+        check("/logs 节点按页切", len(nodes) == 4, f"节点={len(nodes)}")
+        check("/logs 正文是日志原行", "第0条日志" in nodes[1]["data"]["content"])
+        check("/logs 节点标题带时钟", "19:37:" in nodes[1]["data"]["nickname"], nodes[1]["data"]["nickname"])
+        check("/logs 节点挂机器人号", all(n["data"]["user_id"] == str(bot.BOT_QQ) for n in nodes[1:]))
+        # 行数越界要夹住，别让一条指令拉几千行回来
+        check("/logs 行数上限", log_tail.parse_count("99999") == log_tail.MAX_LINES)
+        check("/logs 行数默认", log_tail.parse_count("") == log_tail.DEFAULT_LINES)
+    finally:
+        log_tail.read_recent = _real_read
+
     # 仓库地址唤醒：问项目就甩链接，闲聊和别的仓库不能误伤
     repo = lambda t: prompts.repo_ask_reply(t) or ""
     check("问源码直接给地址", "github.com/lifefuck/qq-deepseek-realistic-bot" in repo("这个bot源码在哪"))

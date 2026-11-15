@@ -282,6 +282,15 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
             ws, group_id=group_id, only_uid=None if is_admin else str(sender_id))
         return
 
+    # /logs [行数]：主人专用，把服务日志尾折叠成聊天记录发回来
+    if norm_lower.startswith(("/logs", "/log ")) or norm_lower in ("/log", "/日志"):
+        if not is_admin:
+            await bot.send_group_message(ws, group_id, "这个只有主人能看", at_user_id=sender_id)
+            return
+        await bot.handle_logs_command(ws, group_id=group_id,
+                                      arg=norm_cmd.split(" ", 1)[1] if " " in norm_cmd else "")
+        return
+
     # 1. 轻量文字游戏（免状态：roll、抽签、抛硬币）拦截
     cfg = bot.get_group_config(group_id)
     if cfg.get("enable_games", True):
