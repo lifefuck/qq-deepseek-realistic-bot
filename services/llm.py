@@ -11,6 +11,7 @@ import cross_memory
 import memory_atoms
 from services import affect
 from services import anti_template
+from services import social_read
 
 from typing import Optional
 from typing import Tuple
@@ -138,34 +139,28 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
                 elif "下跌跌破_40" in last_ms:
                     milestone_hint = "（注意：该群友近期好感度刚刚跌破40进入嫌弃戒备阶段！可以表现出一丝失望或更刺骨的冷言冷语）"
 
-            if favor_score >= 85:
-                closeness_desc = "极其深厚（死党/专属挚友），带有明显的偏爱、顺从与宠溺"
-                tone_desc = "无话不谈、极具包容心。哪怕对方开过头玩笑也会默契接梗或娇嗔撒娇，主动热切，愿意给出情绪价值，绝不阴阳对方"
-            elif favor_score >= 70:
-                closeness_desc = "熟络交好（同桌好友/铁哥们），相处自然默契"
-                tone_desc = "态度大方热情、接梗飞快，开得起玩笑，互损也是朋友间轻松调侃，乐于分享和倾听"
-            elif favor_score >= 55:
-                closeness_desc = "略显亲近（熟人群友），相处融洽"
-                tone_desc = "态度和善友好，聊天愿意多说两句，较少出现攻击性，属于能聊得来的群友"
-            elif favor_score >= 45:
-                closeness_desc = "标准中立（普通群友），社交距离分明"
-                tone_desc = "就事论事、平平淡淡，礼貌和气但不主动倒贴热脸；对方友好则正常聊，对方冒犯则就事反弹"
-            elif favor_score >= 30:
-                closeness_desc = "轻度冷淡（有些嫌弃/无感），防备心较重"
-                tone_desc = "略显冷淡敷衍，字数减少，懒得多解释，不太爱搭理对方"
-            elif favor_score >= 15:
-                closeness_desc = "明显厌烦（嫌弃排斥/戒备），极度不耐烦"
-                tone_desc = "态度冰冷刺骨、惜字如金（甚至用「哦」「...」「有事？」打发），不给好脸色，严厉拆台"
+            # 只留两端：25~80 这中间四档占了群里绝大多数人，原来每一档都写一段
+            # 「就事论事/平平淡淡/态度和善」的语气指令，等于对着所有人念「别热络」，
+            # 被夸也冷淡。中间带现在什么都不说，让模型按当前对话走。
+            if favor_score >= 80:
+                closeness_desc = "混得很熟的自己人"
+                tone_desc = "说话随意、开得起玩笑，可以主动搭话、可以损两句"
+                favor_guideline = (
+                    f"【这个人跟你关系不错（{favor_score}/100）{milestone_hint}】\n"
+                    f"- {tone_desc}。别端着，也别突然煽情。"
+                )
+            elif favor_score <= 25:
+                closeness_desc = "有过节的人"
+                tone_desc = "话短、不热络，问事就答，不主动搭腔；对方挑衅就冷着顶一句"
+                favor_guideline = (
+                    f"【这个人你不太待见（{favor_score}/100）{milestone_hint}】\n"
+                    f"- {tone_desc}。但不许骂人、不许翻旧账。"
+                )
             else:
-                closeness_desc = "极度厌恶（拉黑级敌对/水火不容）"
-                tone_desc = "彻底拒绝友好交流，厌恶写在脸上，直接吐露嫌弃（「离我远点」「滚」「少来沾边」），毫不留情"
-
-            favor_guideline = (
-                f"【好感度状态：{favor_score}/100 点（动态亲密度指数: {warmth_pct}%）{milestone_hint}】\n"
-                f"- 当前关系定性：{closeness_desc}（数值越高越温柔偏爱，数值越低越冷淡嫌弃）。\n"
-                f"- 动态言行指引：{tone_desc}。\n"
-                f"- 连续约束：你的热情程度、回复字数与包容上限必须严格与该分值（{favor_score}点）保持一致动态变化。"
-            )
+                closeness_desc = "普通群友"
+                # 中性档刻意不给语气形容词：形容词会被当成对所有人生效的风格，
+                # 一段「平平淡淡」就能把整群的聊天压成冷场。
+                favor_guideline = ""
 
             user_mem_prompt = (
                 f"【当前交谈群友信息】：昵称: {mem.get('nickname')}\n"
@@ -272,15 +267,10 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
 
         )
 
-    # 不到两成概率只许回一两个词：群里真人一多半的回应就是「哦」「笑死」「啊？」
-    # 全长句的 bot 一眼就假；短回这一档必须由代码强制，模型自己不会选。
-    # 比例从三成压到一成五：日志里「啊？」「什么鬼」反复出现，只会短回就露馅了。
-    _asking_for_insult = bool(re.search(r"(骂|怼)(回去|他|她)", latest_line or ""))
-    if not is_private and not _asking_for_insult and random.random() < 0.15:
-        user_prompt += (
-            "\n【这条短回】：这次就回一两个词，1~4 个字，别成句（比如 哦 / 笑死 / 真的假的 / 行吧）。"
-            "不许用「啊？」「什么鬼」「你才…」这种万能反应，必须踩在对方刚说的那具体一件事上。"
-        )
+    # 原来这里有一档「15% 概率只许回 1~4 个字」。撤掉的原因：
+    # 短回该由「对方说了什么」决定，不该由掷骰子决定。被夸、被问事时撞上这一档，
+    # 出来的就是「哦」「行吧」这种没头没脑的话——正是「接不上话」的观感来源之一。
+    # 长度现在写进提示词按场景给（闲聊一句、问事两句），不再由代码随机截断。
 
     # 提取时间线中的纯正文内容，剔除发言者昵称前缀，防止奇葩昵称（如带有'疯狂星期四'）污染热梗与联网检索
     timeline_pure_content = bot.extract_dialogue_content(timeline_text)
@@ -391,6 +381,25 @@ async def call_deepseek(timeline_text: str, is_at: bool, is_admin: bool = False,
     _own_recent = list(bot.recent_bot_replies.get(group_id, ()))
     if _own_recent and latest_line.strip() and latest_line.strip() == str(_own_recent[-1]).strip():
         user_prompt += "\n【他在原样复读你上一句】：别重复同一句话，换个角度损他一句，或者只回一个字晾着他。"
+
+    # 两步生成第一步：先把这段聊天读懂（services/social_read.py）。
+    # 一次生成同时干「读懂谁在跟谁说什么」「该不该开口」「把话说漂亮」三件事，
+    # 小模型必然顾此失彼；拆开后正文那一步只剩下「怎么把话说好」。
+    # 只走群聊：私聊天然一问一答，不需要判断该不该接。
+    # 只在旁观态走这一步：被 @、主人、追问这三种「人家在等你说」的场合，
+    # 该不该接是明摆着的，多花 1.2 秒去判断纯属浪费。旁观态才是真需要判断的场景，
+    # 而且它多半会判「不接」，省下来的是整整一次正文生成。
+    if group_id and not is_private and not (is_at or is_mention or is_admin or is_follow_up):
+        read_result = await social_read.read(timeline_text, latest_line, group_id)
+        # 旁观态由它自己判断「不接」就直接静默：这是真的读了聊天得出的结论，
+        # 比原来那套关键词打分门槛准。被 @、主人、追问这三种必须回，不听它的。
+        if read_result and social_read.wants_pass(read_result):
+            logger.info("[群 %s] 读懂阶段判定不接（%s），保持静默",
+                        group_id, read_result.get("about") or "说不清")
+            return None
+        read_hint = social_read.hint_text(read_result)
+        if read_hint:
+            user_prompt = bot.sanitize_text(user_prompt + read_hint)
 
     payload = bot.get_base_chat_payload(
         model=bot.MODEL_NAME,

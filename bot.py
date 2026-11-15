@@ -91,10 +91,13 @@ DEFAULT_EFFORT = os.environ.get("DEEPSEEK_EFFORT", "low")
 
 def think_effort(is_at: bool = False, is_admin: bool = False, is_mention: bool = False,
                  is_follow_up: bool = False, text: str = "") -> str:
-    """按场景给思考档位：闲聊 low 保速度，真在问事/被点名才 high。
+    """按场景给思考档位：默认 high，问事/被点名也 high。
 
-    关掉思考的 flash 只会复述模板句（实测 reasoning_tokens=0），
-    但全开 max 会让一句「笑死」也磨半天，群里节奏就废了。
+    原来闲聊走 low 是为了保速度，实测这条假设是错的：同一句话
+    low 1.20s / high 1.03s / max 1.24s（思考 token 都在 40~90），
+    省下来的时间约等于零，代价是 flash 在 low 档基本退化成模板复读
+    （接梗回「省心就完事了 折腾啥」，high 档回「省心省成米式幽默了是吧」）。
+    环境变量 DEEPSEEK_EFFORT 仍是应急开关，但默认值不再是 low。
     """
     if text:
         q = text.strip()
@@ -103,7 +106,9 @@ def think_effort(is_at: bool = False, is_admin: bool = False, is_mention: bool =
             return "high"
     if is_at or is_mention or is_follow_up or is_admin:
         return "high"
-    return os.environ.get("DEEPSEEK_EFFORT", "low")
+    # 兜底也该是 high：原来这里是 low，改了半天注释却没改这一行，
+    # 等于九成闲聊照旧不带思考。DEEPSEEK_EFFORT 只做应急降级用。
+    return os.environ.get("DEEPSEEK_EFFORT", "high")
 
 
 def get_base_chat_payload(model: str, messages: list, max_tokens: int, temperature: float = 0.8,
@@ -1053,7 +1058,7 @@ def is_anger_unlimited(group_id) -> bool:
 DEFAULT_GROUP_CONFIG = {
     "muted": False,             # /off 一键静音的总闸：群友说什么都不回，管理员指令照旧
     "enable_interject": True,   # 是否允许主动插话
-    "interject_prob": 0.25,     # 主动接话意愿 (0.0~1.0)：越高门槛越低，25 = 中等质量话题就接
+    "interject_prob": 0.30,     # 主动接话意愿 (0.0~1.0)：越高门槛越低，30 = 门槛 0.62，普通闲聊仍不接
     "enable_sleep": True,       # 是否启用 01:00~07:00 拟真作息
     "enable_poke": True,        # 是否开启戳一戳互动与回戳
     "enable_games": True,       # 是否开启数字炸弹/掷骰子等文字游戏
@@ -1913,7 +1918,7 @@ def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int =
     """旁观接话闸门：只做开关/作息判断，剩下交给质量分。
 
     interject_prob 的语义从"抽中概率"变成"接话意愿"：越高门槛越低。
-    25（默认）对应门槛 0.66 —— 普通闲聊不接，提问、玩梗、带图、指向机器人才接。
+    30（默认）对应门槛 0.62 —— 普通闲聊不接，提问、玩梗、带图、指向机器人才接。
     """
     cfg = get_group_config(group_id if group_id else None)
     # 静默群连主动插话都停：静音就该彻底安静，只留 /on 这一条出口
@@ -1927,7 +1932,7 @@ def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int =
 
     score, why = score_message_quality(text, group_id=group_id, has_image=has_image,
                                        has_media=has_media, recent_msgs=msg_count_since)
-    desire = float(cfg.get("interject_prob", 0.25))
+    desire = float(cfg.get("interject_prob", 0.30))
     # 门槛整体抬高 0.06：旧公式在 desire=0.25 时门槛只有 0.60，一句六字带感叹号的
     # 闲聊就能过线，于是群里每个话题它都要凑一句
     threshold = interject_threshold(desire)
@@ -1935,7 +1940,7 @@ def should_active_interrupt(text: str, group_id: int = 0, msg_count_since: int =
     # 每小时开口配额：问它话的人随时能 @ 到，主动凑话不该这么勤
     now_ts = time.time()
     recent_openings = [t for t in group_interject_times.get(group_id, ()) if now_ts - t < 3600]
-    if len(recent_openings) >= 6:
+    if len(recent_openings) >= 8:
         logger.info("[群 %d] 近一小时已主动插话 %d 次，本轮只接 @ 与点名", group_id, len(recent_openings))
         return False
 
@@ -2369,7 +2374,7 @@ def get_bot_dashboard_status() -> Dict[str, Any]:
         last_msg = group_last_msg_time.get(gid, 0.0)
         last_reply = group_last_bot_reply_time.get(gid, 0.0)
         msg_count = group_msg_count_since_bot.get(gid, 0)
-        base_p = float(cfg.get("interject_prob", 0.25))
+        base_p = float(cfg.get("interject_prob", 0.30))
         # 面板与判定读同一个门槛函数，避免两处公式各算各的
         prob = base_p
         why = f"质量门槛 {interject_threshold(base_p):.2f}"

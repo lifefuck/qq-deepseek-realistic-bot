@@ -23,6 +23,7 @@ from services import anti_template
 from services import trace
 from services import vision
 from services import affect
+from services import style_learner
 
 # 由 bot.py 在启动时注入自己。直接 import bot 在 `python bot.py` 下会拿到
 # 另一个模块实例（__main__ 与 bot 各一份），全局状态就分裂了。
@@ -499,6 +500,9 @@ async def handle_group_message(ws: aiohttp.ClientWebSocketResponse, event: dict)
     }
     bot.group_timelines[group_id].append(record_item)
     bot.group_history_pool[group_id].append(record_item)
+    # 顺手学一组「上一条→这一条」的真人接法，攒起来给提示词当语感样例。
+    # 纯本地过滤 + 内存去重，不调模型，失败也不影响聊天。
+    style_learner.observe(group_id, bot.group_history_pool[group_id])
     # 两个 deque 里放的是同一个 dict 对象：撤回时按身份删才能连历史池一起清掉
     # 顺手落一份到磁盘：日志会被 journal 轮转清掉，原始语料攒着以后做风格蒸馏
     bot.archive_message(group_id, sender_id, sender_display, full_content, src_msg_id)
@@ -828,7 +832,8 @@ def _timeline_line(m: dict, now: float = 0.0) -> str:
 
     单条过长（粘贴的报错、整段复制）会挤掉别人的发言，模型就只盯着那一块；
     超过 120 字截断，留个省略号说明后面还有。
-    时间戳只给一分钟以上的行，一分钟内的一律读作「刚刚」，不给噪音。
+    时间戳只在超过 10 分钟才标：一两分钟前的「（2分钟前）」对模型是纯噪音，
+    反而让它把每行当成独立事件去点评；十分钟以上的才真的需要提示「这是旧的」。
     """
     addr = m.get("addr") or ""
     content = m.get("content") or ""
@@ -840,7 +845,7 @@ def _timeline_line(m: dict, now: float = 0.0) -> str:
         delta = (now or time.time()) - float(ts)
         if delta >= 3600:
             age = f"（{int(delta // 3600)}小时前）"
-        elif delta >= 60:
+        elif delta >= 600:
             age = f"（{int(delta // 60)}分钟前）"
     sender = f"{m['sender']}{age}"
     return f"{sender} {addr}: {content}" if addr else f"{sender}: {content}"
@@ -862,12 +867,14 @@ async def _process_group_trigger(ws: aiohttp.ClientWebSocketResponse, group_id: 
     # 闲聊只传当前发言和少量未读上下文，避免历史越堆越长，也防止认错人
     if is_admin:
         # 主人追问/呼叫时只喂最近几句：单独一个「乐乐」递过去，模型只能当寒暄敷衍
-        recent_lines = _compose_dialogue(timeline, 16) if timeline else []
+        recent_lines = _compose_dialogue(timeline, 12) if timeline else []
         dialogue_text = "\n".join(_timeline_line(m) for m in recent_lines) or (user_text or "")
     else:
         # 群友直接找机器人时也给几行上下文，免得它把一句「乐乐」当成初次见面打招呼
         # 追问态下对方常只丢半句，上下文给宽一点才接得住
-        limit = 16 if is_follow_up else 14
+        # 条数从 14/16 收到 10/12：Pallas-Bot 只给 8 条，理由写在 group_timeline.py 里——
+        # 长上下文会让模型把每行当独立事件逐条评论，而不像在跟一段正在进行的对话。
+        limit = 12 if is_follow_up else 10
         recent_lines = _compose_dialogue(timeline, limit) if timeline else []
         if not (is_at or is_mention or is_follow_up):
             # 旁观插话按时间收窄：刷屏群里 14 条只够四十秒，话题却已经翻篇，

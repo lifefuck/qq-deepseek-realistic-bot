@@ -414,7 +414,7 @@ def test_interject_frequency():
     score_you, _ = botmod.score_message_quality("你昨天那个事办了吗", 0)
     score_name, _ = botmod.score_message_quality("小鲸鱼你昨天那个事办了吗", 0)
     check("「你」不算点名", score_you < score_name, f"{score_you:.2f} vs {score_name:.2f}")
-    check("点名才过门槛", score_name >= 0.66 > score_you, f"{score_you:.2f}/{score_name:.2f}")
+    check("点名才过门槛", score_name >= 0.62 > score_you, f"{score_you:.2f}/{score_name:.2f}")
     # 解说员口吻必须拦得住
     for bad in ("你们这聊得挺热闹", "这个话题挺有意思", "总结一下你们刚才说的",
                 "看得出来大家都很闲", "继续聊，我不打扰了"):
@@ -425,12 +425,15 @@ def test_interject_frequency():
     line = g._timeline_line({"sender": "某人(QQ 1)", "content": "啊" * 300})
     check("长消息截断", len(line) < 160 and line.endswith("…"), str(len(line)))
     check("时间线容量够看一整场", botmod.TIMELINE_MAX_LEN >= 20, str(botmod.TIMELINE_MAX_LEN))
-    # 一分钟以上的行要标出年龄，不然模型分不清哪句是刚刚的
+    # 超过十分钟的行才标年龄：一两分钟前的「（2分钟前）」对模型是噪音，
+    # 会让它把每行当成独立事件去点评（Pallas-Bot 的做法是干脆不给时间戳）
     import time as _t
     now = _t.time()
-    old = g._timeline_line({"sender": "某人(QQ 1)", "content": "人参预定", "time": now - 130})
+    old = g._timeline_line({"sender": "某人(QQ 1)", "content": "人参预定", "time": now - 700})
+    two_min = g._timeline_line({"sender": "某人(QQ 1)", "content": "人参预定", "time": now - 130})
     fresh = g._timeline_line({"sender": "某人(QQ 1)", "content": "人参预定", "time": now - 5})
-    check("旧行标分钟", "2分钟前" in old, old)
+    check("旧行标分钟", "11分钟前" in old, old)
+    check("两分钟内的行不标时间", "分钟前" not in two_min, two_min)
     check("新行不标时间", "分钟前" not in fresh, fresh)
     # 旁观插话的上下文按时间收窄：一百秒前的旧梗不能再递进去
     lines = [{"sender": "a", "content": "人参预定", "time": now - 104},
