@@ -327,13 +327,14 @@ async def handle_memory_summary_command(ws: aiohttp.ClientWebSocketResponse, gro
 
 async def handle_logs_command(ws: aiohttp.ClientWebSocketResponse, group_id: Optional[int] = None,
                               user_id: Optional[int] = None, arg: str = ""):
-    """主人专用：/logs [行数] 把服务日志尾折叠成一条聊天记录发回来。
+    """主人专用：/logs 发原始日志，/logs plus 发翻成人话的简易日志。
 
-    日志里有别的群的聊天内容和 QQ 号，所以只对主人开口，群友一律不理。
+    日志里混着别的群聊天和内部状态，所以只对主人开口，群友一律不理。
     """
     from services import log_tail
 
-    count = log_tail.parse_count(arg)
+    plus = log_tail.is_plus(arg)
+    count = log_tail.parse_count(arg, plus=plus)
     lines, err = await asyncio.to_thread(log_tail.read_recent, count)
 
     if not lines:
@@ -345,11 +346,16 @@ async def handle_logs_command(ws: aiohttp.ClientWebSocketResponse, group_id: Opt
         return
 
     stamp = time.strftime("%m-%d %H:%M", time.localtime())
-    title = f"机器人日志 · 最近 {len(lines)} 行 · {stamp}"
-    pages = log_tail.pack_pages(lines)
+    if plus:
+        entries, hidden = log_tail.summarize(lines, bot.group_names_cache)
+        pages = log_tail.pack_plus(entries, hidden)
+        title = f"机器人日志（简易） · {stamp} · 最近 {len(lines)} 行里挑出 {len(entries)} 件事"
+    else:
+        pages = log_tail.pack_pages(lines)
+        title = f"机器人日志 · 最近 {len(lines)} 行 · {stamp}"
     # 节点挂机器人自己的号：日志本来就不是群友说的，混进别人头像反而误导
-    entries = [(bot.BOT_QQ, label, body) for label, body in pages]
-    nodes = bot.build_forward_nodes(entries, title=title, bot_qq=bot.BOT_QQ)
+    entries_nodes = [(bot.BOT_QQ, label, body) for label, body in pages]
+    nodes = bot.build_forward_nodes(entries_nodes, title=title, bot_qq=bot.BOT_QQ)
 
     if await bot.send_forward_message(ws, nodes, group_id=group_id, user_id=user_id):
         return
