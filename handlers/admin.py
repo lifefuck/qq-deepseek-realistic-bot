@@ -354,7 +354,8 @@ async def handle_logs_command(ws: aiohttp.ClientWebSocketResponse, group_id: Opt
     if await bot.send_forward_message(ws, nodes, group_id=group_id, user_id=user_id):
         return
 
-    # 协议端不支持合并转发时退回纯文本，一次一页，别把整段日志糊成一条
+    # 协议端不支持合并转发时退回纯文本，一次一页；最多五页，剩下的不刷屏
+    pages = pages[:5]
     for i, (_label, body) in enumerate(pages):
         if i:
             await asyncio.sleep(0.3)

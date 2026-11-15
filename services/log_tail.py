@@ -3,6 +3,7 @@
 
 只做两件事——把 journalctl 的输出读回来、按页切好；怎么发交给 handlers。
 """
+import re
 import subprocess
 
 UNIT = "qq-deepseek-bot"
@@ -46,11 +47,24 @@ def read_recent(limit: int = DEFAULT_LINES, grep: str = "") -> tuple[list[str], 
     if grep:
         hit = [ln for ln in lines if grep in ln]
         lines = hit or lines
-    return [_clip(ln) for ln in lines], ""
+    return [_clip(sanitize_line(ln)) for ln in lines], ""
 
 
 def _clip(line: str) -> str:
     return line if len(line) <= MAX_LINE_CHARS else line[:MAX_LINE_CHARS] + "…"
+
+
+_CQ_RE = re.compile(r"\[CQ:([^\]]*)\]")
+
+
+def sanitize_line(line: str) -> str:
+    """把日志里的 CQ 码换成全角括号。
+
+    日志里有群消息原文，夹着 `[CQ:image,file=...,url=...]`；节点正文会被协议端
+    当 CQ 串解析，于是它去下载那张图，下载失败整条合并转发直接退化成纯文本。
+    换成全角括号就只是个普通字符串了。
+    """
+    return _CQ_RE.sub(lambda m: f"【CQ:{m.group(1)}】", line or "")
 
 
 def pack_pages(lines: list[str], per_page: int = PER_PAGE) -> list[tuple[str, str]]:
@@ -62,7 +76,7 @@ def pack_pages(lines: list[str], per_page: int = PER_PAGE) -> list[tuple[str, st
         first = _header_clock(chunk[0])
         last = _header_clock(chunk[-1])
         title = f"{first} ~ {last}" if first and last and first != last else (first or f"第 {start + 1} 行起")
-        pages.append((title, "\n".join(chunk)))
+        pages.append((title, "\n".join(sanitize_line(ln) for ln in chunk)))
     return pages
 
 
