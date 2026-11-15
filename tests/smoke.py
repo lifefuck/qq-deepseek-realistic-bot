@@ -286,7 +286,7 @@ async def main():
         check("/logs plus 走合并转发", len(fwd) == 1, f"forward 次数={len(fwd)}")
         nodes = fwd[0]["messages"] if fwd else []
         body = "\n".join(n["data"]["content"] for n in nodes[1:])
-        check("/logs plus 标题说明是翻译版", "看得懂" in nodes[0]["data"]["content"], nodes[0]["data"]["content"])
+        check("/logs plus 标题不带括号注", "（" not in nodes[0]["data"]["content"] and "行" in nodes[0]["data"]["content"], nodes[0]["data"]["content"])
         check("/logs plus 标题节点不混正文", "打分" not in nodes[0]["data"]["content"])
         check("/logs plus 群聊翻成人话", "群123456789｜群友甲: 连海豚都上了" in body, body[:200])
         check("/logs plus 我的回复可见", "我回 群123456789：连海豚都上了" in body)
